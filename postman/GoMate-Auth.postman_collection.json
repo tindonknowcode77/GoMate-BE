@@ -495,6 +495,107 @@
       "response": []
     },
     {
+      "name": "Search Activities / Match",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{accessToken}}",
+              "type": "string"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/activities?page=1&limit=20",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "activities"
+          ],
+          "query": [
+            {
+              "key": "q",
+              "value": "Coffee",
+              "disabled": true
+            },
+            {
+              "key": "categories",
+              "value": "Gaming",
+              "disabled": true
+            },
+            {
+              "key": "minCost",
+              "value": "0",
+              "disabled": true
+            },
+            {
+              "key": "maxCost",
+              "value": "100000",
+              "disabled": true
+            },
+            {
+              "key": "days",
+              "value": "1,7",
+              "disabled": true
+            },
+            {
+              "key": "fromHour",
+              "value": "18",
+              "disabled": true
+            },
+            {
+              "key": "toHour",
+              "value": "24",
+              "disabled": true
+            },
+            {
+              "key": "lat",
+              "value": "10.77",
+              "disabled": true
+            },
+            {
+              "key": "lng",
+              "value": "106.7",
+              "disabled": true
+            },
+            {
+              "key": "distanceKm",
+              "value": "10",
+              "disabled": true
+            },
+            {
+              "key": "page",
+              "value": "1"
+            },
+            {
+              "key": "limit",
+              "value": "20"
+            }
+          ]
+        },
+        "description": "Login first. Enable optional Params to search. For distance enable lat, lng and distanceKm together. days uses ISO weekday 1=Monday, 7=Sunday; hours use UTC+7. Returns future published activities with free places, excluding your own. Empty database returns items=[]."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "if(pm.response.code === 200) { const data = pm.response.json(); pm.test('Paginated activities', () => { pm.expect(data.items).to.be.an('array'); pm.expect(data.total).to.be.a('number'); pm.expect(data.hasMore).to.be.a('boolean'); }); }"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
       "name": "10 - Logout",
       "request": {
         "method": "POST",

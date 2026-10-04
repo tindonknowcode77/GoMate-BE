@@ -1,7 +1,7 @@
 # GoMate Postman
 
 Import lại `GoMate-Auth.postman_collection.json` trong Postman. Collection mới có
-tên **GoMate - Auth & Profile**, gồm 12 request. Đây là file trong repository,
+tên **GoMate - Auth & Profile**, gồm 13 request. Đây là file trong repository,
 chưa được đồng bộ trực tiếp lên Postman cloud/workspace.
 
 ## Dùng thử
@@ -20,6 +20,10 @@ chưa được đồng bộ trực tiếp lên Postman cloud/workspace.
    → chọn ảnh trên máy → Send → View Avatar. Collection tự lưu `avatarUrl`;
    Get Profile cũng có thể lấy đường dẫn ảnh đã lưu trước đó.
 7. Logout sau khi thử xong. Google Login và Resend là các luồng tùy chọn.
+
+Trước Logout, có thể dùng **Search Activities / Match**. Bật các query cần dùng
+trong Params; lat/lng/distanceKm đi cùng nhau. API có phân trang và trả danh sách
+rỗng nếu MongoDB chưa có hoạt động phù hợp. Xem `../docs/activities.md`.
 
 Không chạy toàn bộ collection liên tục: cần nhập mã email, cung cấp ảnh và
 xem lại nội dung hồ sơ trước các request cập nhật. Dùng **Send** từng request.

@@ -7,10 +7,11 @@ import { readConfig } from './config/env.js'
 import { HttpError } from './common/http-error.js'
 import { createAuthRouter } from './modules/auth/routes.js'
 import { createProfileRouter } from './modules/profile/routes.js'
+import { createActivityRouter } from './modules/activities/routes.js'
 
 const defaultFrontendDir = fileURLToPath(new URL('../../GoMate-FE/dist/', import.meta.url))
 
-export function createApp(config = readConfig(), { authRepository, verifyGoogle, verificationMailer, avatarStorage, frontendDir = defaultFrontendDir } = {}) {
+export function createApp(config = readConfig(), { authRepository, activityRepository, verifyGoogle, verificationMailer, avatarStorage, frontendDir = defaultFrontendDir } = {}) {
   const app = express()
   app.disable('x-powered-by')
   app.set('trust proxy', config.trustProxyHops)
@@ -29,6 +30,7 @@ export function createApp(config = readConfig(), { authRepository, verifyGoogle,
   app.use(cors({ origin: config.corsOrigin }))
   if (authRepository) app.use('/api/profile', createProfileRouter(authRepository, config, avatarStorage))
   app.use(express.json({ limit: '16kb' }))
+  if (activityRepository && authRepository) app.use('/api/activities', createActivityRouter(activityRepository, authRepository))
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', service: 'gomate-be' })

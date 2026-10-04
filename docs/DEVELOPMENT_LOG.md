@@ -1,5 +1,19 @@
 # Development log
 
+## 2026-10-04 - Activity discovery API
+
+- Added authenticated `/api/activities`, validated keyword/category/cost/time/
+  distance filters and offset pagination. Use MongoDB geoNear/2dsphere for
+  distance and stable startsAt/id sorting; only future published non-full
+  activities by other hosts are discoverable. Added repository/server wiring.
+- Added activities integration tests, `docs/activities.md` schema/contract and
+  a Postman search request. No sample data inserted into the app database.
+- Verification: 40/40 backend tests passed with isolated MongoDB 8.3, including
+  real geospatial queries, literal search, combined filters and malformed input.
+- Remaining: activity creation/editing, join approval, production data and
+  device GPS verification. Search currently uses case-insensitive literal
+  matching, not accent-insensitive/fuzzy search.
+
 ## 2026-10-04 - Cloudinary avatars and local file uploads
 
 - Added signed backend Cloudinary uploads, multipart `avatar` files and existing
