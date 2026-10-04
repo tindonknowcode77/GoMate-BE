@@ -11,7 +11,7 @@ export function createAuthRepository(db) {
       return user
     },
     async findUserByEmail(email) {
-      return users.findOne({ email: { $eq: email } })
+      return users.findOne({ email: { $eq: email } }, { projection: { avatar: 0 } })
     },
     async findOrCreateGoogleUser({ googleSub, email, name }) {
       const existing = await users.findOne({ google_sub: googleSub })
@@ -34,10 +34,15 @@ export function createAuthRepository(db) {
       await sessions.insertOne({ token_hash: tokenHash, user_id: userId, expires_at: expiresAt })
     },
     async findSessionUser(tokenHash) {
+      const result = await this.findSession(tokenHash)
+      return result?.user ?? null
+    },
+    async findSession(tokenHash) {
       // TTL cleanup is asynchronous; enforce expiration on every request.
       const session = await sessions.findOne({ token_hash: { $eq: tokenHash }, expires_at: { $gt: new Date() } })
       if (!session) return null
-      return users.findOne({ id: session.user_id, $or: [{ email_verified: true }, { google_sub: { $type: 'string' } }] }, { projection: { password_hash: 0, verification: 0 } })
+      const user = await users.findOne({ id: session.user_id, $or: [{ email_verified: true }, { google_sub: { $type: 'string' } }] }, { projection: { password_hash: 0, verification: 0, avatar: 0 } })
+      return user ? { user, expiresAt: session.expires_at } : null
     },
     async reserveVerification(email, codeHash) {
       const now = new Date()
@@ -60,6 +65,26 @@ export function createAuthRepository(db) {
     },
     async deleteSession(tokenHash) {
       await sessions.deleteOne({ token_hash: { $eq: tokenHash } })
+    },
+    async getProfile(id) {
+      return users.findOne({ id }, { projection: { password_hash: 0, verification: 0, avatar: 0 } })
+    },
+    async updateProfile(id, fields) {
+      const { username, ...rest } = fields
+      return users.findOneAndUpdate({ id }, {
+        $set: { ...rest, ...(username ? { username } : {}), updated_at: new Date() },
+        ...(username === '' ? { $unset: { username: '' } } : {}),
+      }, { returnDocument: 'after', projection: { password_hash: 0, verification: 0, avatar: 0 } })
+    },
+    async saveAvatar(id, image) {
+      return users.findOneAndUpdate({ id }, {
+        $set: { avatar_url: image.url, avatar_public_id: image.publicId, updated_at: new Date() },
+        $unset: { avatar: '', avatar_version: '' },
+      }, { returnDocument: 'before', projection: { password_hash: 0, verification: 0, avatar: 0 } })
+    },
+    async getAvatar(id) {
+      const user = await users.findOne({ id }, { projection: { avatar: 1 } })
+      return user?.avatar ? Buffer.from(user.avatar.buffer) : null
     },
   }
 }

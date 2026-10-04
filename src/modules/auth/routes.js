@@ -66,26 +66,36 @@ export function createAuthRouter(repository, config, verifyGoogle = createGoogle
     res.json({ message: 'Email verified. You can now log in.' })
   })
 
-  async function issueSession(user, res) {
+  function readRememberMe(body) {
+    if (body?.rememberMe !== undefined && typeof body.rememberMe !== 'boolean') {
+      throw new HttpError(400, 'rememberMe must be a boolean')
+    }
+    return body?.rememberMe === true
+  }
+
+  async function issueSession(user, res, rememberMe) {
     const accessToken = newToken()
-    const expiresIn = config.sessionTtlHours * 60 * 60
+    const expiresIn = (rememberMe ? config.rememberSessionTtlHours : config.sessionTtlHours) * 60 * 60
+    const expiresAt = new Date(Date.now() + expiresIn * 1000)
     await repository.createSession({
       tokenHash: hashToken(accessToken), userId: user.id,
-      expiresAt: new Date(Date.now() + expiresIn * 1000),
+      expiresAt,
     })
-    res.json({ accessToken, tokenType: 'Bearer', expiresIn, user: publicUser(user) })
+    res.json({ accessToken, tokenType: 'Bearer', expiresIn, expiresAt: expiresAt.toISOString(), user: publicUser(user) })
   }
 
   router.post('/login', rateLimit({ ...limitOptions, limit: 20 }), async (req, res) => {
+    const rememberMe = readRememberMe(req.body)
     const { email, password } = credentials(req.body)
     const user = await repository.findUserByEmail(email)
     const valid = await verifyPassword(password, user?.password_hash ?? dummyPasswordHash)
     if (!user?.password_hash || !valid) throw new HttpError(401, 'Invalid email or password')
     if (user.email_verified !== true) throw new HttpError(403, 'Verify your email before logging in')
-    await issueSession(user, res)
+    await issueSession(user, res, rememberMe)
   })
 
   router.post('/google', rateLimit({ ...limitOptions, limit: 20 }), async (req, res) => {
+    const rememberMe = readRememberMe(req.body)
     const idToken = req.body?.idToken
     if (typeof idToken !== 'string' || !idToken.trim() || idToken.length > 12000) {
       throw new HttpError(400, 'Google idToken required')
@@ -98,10 +108,14 @@ export function createAuthRouter(repository, config, verifyGoogle = createGoogle
       if (error.code === 11000) throw new HttpError(409, 'Email already registered. Sign in using your existing method.')
       throw error
     }
-    await issueSession(user, res)
+    await issueSession(user, res, rememberMe)
   })
 
-  router.get('/me', protect, (req, res) => res.json({ user: req.auth.user }))
+  router.get('/me', protect, (req, res) => res.json({
+    user: req.auth.user,
+    expiresAt: req.auth.expiresAt.toISOString(),
+    expiresIn: Math.max(0, Math.floor((req.auth.expiresAt.getTime() - Date.now()) / 1000)),
+  }))
   router.post('/logout', protect, async (req, res) => {
     await repository.deleteSession(req.auth.tokenHash)
     res.status(204).end()

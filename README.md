@@ -53,6 +53,8 @@ npm.cmd test
 
 PORT mặc định 3000. HOST mặc định 127.0.0.1 ở local, 0.0.0.0 ở production.
 SESSION_TTL_HOURS mặc định 24. TRUST_PROXY_HOPS mặc định 0, đặt 1 với Render proxy.
+REMEMBER_SESSION_TTL_HOURS mặc định 720 (30 ngày), áp dụng khi login/Google gửi
+`rememberMe: true`. Xem [khôi phục phiên và xử lý hết hạn](docs/persistent-login.md).
 CORS_ORIGIN dành cho FE khác origin; FE cùng server gọi /api.
 Xem .env.example và [API xác thực](docs/auth.md).
 Đăng ký cần SMTP để gửi mã: xem [xác minh email](docs/email-verification.md).

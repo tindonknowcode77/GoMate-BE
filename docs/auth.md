@@ -1,6 +1,10 @@
 # Đăng ký và xác thực GoMate
 
 Base URL local: `http://127.0.0.1:3000/api`.
+
+Giữ đăng nhập: login/Google nhận `rememberMe: true` để cấp phiên mặc định 30 ngày.
+Login và `/auth/me` trả thêm `expiresAt`; `/auth/me` trả số giây còn lại `expiresIn`.
+Xem [hợp đồng khôi phục phiên và xử lý hết hạn](persistent-login.md).
 Production dùng `https://<service>.onrender.com/api`.
 Mọi body gửi lên có `Content-Type: application/json`.
 
@@ -12,8 +16,8 @@ Xem [cấu hình Google và Postman](google-login.md).
 | Method | Path | Body / xác thực | Kết quả |
 | --- | --- | --- | --- |
 | POST | `/auth/register` | `{ "name": "Nguyen An", "email": "an@example.com", "password": "a long sample password" }` | 201 `{ "user": { "id", "name", "email", "createdAt" } }` |
-| POST | `/auth/login` | `{ "email": "an@example.com", "password": "a long sample password" }` | 200 `{ "accessToken", "tokenType": "Bearer", "expiresIn": 86400, "user" }` |
-| GET | `/auth/me` | Header `Authorization: Bearer <accessToken>` | 200 `{ "user" }` |
+| POST | `/auth/login` | `{ "email": "an@example.com", "password": "a long sample password", "rememberMe": false }` | 200 `{ "accessToken", "tokenType": "Bearer", "expiresIn": 86400, "expiresAt", "user" }` |
+| GET | `/auth/me` | Header `Authorization: Bearer <accessToken>` | 200 `{ "user", "expiresAt", "expiresIn" }` |
 | POST | `/auth/logout` | Header `Authorization: Bearer <accessToken>` | 204, không có body |
 
 Các ví dụ response trong bảng mô tả trường dữ liệu, không phải JSON mẫu hoàn chỉnh.
@@ -62,6 +66,7 @@ await fetch(`${baseUrl}/auth/logout`, {
 Token là chuỗi ngẫu nhiên 256-bit, không phải JWT. Chỉ SHA-256 của token được lưu
 trong `auth_sessions`; mật khẩu lưu dưới dạng scrypt có salt riêng cho từng tài khoản.
 Mỗi lần login tạo một phiên riêng, mặc định sống 24 giờ (`SESSION_TTL_HOURS`, 1–720 giờ).
+Với `rememberMe: true`, thời hạn mặc định 30 ngày (`REMEMBER_SESSION_TTL_HOURS`).
 Logout thu hồi phiên hiện tại ngay lập tức. Phiên khác của cùng tài khoản vẫn hoạt động.
 Khi nhận 401 do phiên hết hạn, client yêu cầu đăng nhập lại; chưa có refresh token.
 Tài khoản và phiên được lưu trong MongoDB nên không mất khi backend restart/redeploy.

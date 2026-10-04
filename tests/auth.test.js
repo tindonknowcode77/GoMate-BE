@@ -129,6 +129,7 @@ test('authentication lifecycle using the MongoDB engine', async t => {
     assert.equal(response.body.user.id, userId)
     const sessions = await db.collection('auth_sessions').find().toArray()
     assert.equal(sessions[0].token_hash, hashToken(token))
+    assert.equal(response.body.expiresAt, sessions[0].expires_at.toISOString())
     assert.notEqual(sessions[0].token_hash, token)
     const second = await client.request('/login', { method: 'POST', body: account })
     otherToken = second.body.accessToken
@@ -144,6 +145,51 @@ test('authentication lifecycle using the MongoDB engine', async t => {
     const response = await client.request('/me', { token })
     assert.equal(response.status, 200)
     assert.equal(response.body.user.id, userId)
+    assert.ok(response.body.expiresIn > 0 && response.body.expiresIn <= 86400)
+    assert.equal(response.body.expiresAt, (await db.collection('auth_sessions').findOne({ token_hash: hashToken(token) })).expires_at.toISOString())
+  })
+  await t.test('remembered sessions restore across app instances without extending expiry and revoke on logout', async () => {
+    const response = await client.request('/login', { method: 'POST', body: { ...account, rememberMe: true } })
+    assert.equal(response.status, 200)
+    assert.equal(response.body.expiresIn, 30 * 24 * 60 * 60)
+    const saved = await db.collection('auth_sessions').findOne({ token_hash: hashToken(response.body.accessToken) })
+    assert.equal(saved.expires_at.toISOString(), response.body.expiresAt)
+    assert.equal(saved.accessToken, undefined)
+    const second = await serve(createApp(config, { authRepository: createAuthRepository(db) }))
+    try {
+      const restored = await second.request('/me', { token: response.body.accessToken })
+      assert.equal(restored.status, 200)
+      assert.equal(restored.body.user.id, userId)
+      assert.equal(restored.body.expiresAt, response.body.expiresAt)
+      assert.ok(restored.body.expiresIn > 29 * 86400 && restored.body.expiresIn <= response.body.expiresIn)
+      assert.equal(restored.body.accessToken, undefined)
+      assert.equal(restored.headers.get('cache-control'), 'no-store')
+      assert.equal((await second.request('/logout', { method: 'POST', token: response.body.accessToken })).status, 204)
+      const revoked = await client.request('/me', { token: response.body.accessToken })
+      assert.equal(revoked.status, 401)
+      assert.equal(revoked.body.code, 'SESSION_INVALID_OR_EXPIRED')
+      assert.equal((await client.request('/me', { token })).status, 200)
+    } finally { await second.close() }
+  })
+  await t.test('rememberMe accepts only booleans and false keeps the normal lifetime', async () => {
+    const before = await db.collection('auth_sessions').countDocuments()
+    for (const rememberMe of ['true', 1, null, {}]) {
+      assert.equal((await client.request('/login', { method: 'POST', body: { ...account, rememberMe } })).status, 400)
+    }
+    assert.equal(await db.collection('auth_sessions').countDocuments(), before)
+    const normal = await client.request('/login', { method: 'POST', body: { ...account, rememberMe: false } })
+    assert.equal(normal.status, 200)
+    assert.equal(normal.body.expiresIn, 86400)
+  })
+  await t.test('expired remembered sessions fail even before MongoDB TTL cleanup', async () => {
+    const response = await client.request('/login', { method: 'POST', body: { ...account, rememberMe: true } })
+    assert.equal(response.status, 200)
+    await db.collection('auth_sessions').updateOne({ token_hash: hashToken(response.body.accessToken) }, { $set: { expires_at: new Date(Date.now() - 1000) } })
+    const expired = await client.request('/me', { token: response.body.accessToken })
+    assert.equal(expired.status, 401)
+    assert.equal(expired.body.code, 'SESSION_INVALID_OR_EXPIRED')
+    assert.equal(expired.headers.get('www-authenticate'), 'Bearer')
+    assert.equal((await client.request('/me')).body.code, 'AUTH_REQUIRED')
   })
   await t.test('sessions survive app recreation and query operators cannot bypass lookup', async () => {
     const second = await serve(createApp(config, { authRepository: createAuthRepository(db) }))
@@ -171,6 +217,10 @@ test('authentication lifecycle using the MongoDB engine', async t => {
     }))
     try {
       assert.equal((await googleClient.request('/google', { method: 'POST', body: {} })).status, 400)
+      assert.equal((await googleClient.request('/google', { method: 'POST', body: { idToken: 'test', rememberMe: 'true' } })).status, 400)
+      const remembered = await googleClient.request('/google', { method: 'POST', body: { idToken: 'test', rememberMe: true } })
+      assert.equal(remembered.status, 200)
+      assert.equal(remembered.body.expiresIn, 30 * 86400)
       const results = await Promise.all([1, 2].map(() => googleClient.request('/google', {
         method: 'POST', body: { idToken: 'verified-by-test-double', email: 'attacker@example.com' },
       })))
@@ -229,4 +279,9 @@ test('password salts differ and configuration fails safely', async () => {
     assert.throws(() => readConfig({ SESSION_TTL_HOURS: value }), /SESSION_TTL_HOURS/)
   }
   assert.throws(() => readConfig({ TRUST_PROXY_HOPS: 'true' }), /TRUST_PROXY_HOPS/)
+  for (const value of ['0', '-1', '721', 'not-a-number', '23', '24.5']) {
+    assert.throws(() => readConfig({ REMEMBER_SESSION_TTL_HOURS: value }), /REMEMBER_SESSION_TTL_HOURS/)
+  }
+  assert.equal(readConfig({ REMEMBER_SESSION_TTL_HOURS: '168' }).rememberSessionTtlHours, 168)
+  assert.equal(readConfig({}).rememberSessionTtlHours, 720)
 })
