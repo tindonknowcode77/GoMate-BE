@@ -1,8 +1,11 @@
-import { Router } from 'express'
+import express, { Router } from 'express'
+import sharp from 'sharp'
+import { rateLimit } from 'express-rate-limit'
+import { activityCategories, activityFields, publicActivity } from './validation.js'
 import { authenticate } from '../../middlewares/authenticate.js'
 import { HttpError } from '../../common/http-error.js'
 
-const categories = ['Ăn uống', 'Thể thao', 'Du lịch', 'Giải trí', 'Học tập', 'Gaming', 'Khác']
+const categories = activityCategories
 export function searchOptions(query) {
   const allowed = ['q', 'categories', 'minCost', 'maxCost', 'days', 'fromHour', 'toHour', 'lat', 'lng', 'distanceKm', 'page', 'limit']
   for (const [key, value] of Object.entries(query)) {
@@ -29,11 +32,71 @@ export function searchOptions(query) {
   return options
 }
 
-export function createActivityRouter(repository, authRepository) {
+export function createActivityRouter(repository, authRepository, coverStorage) {
   const router = Router()
   router.use(authenticate(authRepository))
   router.get('/', async (req, res) => {
     res.json(await repository.search(searchOptions(req.query), req.auth.user.id))
+  })
+  router.get('/mine', async (req, res) => {
+    if (Object.keys(req.query).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Only page and limit are supported')
+    const { page, limit } = searchOptions(req.query)
+    const result = await repository.owned(req.auth.user.id, page, limit)
+    res.json({ ...result, items: result.items.map(publicActivity) })
+  })
+  async function find(id, owner) {
+    const row = await repository.get(id)
+    if (!row) throw new HttpError(404, 'Activity not found')
+    if (owner && row.hostId !== owner) throw new HttpError(403, 'Only the host can change this activity')
+    return row
+  }
+  router.get('/:id', async (req, res) => {
+    const row = await find(req.params.id)
+    if (row.status !== 'published' && row.hostId !== req.auth.user.id) throw new HttpError(404, 'Activity not found')
+    res.json({ activity: publicActivity(row) })
+  })
+  const cleanup = async id => { try { await coverStorage.remove(id) } catch { console.warn('Activity cover cleanup failed') } }
+  async function cover(base64, owner) {
+    if (base64 === undefined) return null
+    if (base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) throw new HttpError(400, 'Invalid cover image')
+    const buffer = Buffer.from(base64, 'base64')
+    if (buffer.length > 2 * 1024 * 1024) throw new HttpError(413, 'Cover must not exceed 2 MB')
+    let image
+    try {
+      const source = sharp(buffer, { limitInputPixels: 20000000 })
+      const info = await source.metadata()
+      if (!['jpeg', 'png', 'webp'].includes(info.format) || (info.pages ?? 1) !== 1) throw new Error('Invalid image')
+      image = await source.rotate().resize(1200, 900, { fit: 'cover', withoutEnlargement: true }).webp({ quality: 80 }).toBuffer()
+    } catch { throw new HttpError(400, 'Select a valid JPEG, PNG or WebP cover') }
+    return coverStorage.upload(image, owner)
+  }
+  const writes = rateLimit({ windowMs: 15 * 60 * 1000, limit: 40, standardHeaders: 'draft-8', legacyHeaders: false })
+  router.post('/', writes, express.json({ limit: '3mb' }), async (req, res) => {
+    const fields = activityFields(req.body)
+    const image = await cover(req.body.coverBase64, req.auth.user.id)
+    try {
+      const row = await repository.create({ ...fields, ...(image ? { imageUrl: image.url, imagePublicId: image.publicId } : {}) }, req.auth.user)
+      res.status(201).json({ activity: publicActivity(row) })
+    } catch (error) { if (image) await cleanup(image.publicId); throw error }
+  })
+  router.patch('/:id', writes, express.json({ limit: '3mb' }), async (req, res) => {
+    const previous = await find(req.params.id, req.auth.user.id)
+    if (previous.startsAt <= new Date()) throw new HttpError(409, 'Started activities cannot be edited')
+    const fields = activityFields(req.body, previous)
+    const image = await cover(req.body.coverBase64, req.auth.user.id)
+    let row
+    try {
+      row = await repository.update(previous, { ...fields, ...(image ? { imageUrl: image.url, imagePublicId: image.publicId } : {}) })
+      if (!row) throw new HttpError(409, 'Activity changed. Reload and try again.')
+    } catch (error) { if (image) await cleanup(image.publicId); throw error }
+    if (image && previous.imagePublicId) await cleanup(previous.imagePublicId)
+    res.json({ activity: publicActivity(row) })
+  })
+  router.delete('/:id', writes, async (req, res) => {
+    const previous = await find(req.params.id, req.auth.user.id)
+    if (!await repository.remove(previous)) throw new HttpError(409, 'Activity changed. Reload and try again.')
+    if (previous.imagePublicId) await cleanup(previous.imagePublicId)
+    res.status(204).end()
   })
   return router
 }

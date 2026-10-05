@@ -1,5 +1,21 @@
 # Development log
 
+## 2026-10-04 - Activity CRUD and host management
+
+- Added create, owner list, detail, partial update and soft-delete endpoints.
+  Derive host/status/member count server-side; validate dates, category, text,
+  capacity, cost and GeoJSON. Reject non-host writes and edits after start.
+- Added optional Cloudinary cover uploads with rollback/replacement cleanup,
+  compare-and-update versions and owner-list index. Reused existing cloud adapter
+  with separate activities folder. Added five Postman requests and API docs.
+- Files: activity routes/repository/validation, app/database wiring, cloud adapter,
+  `tests/activity-crud.test.js`, Postman collection, activity docs.
+- Verification: backend suite 46/46 passed using isolated MongoDB 8.3 and mocked
+  Cloudinary. Includes owner isolation, persisted search visibility, invalid dates,
+  capacity, stale concurrent writes, upload rollback and deletion visibility.
+- Remaining: participant requests/approval, joined lists, lifecycle beyond CRUD,
+  durable cloud cleanup retries. No live account data or production deployment.
+
 ## 2026-10-04 - Activity discovery API
 
 - Added authenticated `/api/activities`, validated keyword/category/cost/time/

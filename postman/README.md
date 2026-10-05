@@ -1,7 +1,7 @@
 # GoMate Postman
 
 Import lại `GoMate-Auth.postman_collection.json` trong Postman. Collection mới có
-tên **GoMate - Auth & Profile**, gồm 13 request. Đây là file trong repository,
+tên **GoMate - Auth & Profile**, gồm 18 request. Đây là file trong repository,
 chưa được đồng bộ trực tiếp lên Postman cloud/workspace.
 
 ## Dùng thử
@@ -24,6 +24,13 @@ chưa được đồng bộ trực tiếp lên Postman cloud/workspace.
 Trước Logout, có thể dùng **Search Activities / Match**. Bật các query cần dùng
 trong Params; lat/lng/distanceKm đi cùng nhau. API có phân trang và trả danh sách
 rỗng nếu MongoDB chưa có hoạt động phù hợp. Xem `../docs/activities.md`.
+
+CRUD: **Activities - Create → Mine → Detail → Update**. Create lưu `activityId`;
+hai biến `activityStartsAt`/`activityEndsAt` rỗng sẽ tự đặt thành ngày mai và 2 giờ
+sau lúc bắt đầu. Sửa các biến nếu cần thời gian khác; ngày phải ở tương lai.
+**Activities - Delete (manual)** xóa hoạt động trong `activityId`, chỉ bấm Send
+khi muốn xóa. Hoạt động của mình không xuất hiện trong Match của chính mình;
+dùng Mine để xem, hoặc đăng nhập tài khoản khác để thử Match.
 
 Không chạy toàn bộ collection liên tục: cần nhập mã email, cung cấp ảnh và
 xem lại nội dung hồ sơ trước các request cập nhật. Dùng **Send** từng request.

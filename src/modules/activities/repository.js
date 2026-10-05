@@ -1,5 +1,36 @@
+import { randomUUID } from 'node:crypto'
+
 export function createActivityRepository(db) {
+  const activities = db.collection('activities')
   return {
+    async create(fields, host) {
+      const now = new Date()
+      const row = { id: randomUUID(), ...fields, hostId: host.id, hostName: host.name,
+        memberCount: 1, status: 'published', tags: fields.tags ?? [], requirements: fields.requirements ?? [], plan: fields.plan ?? [],
+        version: 1, createdAt: now, updatedAt: now }
+      await activities.insertOne(row)
+      return row
+    },
+    async get(id) { return activities.findOne({ id, status: { $ne: 'deleted' } }) },
+    async owned(hostId, page, limit) {
+      const query = { hostId, status: { $ne: 'deleted' } }
+      const [items, total] = await Promise.all([
+        activities.find(query).sort({ createdAt: -1, id: 1 }).skip((page - 1) * limit).limit(limit).toArray(),
+        activities.countDocuments(query),
+      ])
+      return { items, total, page, limit, hasMore: page * limit < total }
+    },
+    async update(previous, fields) {
+      return activities.findOneAndUpdate({ id: previous.id, hostId: previous.hostId,
+        version: previous.version ?? { $exists: false }, status: { $ne: 'deleted' },
+        memberCount: { $lte: fields.maxParticipants ?? previous.maxParticipants },
+      }, { $set: { ...fields, updatedAt: new Date() }, $inc: { version: 1 } }, { returnDocument: 'after' })
+    },
+    async remove(previous) {
+      return activities.findOneAndUpdate({ id: previous.id, hostId: previous.hostId,
+        version: previous.version ?? { $exists: false }, status: { $ne: 'deleted' },
+      }, { $set: { status: 'deleted', deletedAt: new Date(), updatedAt: new Date() }, $inc: { version: 1 } }, { returnDocument: 'after' })
+    },
     async search(options, userId) {
       const match = { status: 'published', startsAt: { $gt: new Date() }, hostId: { $ne: userId },
         $expr: { $lt: ['$memberCount', '$maxParticipants'] } }

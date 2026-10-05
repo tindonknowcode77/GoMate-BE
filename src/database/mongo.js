@@ -9,6 +9,7 @@ export async function initializeDatabase(db) {
   await db.collection('activities').createIndex({ id: 1 }, { unique: true })
   await db.collection('activities').createIndex({ coordinates: '2dsphere' })
   await db.collection('activities').createIndex({ status: 1, startsAt: 1, id: 1 })
+  await db.collection('activities').createIndex({ hostId: 1, createdAt: -1, id: 1 })
   await db.collection('users').createIndex({ email: 1 }, { unique: true })
   await db.collection('users').createIndex({ id: 1 }, { unique: true })
   await db.collection('users').createIndex({ username: 1 }, {

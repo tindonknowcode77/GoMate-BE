@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { v2 as cloudinary } from 'cloudinary'
 import { HttpError } from '../../common/http-error.js'
 
-export function createAvatarStorage(config, sdk = cloudinary) {
+export function createAvatarStorage(config, sdk = cloudinary, folder = 'avatars') {
   const options = { cloud_name: config.cloudinaryCloudName, api_key: config.cloudinaryApiKey,
     api_secret: config.cloudinaryApiSecret, secure: true, timeout: 20000 }
   function assertConfigured() {
@@ -17,7 +17,7 @@ export function createAvatarStorage(config, sdk = cloudinary) {
       try {
         const result = await new Promise((resolve, reject) => {
           const stream = sdk.uploader.upload_stream({ ...options, resource_type: 'image',
-            public_id: `gomate/avatars/${userId}/${randomUUID()}`, overwrite: false,
+            public_id: `gomate/${folder}/${userId}/${randomUUID()}`, overwrite: false,
           }, (error, value) => error ? reject(error) : resolve(value))
           stream.on('error', reject)
           stream.end(buffer)

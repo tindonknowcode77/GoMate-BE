@@ -100,6 +100,21 @@
       "value": "",
       "type": "string",
       "description": "Automatically saved complete Cloudinary or legacy avatar URL."
+    },
+    {
+      "key": "activityId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "activityStartsAt",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "activityEndsAt",
+      "value": "",
+      "type": "string"
     }
   ],
   "item": [
@@ -589,6 +604,198 @@
             "exec": [
               "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
               "if(pm.response.code === 200) { const data = pm.response.json(); pm.test('Paginated activities', () => { pm.expect(data.items).to.be.an('array'); pm.expect(data.total).to.be.a('number'); pm.expect(data.hasMore).to.be.a('boolean'); }); }"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "Activities - Create",
+      "request": {
+        "method": "POST",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{accessToken}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/activities",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Weekend games\",\n  \"description\": \"Meet and play board games\",\n  \"category\": \"Gaming\",\n  \"location\": \"Ho Chi Minh City\",\n  \"startsAt\": \"{{activityStartsAt}}\",\n  \"endsAt\": \"{{activityEndsAt}}\",\n  \"estimatedCost\": 0,\n  \"maxParticipants\": 6,\n  \"coordinates\": {\n    \"type\": \"Point\",\n    \"coordinates\": [\n      106.7,\n      10.77\n    ]\n  },\n  \"requirements\": [],\n  \"tags\": [\n    \"Games\"\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "Creates a published activity owned by the signed-in account. Optional coverBase64 uploads a local image to Cloudinary. Dates must be ISO UTC. Blank date variables default to tomorrow. Saves activityId."
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (!pm.variables.get('activityStartsAt')) pm.collectionVariables.set('activityStartsAt', new Date(Date.now() + 86400000).toISOString());",
+              "if (!pm.variables.get('activityEndsAt')) pm.collectionVariables.set('activityEndsAt', new Date(Date.parse(pm.variables.get('activityStartsAt')) + 7200000).toISOString());"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "if (pm.response.code === 201) pm.collectionVariables.set('activityId', pm.response.json().activity.id);"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "Activities - Mine",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{accessToken}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{baseUrl}}/api/activities/mine?page=1&limit=20"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "Activities - Detail",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{accessToken}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{baseUrl}}/api/activities/{{activityId}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "Activities - Update",
+      "request": {
+        "method": "PATCH",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{accessToken}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/activities/{{activityId}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Updated weekend games\",\n  \"estimatedCost\": 50000\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "Owner only; omit unchanged fields. Started activities cannot be edited. Capacity must be at least the current member count."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ],
+      "response": []
+    },
+    {
+      "name": "Activities - Delete (manual)",
+      "request": {
+        "method": "DELETE",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{accessToken}}",
+              "type": "string"
+            }
+          ]
+        },
+        "header": [],
+        "url": "{{baseUrl}}/api/activities/{{activityId}}",
+        "description": "Owner only. Removes this activity from discovery, detail and owner list by marking it deleted. Send only when you intend to delete activityId."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 204', () => pm.response.to.have.status(204));"
             ]
           }
         }

@@ -8,10 +8,11 @@ import { HttpError } from './common/http-error.js'
 import { createAuthRouter } from './modules/auth/routes.js'
 import { createProfileRouter } from './modules/profile/routes.js'
 import { createActivityRouter } from './modules/activities/routes.js'
+import { createAvatarStorage } from './modules/profile/cloudinary.js'
 
 const defaultFrontendDir = fileURLToPath(new URL('../../GoMate-FE/dist/', import.meta.url))
 
-export function createApp(config = readConfig(), { authRepository, activityRepository, verifyGoogle, verificationMailer, avatarStorage, frontendDir = defaultFrontendDir } = {}) {
+export function createApp(config = readConfig(), { authRepository, activityRepository, verifyGoogle, verificationMailer, avatarStorage, coverStorage, frontendDir = defaultFrontendDir } = {}) {
   const app = express()
   app.disable('x-powered-by')
   app.set('trust proxy', config.trustProxyHops)
@@ -29,8 +30,8 @@ export function createApp(config = readConfig(), { authRepository, activityRepos
   }))
   app.use(cors({ origin: config.corsOrigin }))
   if (authRepository) app.use('/api/profile', createProfileRouter(authRepository, config, avatarStorage))
+  if (activityRepository && authRepository) app.use('/api/activities', createActivityRouter(activityRepository, authRepository, coverStorage ?? createAvatarStorage(config, undefined, 'activities')))
   app.use(express.json({ limit: '16kb' }))
-  if (activityRepository && authRepository) app.use('/api/activities', createActivityRouter(activityRepository, authRepository))
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', service: 'gomate-be' })
