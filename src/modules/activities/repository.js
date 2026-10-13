@@ -12,6 +12,35 @@ export function createActivityRepository(db) {
       return row
     },
     async get(id) { return activities.findOne({ id, status: { $ne: 'deleted' } }) },
+    // Keep requests and capacity in one document so approval is atomic even on standalone MongoDB.
+    async submitJoinRequest(id, user) {
+      const now = new Date()
+      const request = { id: randomUUID(), userId: user.id, name: user.name, status: 'pending', createdAt: now, updatedAt: now }
+      const row = await activities.findOneAndUpdate({ id, status: 'published', startsAt: { $gt: now }, hostId: { $ne: user.id },
+        joinRequests: { $not: { $elemMatch: { userId: user.id } } },
+        $expr: { $and: [{ $lt: ['$memberCount', '$maxParticipants'] }, { $lt: [{ $size: { $ifNull: ['$joinRequests', []] } }, 5000] }] },
+      }, { $push: { joinRequests: request }, $set: { updatedAt: now }, $inc: { version: 1 } }, { returnDocument: 'after' })
+      if (row) return request
+      // Reuse the user's existing entry after cancellation/rejection; never create duplicate membership.
+      const retry = await activities.findOneAndUpdate({ id, status: 'published', startsAt: { $gt: now }, hostId: { $ne: user.id },
+        joinRequests: { $elemMatch: { userId: user.id, status: { $in: ['cancelled', 'rejected'] } } },
+        $expr: { $lt: ['$memberCount', '$maxParticipants'] },
+      }, { $set: { 'joinRequests.$': request, updatedAt: now }, $inc: { version: 1 } }, { returnDocument: 'after' })
+      return retry ? request : null
+    },
+    async changeJoinRequest(id, { userId, hostId, requestId, status }) {
+      const now = new Date()
+      const query = { id, status: 'published', startsAt: { $gt: now },
+        ...(hostId ? { hostId } : {}),
+        joinRequests: { $elemMatch: { ...(userId ? { userId } : { id: requestId }), status: 'pending' } },
+        ...(status === 'approved' ? { $expr: { $lt: ['$memberCount', '$maxParticipants'] } } : {}),
+      }
+      const row = await activities.findOneAndUpdate(query, {
+        $set: { 'joinRequests.$.status': status, 'joinRequests.$.updatedAt': now, updatedAt: now },
+        $inc: { version: 1, ...(status === 'approved' ? { memberCount: 1 } : {}) },
+      }, { returnDocument: 'after' })
+      return row?.joinRequests.find(item => userId ? item.userId === userId : item.id === requestId) ?? null
+    },
     async owned(hostId, page, limit) {
       const query = { hostId, status: { $ne: 'deleted' } }
       const [items, total] = await Promise.all([

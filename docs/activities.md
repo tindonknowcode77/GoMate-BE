@@ -11,7 +11,37 @@ Tất cả endpoint yêu cầu `Authorization: Bearer <accessToken>`.
 | DELETE | `/api/activities/:id` | Host xóa mềm; 204; không còn trong tìm kiếm, danh sách riêng và chi tiết |
 | GET | `/api/activities` | Tìm kiếm/Match như mô tả bên dưới |
 
-## Tạo và chỉnh sửa
+## Yêu cầu tham gia
+
+Các endpoint dưới đây đều yêu cầu Bearer token:
+
+| Method | Path | Kết quả |
+| --- | --- | --- |
+| POST | `/api/activities/:id/join-requests` | Không có body hoặc `{}`; 201 `{ request }` |
+| DELETE | `/api/activities/:id/join-requests/me` | Hủy yêu cầu pending của người đăng nhập; 204 |
+| GET | `/api/activities/:id/join-requests?status=pending&page=1&limit=20` | Chỉ host; `{ items, total, page, limit, hasMore }` |
+| PATCH | `/api/activities/:id/join-requests/:requestId` | Chỉ host; body `{ "status": "approved" }` hoặc `{ "status": "rejected" }`; 200 `{ request }` |
+
+`request` gồm `id`, `userId`, `name` (tên lúc gửi), `status`, `createdAt`, `updatedAt`.
+Thời gian trả về ISO UTC. GET không truyền status sẽ lấy mọi trạng thái;
+status hợp lệ: `pending`, `approved`, `rejected`, `cancelled`. Phân trang mặc định
+page=1, limit=20; limit tối đa 50, page tối đa 500.
+
+- Host không được xin tham gia hoạt động của mình. User lấy từ token, không nhận từ body.
+- Gửi/duyệt/từ chối/hủy chỉ áp dụng khi hoạt động published và chưa bắt đầu.
+- Gửi và duyệt yêu cầu cần còn chỗ; host đã chiếm 1 chỗ trong memberCount.
+- Một người chỉ có một bản ghi yêu cầu trên mỗi hoạt động. Pending/approved không được gửi trùng.
+- Sau cancelled/rejected được gửi lại với ID và thời gian mới; bản ghi cũ được thay thế, không lưu lịch sử từng lần gửi.
+- Hủy chỉ dành cho pending, không phải rời nhóm sau khi đã được duyệt.
+- Duyệt cập nhật trạng thái và memberCount nguyên tử; duyệt lặp hoặc đồng thời không tăng quá sức chứa.
+- Danh sách yêu cầu chỉ host được xem, không xuất hiện trong response chi tiết/tìm kiếm hoạt động.
+- 400: body/query sai; 401: thiếu/không hợp lệ token; 403: sai quyền;
+  404: hoạt động/yêu cầu không tồn tại; 409: trạng thái xung đột, hết chỗ hoặc hết hạn thao tác.
+- Giới hạn 5.000 người gửi khác nhau mỗi hoạt động để giới hạn kích thước document MongoDB.
+  Request được lưu trong document activity, không cần migration hoặc replica set.
+- Các thao tác ghi dùng chung giới hạn 40 lần/15 phút/IP với CRUD hoạt động (429 khi vượt).
+
+## Body tạo và chỉnh sửa
 
 Body POST ví dụ (đổi ngày thành thời gian thực tế trong tương lai):
 

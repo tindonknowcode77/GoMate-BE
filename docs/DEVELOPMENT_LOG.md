@@ -1,5 +1,47 @@
 # Development log
 
+## 2026-10-13 - Organize Postman by feature
+
+- Grouped collection into System, Authentication, Profile, Activities and Join
+  Requests; split Join Requests into Setup, Member and Host subfolders.
+  Updated the Postman guide with the folder structure.
+- Files: `postman/GoMate-Auth.postman_collection.json`, `postman/README.md`.
+- Verification: JSON parsed, all 26 request objects compared unchanged before
+  and after regrouping, names remain unique and request scripts compile.
+- Remaining: reimport the collection in Postman; no live API calls needed.
+
+## 2026-10-13 - Postman join request workflow
+
+- Updated collection with a Join Requests folder: separate host/member login,
+  host activity creation, submit, list, cancel, approve and reject (8 requests).
+  Separate role tokens prevent accidental host/member session switching;
+  submit automatically saves the request ID. Added usage instructions.
+- Files: `postman/GoMate-Auth.postman_collection.json`, `postman/README.md`.
+- Verification: collection JSON parsed; all request scripts compile; 26 requests
+  total. No live API calls or credentials used.
+- Remaining: import into Postman and test with two verified accounts.
+
+## 2026-10-13 - Activity join requests
+
+- Added authenticated submit/cancel and host-only list/approve/reject endpoints.
+  Validate body/query, paginate/filter host lists, reject duplicate requests,
+  host self-joining, unavailable activities and capacity overflow.
+- Store bounded requests inside the activity document (5,000 distinct applicants).
+  MongoDB single-document atomic updates keep approval and memberCount consistent
+  without requiring transactions/replica sets; all mutations increment version.
+  Cancelled/rejected requests may be resubmitted with a new ID; prior attempts
+  are replaced. Approved entries retain member identity. No schema migration needed.
+- Files: `src/modules/activities/routes.js`, `repository.js`,
+  `tests/join-requests.test.js`, `docs/activities.md`.
+- Verification: syntax checks passed for all three JS files. Added integration
+  coverage for permissions, cancellation/resubmission/rejection, validation,
+  privacy, duplicate concurrent submissions and concurrent last-seat approvals.
+  Full suite: 12 tests passed; 5 MongoDB integration suites blocked by environment.
+  Initial binary download was blocked; using installed MongoDB 8.3.1 instead
+  hit insufficient disk space (minimum 500 MiB), including a sequential retry.
+  New integration test has not passed; rerun with sufficient disk space.
+- Remaining: FE integration, joined activity/member APIs and request history.
+
 ## 2026-10-04 - Activity CRUD and host management
 
 - Added create, owner list, detail, partial update and soft-delete endpoints.

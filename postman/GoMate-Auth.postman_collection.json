@@ -1,7 +1,7 @@
 {
   "info": {
-    "name": "GoMate - Auth & Profile",
-    "description": "Send requests individually: Health -> Register -> enter verificationCode from email -> Verify Email -> Login -> Me -> Get Profile -> Update Profile -> Upload Avatar -> View Avatar -> Logout. For existing accounts start at Login. Optional Resend and Google Login are separate flows. Login supports rememberMe and saves session expiry. Do not run the entire collection blindly: registration requires an email code and profile requests modify the signed-in account.",
+    "name": "GoMate - Auth, Profile & Activities",
+    "description": "Send requests individually: Health -> Register -> enter verificationCode from email -> Verify Email -> Login -> Me -> Get Profile -> Update Profile -> Upload Avatar -> View Avatar -> Logout. For existing accounts start at Login. Optional Resend and Google Login are separate flows. Login supports rememberMe and saves session expiry. Do not run the entire collection blindly: registration requires an email code and profile requests modify the signed-in account. Join Requests folder: use two verified accounts, Login Host -> Create Activity -> Login Member -> Submit, then choose Cancel, Approve or Reject manually.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -115,839 +115,1303 @@
       "key": "activityEndsAt",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "hostEmail",
+      "value": "",
+      "type": "string",
+      "description": "Verified host email."
+    },
+    {
+      "key": "hostPassword",
+      "value": "",
+      "type": "string",
+      "description": "Host password."
+    },
+    {
+      "key": "memberEmail",
+      "value": "",
+      "type": "string",
+      "description": "Verified member email; must differ from host."
+    },
+    {
+      "key": "memberPassword",
+      "value": "",
+      "type": "string",
+      "description": "Member password."
+    },
+    {
+      "key": "hostAccessToken",
+      "value": "",
+      "type": "string",
+      "description": "Saved by Login Host."
+    },
+    {
+      "key": "memberAccessToken",
+      "value": "",
+      "type": "string",
+      "description": "Saved by Login Member."
+    },
+    {
+      "key": "joinRequestId",
+      "value": "",
+      "type": "string",
+      "description": "Saved by Submit. Copy another request ID from List to review it."
     }
   ],
   "item": [
     {
-      "name": "01 - Health",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "auth": {
-          "type": "noauth"
-        },
-        "url": {
-          "raw": "{{baseUrl}}/api/health",
-          "host": [
-            "{{baseUrl}}"
+      "name": "01 - System",
+      "description": "Backend availability.",
+      "item": [
+        {
+          "name": "01 - Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "health"
+              ]
+            },
+            "description": "Kiểm tra BE đang chạy."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
           ],
-          "path": [
-            "api",
-            "health"
-          ]
-        },
-        "description": "Kiểm tra BE đang chạy."
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
-            ]
-          }
+          "response": []
         }
-      ],
-      "response": []
+      ]
     },
     {
-      "name": "02 - Register",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "auth": {
-          "type": "noauth"
-        },
-        "url": {
-          "raw": "{{baseUrl}}/api/auth/register",
-          "host": [
-            "{{baseUrl}}"
+      "name": "02 - Authentication",
+      "description": "Registration, email verification, login and session management. Send individually; verification requires an email code.",
+      "item": [
+        {
+          "name": "02 - Register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{name}}\",\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Điền name, email thật và password trong Variables. Gửi đăng ký, mở hộp thư nhận mã. SMTP phải được cấu hình trong BE. 201: đã gửi mã; 409: email đã tồn tại; 503: chưa cấu hình hoặc gửi email thất bại."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) {",
+                  "  pm.test('Email verification required', () => pm.expect(pm.response.json().verificationRequired).to.eql(true));",
+                  "  pm.collectionVariables.set('verificationCode', '');",
+                  "  pm.collectionVariables.set('accessToken', '');",
+                  "  pm.execution.setNextRequest(null);",
+                  "}"
+                ]
+              }
+            }
           ],
-          "path": [
-            "api",
-            "auth",
-            "register"
-          ]
+          "response": []
         },
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"name\": \"{{name}}\",\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        },
-        "description": "Điền name, email thật và password trong Variables. Gửi đăng ký, mở hộp thư nhận mã. SMTP phải được cấu hình trong BE. 201: đã gửi mã; 409: email đã tồn tại; 503: chưa cấu hình hoặc gửi email thất bại."
-      },
-      "event": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
-              "if (pm.response.code === 201) {",
-              "  pm.test('Email verification required', () => pm.expect(pm.response.json().verificationRequired).to.eql(true));",
-              "  pm.collectionVariables.set('verificationCode', '');",
-              "  pm.collectionVariables.set('accessToken', '');",
-              "  pm.execution.setNextRequest(null);",
-              "}"
-            ]
-          }
-        }
-      ],
-      "response": []
-    },
-    {
-      "name": "03 - Verify Email",
-      "request": {
-        "method": "POST",
-        "auth": {
-          "type": "noauth"
-        },
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/api/auth/verify-email",
-          "host": [
-            "{{baseUrl}}"
+          "name": "03 - Verify Email",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "noauth"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/verify-email",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "verify-email"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"code\": \"{{verificationCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Nhập mã 6 số từ email vào biến verificationCode rồi Send. Mã có hiệu lực 10 phút, tối đa 5 lần nhập và chỉ dùng một lần. 200: xác minh thành công; 400: mã sai, hết hạn hoặc hết lượt."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) pm.collectionVariables.set('verificationCode', '');"
+                ]
+              }
+            }
           ],
-          "path": [
-            "api",
-            "auth",
-            "verify-email"
-          ]
+          "response": []
         },
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"email\": \"{{email}}\",\n  \"code\": \"{{verificationCode}}\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        },
-        "description": "Nhập mã 6 số từ email vào biến verificationCode rồi Send. Mã có hiệu lực 10 phút, tối đa 5 lần nhập và chỉ dùng một lần. 200: xác minh thành công; 400: mã sai, hết hạn hoặc hết lượt."
-      },
-      "event": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-              "if (pm.response.code === 200) pm.collectionVariables.set('verificationCode', '');"
-            ]
-          }
-        }
-      ],
-      "response": []
-    },
-    {
-      "name": "04 - Login",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "auth": {
-          "type": "noauth"
-        },
-        "url": {
-          "raw": "{{baseUrl}}/api/auth/login",
-          "host": [
-            "{{baseUrl}}"
+          "name": "11 - Resend Verification Code (optional)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "noauth"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/resend-verification",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "resend-verification"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Dùng khi chưa nhận được mã hoặc mã hết hạn. Chờ tối thiểu 60 giây giữa các lần gửi; mã mới thay thế mã cũ. Nhập mã mới vào verificationCode rồi chạy Verify Email. HTTP 200 là thông báo chung, không bảo đảm email được gửi nếu tài khoản không cần xác minh hoặc còn thời gian chờ."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
           ],
-          "path": [
-            "api",
-            "auth",
-            "login"
-          ]
+          "response": []
         },
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\",\n  \"rememberMe\": {{rememberMe}}\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        },
-        "description": "Login after email verification. rememberMe=true: default 30 days; false: default 24 hours. Saves accessToken, userId, expiresAt and expiresIn. 403: verify email; 401: incorrect credentials. No refresh token; expired sessions require login again."
-      },
-      "event": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-              "['accessToken', 'expiresAt', 'expiresIn', 'userId', 'avatarUrl'].forEach(key => pm.collectionVariables.set(key, ''));",
-              "if (pm.response.code === 200) {",
-              "  const data = pm.response.json();",
-              "  pm.test('Session returned', () => { pm.expect(data.accessToken).to.be.a('string').and.not.empty; pm.expect(data.expiresIn).to.be.above(0); pm.expect(Number.isFinite(Date.parse(data.expiresAt))).to.eql(true); });",
-              "  pm.collectionVariables.set('accessToken', data.accessToken);",
-              "  pm.collectionVariables.set('expiresAt', data.expiresAt);",
-              "  pm.collectionVariables.set('expiresIn', String(data.expiresIn));",
-              "  pm.collectionVariables.set('userId', data.user.id);",
-              "}"
-            ]
-          }
-        }
-      ],
-      "response": []
-    },
-    {
-      "name": "05 - Me",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "auth": {
-          "type": "bearer",
-          "bearer": [
+          "name": "04 - Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\",\n  \"rememberMe\": {{rememberMe}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Login after email verification. rememberMe=true: default 30 days; false: default 24 hours. Saves accessToken, userId, expiresAt and expiresIn. 403: verify email; 401: incorrect credentials. No refresh token; expired sessions require login again."
+          },
+          "event": [
             {
-              "key": "token",
-              "value": "{{accessToken}}",
-              "type": "string"
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "['accessToken', 'expiresAt', 'expiresIn', 'userId', 'avatarUrl'].forEach(key => pm.collectionVariables.set(key, ''));",
+                  "if (pm.response.code === 200) {",
+                  "  const data = pm.response.json();",
+                  "  pm.test('Session returned', () => { pm.expect(data.accessToken).to.be.a('string').and.not.empty; pm.expect(data.expiresIn).to.be.above(0); pm.expect(Number.isFinite(Date.parse(data.expiresAt))).to.eql(true); });",
+                  "  pm.collectionVariables.set('accessToken', data.accessToken);",
+                  "  pm.collectionVariables.set('expiresAt', data.expiresAt);",
+                  "  pm.collectionVariables.set('expiresIn', String(data.expiresIn));",
+                  "  pm.collectionVariables.set('userId', data.user.id);",
+                  "}"
+                ]
+              }
             }
-          ]
-        },
-        "url": {
-          "raw": "{{baseUrl}}/api/auth/me",
-          "host": [
-            "{{baseUrl}}"
           ],
-          "path": [
-            "api",
-            "auth",
-            "me"
-          ]
+          "response": []
         },
-        "description": "Restore/check the saved session. Returns user, expiresAt and remaining expiresIn. 401 AUTH_REQUIRED or SESSION_INVALID_OR_EXPIRED clears saved session variables; network/5xx errors do not. Calling Me does not extend the session."
-      },
-      "event": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 200 for a valid session', () => pm.response.to.have.status(200));",
-              "if (pm.response.code === 200) { const data = pm.response.json(); pm.test('Expiry metadata', () => { pm.expect(data.expiresIn).to.be.at.least(0); pm.expect(Number.isFinite(Date.parse(data.expiresAt))).to.eql(true); }); pm.collectionVariables.set('expiresAt', data.expiresAt); pm.collectionVariables.set('expiresIn', String(data.expiresIn)); pm.collectionVariables.set('userId', data.user.id); }",
-              "if (pm.response.code === 401) ['accessToken', 'expiresAt', 'expiresIn', 'userId', 'avatarUrl'].forEach(key => pm.collectionVariables.set(key, ''));"
-            ]
-          }
-        }
-      ],
-      "response": []
-    },
-    {
-      "name": "06 - Get Profile",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "auth": {
-          "type": "bearer",
-          "bearer": [
+          "name": "12 - Google Login (optional)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/google",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "google"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idToken\": \"{{googleIdToken}}\",\n  \"rememberMe\": {{rememberMe}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Điền googleIdToken thật được cấp cho GOOGLE_CLIENT_ID của BE. Tự lưu token GoMate sau khi thành công. Không cần mã email riêng."
+          },
+          "event": [
             {
-              "key": "token",
-              "value": "{{accessToken}}",
-              "type": "string"
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "['accessToken', 'expiresAt', 'expiresIn', 'userId', 'avatarUrl'].forEach(key => pm.collectionVariables.set(key, ''));",
+                  "if (pm.response.code === 200) {",
+                  "  const data = pm.response.json();",
+                  "  pm.test('Session returned', () => { pm.expect(data.accessToken).to.be.a('string').and.not.empty; pm.expect(data.expiresIn).to.be.above(0); pm.expect(Number.isFinite(Date.parse(data.expiresAt))).to.eql(true); });",
+                  "  pm.collectionVariables.set('accessToken', data.accessToken);",
+                  "  pm.collectionVariables.set('expiresAt', data.expiresAt);",
+                  "  pm.collectionVariables.set('expiresIn', String(data.expiresIn));",
+                  "  pm.collectionVariables.set('userId', data.user.id);",
+                  "}"
+                ]
+              }
             }
-          ]
-        },
-        "url": "{{baseUrl}}/api/profile/me",
-        "description": "Read your profile before editing. Saves avatarPath and userId."
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-              "if (pm.response.code === 200) { const p = pm.response.json().profile; pm.test('Profile returned', () => { pm.expect(p.id).to.be.a('string'); pm.expect(p).not.to.have.property('password_hash'); }); pm.collectionVariables.set('userId', p.id); pm.collectionVariables.set('avatarUrl', p.avatarUrl ? (p.avatarUrl.startsWith('https://') ? p.avatarUrl : pm.variables.get('baseUrl') + p.avatarUrl) : ''); }"
-            ]
-          }
-        }
-      ],
-      "response": []
-    },
-    {
-      "name": "07 - Update Profile",
-      "request": {
-        "method": "PATCH",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "auth": {
-          "type": "bearer",
-          "bearer": [
-            {
-              "key": "token",
-              "value": "{{accessToken}}",
-              "type": "string"
-            }
-          ]
-        },
-        "url": "{{baseUrl}}/api/profile/me",
-        "description": "Updates the signed-in account only. Edit body fields or collection variables. Unknown fields are rejected; username collisions return 409. Omit fields to keep existing values. Empty username removes it.",
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"name\": \"{{profileName}}\",\n  \"username\": \"{{username}}\",\n  \"bio\": \"{{bio}}\",\n  \"location\": \"{{location}}\",\n  \"interests\": [\n    \"Coffee\",\n    \"Travel\"\n  ]\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        }
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-              "if (pm.response.code === 200) { const p = pm.response.json().profile; pm.test('Profile returned', () => { pm.expect(p.id).to.be.a('string'); pm.expect(p).not.to.have.property('password_hash'); }); pm.collectionVariables.set('userId', p.id); pm.collectionVariables.set('avatarUrl', p.avatarUrl ? (p.avatarUrl.startsWith('https://') ? p.avatarUrl : pm.variables.get('baseUrl') + p.avatarUrl) : ''); }"
-            ]
-          }
-        }
-      ],
-      "response": []
-    },
-    {
-      "name": "08 - Upload Avatar",
-      "request": {
-        "method": "PUT",
-        "header": [],
-        "auth": {
-          "type": "bearer",
-          "bearer": [
-            {
-              "key": "token",
-              "value": "{{accessToken}}",
-              "type": "string"
-            }
-          ]
-        },
-        "url": "{{baseUrl}}/api/profile/me/avatar",
-        "description": "Body > form-data > avatar (File) > Select Files. Select a local image and Send. Backend uploads to Cloudinary and returns the HTTPS avatar URL. Do not manually set Content-Type; Postman adds the multipart boundary. Cloudinary credentials belong only in backend .env.",
-        "body": {
-          "mode": "formdata",
-          "formdata": [
-            {
-              "key": "avatar",
-              "type": "file",
-              "src": [],
-              "description": "Select a local JPEG, PNG or WebP image (max 2 MiB)."
-            }
-          ]
-        }
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-              "if (pm.response.code === 200) { const p = pm.response.json().profile; pm.test('Profile returned', () => { pm.expect(p.id).to.be.a('string'); pm.expect(p).not.to.have.property('password_hash'); }); pm.collectionVariables.set('userId', p.id); pm.collectionVariables.set('avatarUrl', p.avatarUrl ? (p.avatarUrl.startsWith('https://') ? p.avatarUrl : pm.variables.get('baseUrl') + p.avatarUrl) : ''); }"
-            ]
-          }
-        }
-      ],
-      "response": []
-    },
-    {
-      "name": "09 - View Avatar",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "auth": {
-          "type": "noauth"
-        },
-        "url": "{{avatarUrl}}",
-        "description": "Run after a successful Upload Avatar, or Get Profile if an avatar already exists. Public image: no Bearer token required."
-      },
-      "event": [
-        {
-          "listen": "prerequest",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "if (!pm.variables.get('avatarUrl')) { throw new Error('No avatarUrl. Upload an avatar or run Get Profile first.'); }"
-            ]
-          }
-        },
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-              "pm.test('WebP image', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('image/webp'));"
-            ]
-          }
-        }
-      ],
-      "response": []
-    },
-    {
-      "name": "Search Activities / Match",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "auth": {
-          "type": "bearer",
-          "bearer": [
-            {
-              "key": "token",
-              "value": "{{accessToken}}",
-              "type": "string"
-            }
-          ]
-        },
-        "url": {
-          "raw": "{{baseUrl}}/api/activities?page=1&limit=20",
-          "host": [
-            "{{baseUrl}}"
           ],
-          "path": [
-            "api",
-            "activities"
+          "response": []
+        },
+        {
+          "name": "05 - Me",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "me"
+              ]
+            },
+            "description": "Restore/check the saved session. Returns user, expiresAt and remaining expiresIn. 401 AUTH_REQUIRED or SESSION_INVALID_OR_EXPIRED clears saved session variables; network/5xx errors do not. Calling Me does not extend the session."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 for a valid session', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) { const data = pm.response.json(); pm.test('Expiry metadata', () => { pm.expect(data.expiresIn).to.be.at.least(0); pm.expect(Number.isFinite(Date.parse(data.expiresAt))).to.eql(true); }); pm.collectionVariables.set('expiresAt', data.expiresAt); pm.collectionVariables.set('expiresIn', String(data.expiresIn)); pm.collectionVariables.set('userId', data.user.id); }",
+                  "if (pm.response.code === 401) ['accessToken', 'expiresAt', 'expiresIn', 'userId', 'avatarUrl'].forEach(key => pm.collectionVariables.set(key, ''));"
+                ]
+              }
+            }
           ],
-          "query": [
-            {
-              "key": "q",
-              "value": "Coffee",
-              "disabled": true
-            },
-            {
-              "key": "categories",
-              "value": "Gaming",
-              "disabled": true
-            },
-            {
-              "key": "minCost",
-              "value": "0",
-              "disabled": true
-            },
-            {
-              "key": "maxCost",
-              "value": "100000",
-              "disabled": true
-            },
-            {
-              "key": "days",
-              "value": "1,7",
-              "disabled": true
-            },
-            {
-              "key": "fromHour",
-              "value": "18",
-              "disabled": true
-            },
-            {
-              "key": "toHour",
-              "value": "24",
-              "disabled": true
-            },
-            {
-              "key": "lat",
-              "value": "10.77",
-              "disabled": true
-            },
-            {
-              "key": "lng",
-              "value": "106.7",
-              "disabled": true
-            },
-            {
-              "key": "distanceKm",
-              "value": "10",
-              "disabled": true
-            },
-            {
-              "key": "page",
-              "value": "1"
-            },
-            {
-              "key": "limit",
-              "value": "20"
-            }
-          ]
-        },
-        "description": "Login first. Enable optional Params to search. For distance enable lat, lng and distanceKm together. days uses ISO weekday 1=Monday, 7=Sunday; hours use UTC+7. Returns future published activities with free places, excluding your own. Empty database returns items=[]."
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-              "if(pm.response.code === 200) { const data = pm.response.json(); pm.test('Paginated activities', () => { pm.expect(data.items).to.be.an('array'); pm.expect(data.total).to.be.a('number'); pm.expect(data.hasMore).to.be.a('boolean'); }); }"
-            ]
-          }
-        }
-      ],
-      "response": []
-    },
-    {
-      "name": "Activities - Create",
-      "request": {
-        "method": "POST",
-        "auth": {
-          "type": "bearer",
-          "bearer": [
-            {
-              "key": "token",
-              "value": "{{accessToken}}",
-              "type": "string"
-            }
-          ]
-        },
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": "{{baseUrl}}/api/activities",
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"title\": \"Weekend games\",\n  \"description\": \"Meet and play board games\",\n  \"category\": \"Gaming\",\n  \"location\": \"Ho Chi Minh City\",\n  \"startsAt\": \"{{activityStartsAt}}\",\n  \"endsAt\": \"{{activityEndsAt}}\",\n  \"estimatedCost\": 0,\n  \"maxParticipants\": 6,\n  \"coordinates\": {\n    \"type\": \"Point\",\n    \"coordinates\": [\n      106.7,\n      10.77\n    ]\n  },\n  \"requirements\": [],\n  \"tags\": [\n    \"Games\"\n  ]\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        },
-        "description": "Creates a published activity owned by the signed-in account. Optional coverBase64 uploads a local image to Cloudinary. Dates must be ISO UTC. Blank date variables default to tomorrow. Saves activityId."
-      },
-      "event": [
-        {
-          "listen": "prerequest",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "if (!pm.variables.get('activityStartsAt')) pm.collectionVariables.set('activityStartsAt', new Date(Date.now() + 86400000).toISOString());",
-              "if (!pm.variables.get('activityEndsAt')) pm.collectionVariables.set('activityEndsAt', new Date(Date.parse(pm.variables.get('activityStartsAt')) + 7200000).toISOString());"
-            ]
-          }
+          "response": []
         },
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
-              "if (pm.response.code === 201) pm.collectionVariables.set('activityId', pm.response.json().activity.id);"
-            ]
-          }
-        }
-      ],
-      "response": []
-    },
-    {
-      "name": "Activities - Mine",
-      "request": {
-        "method": "GET",
-        "auth": {
-          "type": "bearer",
-          "bearer": [
+          "name": "10 - Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "Thu hồi phiên hiện tại và xóa accessToken trong collection khi thành công."
+          },
+          "event": [
             {
-              "key": "token",
-              "value": "{{accessToken}}",
-              "type": "string"
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 204', () => pm.response.to.have.status(204));",
+                  "if ([204, 401].includes(pm.response.code)) ['accessToken', 'expiresAt', 'expiresIn', 'userId', 'avatarUrl'].forEach(key => pm.collectionVariables.set(key, ''));"
+                ]
+              }
             }
-          ]
-        },
-        "header": [],
-        "url": "{{baseUrl}}/api/activities/mine?page=1&limit=20"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
-            ]
-          }
-        }
-      ],
-      "response": []
-    },
-    {
-      "name": "Activities - Detail",
-      "request": {
-        "method": "GET",
-        "auth": {
-          "type": "bearer",
-          "bearer": [
-            {
-              "key": "token",
-              "value": "{{accessToken}}",
-              "type": "string"
-            }
-          ]
-        },
-        "header": [],
-        "url": "{{baseUrl}}/api/activities/{{activityId}}"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
-            ]
-          }
-        }
-      ],
-      "response": []
-    },
-    {
-      "name": "Activities - Update",
-      "request": {
-        "method": "PATCH",
-        "auth": {
-          "type": "bearer",
-          "bearer": [
-            {
-              "key": "token",
-              "value": "{{accessToken}}",
-              "type": "string"
-            }
-          ]
-        },
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": "{{baseUrl}}/api/activities/{{activityId}}",
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"title\": \"Updated weekend games\",\n  \"estimatedCost\": 50000\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        },
-        "description": "Owner only; omit unchanged fields. Started activities cannot be edited. Capacity must be at least the current member count."
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
-            ]
-          }
-        }
-      ],
-      "response": []
-    },
-    {
-      "name": "Activities - Delete (manual)",
-      "request": {
-        "method": "DELETE",
-        "auth": {
-          "type": "bearer",
-          "bearer": [
-            {
-              "key": "token",
-              "value": "{{accessToken}}",
-              "type": "string"
-            }
-          ]
-        },
-        "header": [],
-        "url": "{{baseUrl}}/api/activities/{{activityId}}",
-        "description": "Owner only. Removes this activity from discovery, detail and owner list by marking it deleted. Send only when you intend to delete activityId."
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 204', () => pm.response.to.have.status(204));"
-            ]
-          }
-        }
-      ],
-      "response": []
-    },
-    {
-      "name": "10 - Logout",
-      "request": {
-        "method": "POST",
-        "header": [],
-        "auth": {
-          "type": "bearer",
-          "bearer": [
-            {
-              "key": "token",
-              "value": "{{accessToken}}",
-              "type": "string"
-            }
-          ]
-        },
-        "url": {
-          "raw": "{{baseUrl}}/api/auth/logout",
-          "host": [
-            "{{baseUrl}}"
           ],
-          "path": [
-            "api",
-            "auth",
-            "logout"
-          ]
-        },
-        "description": "Thu hồi phiên hiện tại và xóa accessToken trong collection khi thành công."
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 204', () => pm.response.to.have.status(204));",
-              "if ([204, 401].includes(pm.response.code)) ['accessToken', 'expiresAt', 'expiresIn', 'userId', 'avatarUrl'].forEach(key => pm.collectionVariables.set(key, ''));"
-            ]
-          }
+          "response": []
         }
-      ],
-      "response": []
+      ]
     },
     {
-      "name": "11 - Resend Verification Code (optional)",
-      "request": {
-        "method": "POST",
-        "auth": {
-          "type": "noauth"
-        },
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/api/auth/resend-verification",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "auth",
-            "resend-verification"
-          ]
-        },
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"email\": \"{{email}}\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        },
-        "description": "Dùng khi chưa nhận được mã hoặc mã hết hạn. Chờ tối thiểu 60 giây giữa các lần gửi; mã mới thay thế mã cũ. Nhập mã mới vào verificationCode rồi chạy Verify Email. HTTP 200 là thông báo chung, không bảo đảm email được gửi nếu tài khoản không cần xác minh hoặc còn thời gian chờ."
-      },
-      "event": [
+      "name": "03 - Profile",
+      "description": "Read and update the signed-in profile and avatar. Uses accessToken.",
+      "item": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
-            ]
-          }
+          "name": "06 - Get Profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/api/profile/me",
+            "description": "Read your profile before editing. Saves avatarPath and userId."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) { const p = pm.response.json().profile; pm.test('Profile returned', () => { pm.expect(p.id).to.be.a('string'); pm.expect(p).not.to.have.property('password_hash'); }); pm.collectionVariables.set('userId', p.id); pm.collectionVariables.set('avatarUrl', p.avatarUrl ? (p.avatarUrl.startsWith('https://') ? p.avatarUrl : pm.variables.get('baseUrl') + p.avatarUrl) : ''); }"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "07 - Update Profile",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/api/profile/me",
+            "description": "Updates the signed-in account only. Edit body fields or collection variables. Unknown fields are rejected; username collisions return 409. Omit fields to keep existing values. Empty username removes it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{profileName}}\",\n  \"username\": \"{{username}}\",\n  \"bio\": \"{{bio}}\",\n  \"location\": \"{{location}}\",\n  \"interests\": [\n    \"Coffee\",\n    \"Travel\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) { const p = pm.response.json().profile; pm.test('Profile returned', () => { pm.expect(p.id).to.be.a('string'); pm.expect(p).not.to.have.property('password_hash'); }); pm.collectionVariables.set('userId', p.id); pm.collectionVariables.set('avatarUrl', p.avatarUrl ? (p.avatarUrl.startsWith('https://') ? p.avatarUrl : pm.variables.get('baseUrl') + p.avatarUrl) : ''); }"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "08 - Upload Avatar",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/api/profile/me/avatar",
+            "description": "Body > form-data > avatar (File) > Select Files. Select a local image and Send. Backend uploads to Cloudinary and returns the HTTPS avatar URL. Do not manually set Content-Type; Postman adds the multipart boundary. Cloudinary credentials belong only in backend .env.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "avatar",
+                  "type": "file",
+                  "src": [],
+                  "description": "Select a local JPEG, PNG or WebP image (max 2 MiB)."
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) { const p = pm.response.json().profile; pm.test('Profile returned', () => { pm.expect(p.id).to.be.a('string'); pm.expect(p).not.to.have.property('password_hash'); }); pm.collectionVariables.set('userId', p.id); pm.collectionVariables.set('avatarUrl', p.avatarUrl ? (p.avatarUrl.startsWith('https://') ? p.avatarUrl : pm.variables.get('baseUrl') + p.avatarUrl) : ''); }"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "09 - View Avatar",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": "{{avatarUrl}}",
+            "description": "Run after a successful Upload Avatar, or Get Profile if an avatar already exists. Public image: no Bearer token required."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.variables.get('avatarUrl')) { throw new Error('No avatarUrl. Upload an avatar or run Get Profile first.'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('WebP image', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('image/webp'));"
+                ]
+              }
+            }
+          ],
+          "response": []
         }
-      ],
-      "response": []
+      ]
     },
     {
-      "name": "12 - Google Login (optional)",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "auth": {
-          "type": "noauth"
-        },
-        "url": {
-          "raw": "{{baseUrl}}/api/auth/google",
-          "host": [
-            "{{baseUrl}}"
+      "name": "04 - Activities",
+      "description": "Search and manage activities. Create saves activityId; Delete is manual. Uses accessToken.",
+      "item": [
+        {
+          "name": "Search Activities / Match",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/activities?page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "activities"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "Coffee",
+                  "disabled": true
+                },
+                {
+                  "key": "categories",
+                  "value": "Gaming",
+                  "disabled": true
+                },
+                {
+                  "key": "minCost",
+                  "value": "0",
+                  "disabled": true
+                },
+                {
+                  "key": "maxCost",
+                  "value": "100000",
+                  "disabled": true
+                },
+                {
+                  "key": "days",
+                  "value": "1,7",
+                  "disabled": true
+                },
+                {
+                  "key": "fromHour",
+                  "value": "18",
+                  "disabled": true
+                },
+                {
+                  "key": "toHour",
+                  "value": "24",
+                  "disabled": true
+                },
+                {
+                  "key": "lat",
+                  "value": "10.77",
+                  "disabled": true
+                },
+                {
+                  "key": "lng",
+                  "value": "106.7",
+                  "disabled": true
+                },
+                {
+                  "key": "distanceKm",
+                  "value": "10",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Login first. Enable optional Params to search. For distance enable lat, lng and distanceKm together. days uses ISO weekday 1=Monday, 7=Sunday; hours use UTC+7. Returns future published activities with free places, excluding your own. Empty database returns items=[]."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "if(pm.response.code === 200) { const data = pm.response.json(); pm.test('Paginated activities', () => { pm.expect(data.items).to.be.an('array'); pm.expect(data.total).to.be.a('number'); pm.expect(data.hasMore).to.be.a('boolean'); }); }"
+                ]
+              }
+            }
           ],
-          "path": [
-            "api",
-            "auth",
-            "google"
+          "response": []
+        },
+        {
+          "name": "Activities - Create",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/activities",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Weekend games\",\n  \"description\": \"Meet and play board games\",\n  \"category\": \"Gaming\",\n  \"location\": \"Ho Chi Minh City\",\n  \"startsAt\": \"{{activityStartsAt}}\",\n  \"endsAt\": \"{{activityEndsAt}}\",\n  \"estimatedCost\": 0,\n  \"maxParticipants\": 6,\n  \"coordinates\": {\n    \"type\": \"Point\",\n    \"coordinates\": [\n      106.7,\n      10.77\n    ]\n  },\n  \"requirements\": [],\n  \"tags\": [\n    \"Games\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Creates a published activity owned by the signed-in account. Optional coverBase64 uploads a local image to Cloudinary. Dates must be ISO UTC. Blank date variables default to tomorrow. Saves activityId."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.variables.get('activityStartsAt')) pm.collectionVariables.set('activityStartsAt', new Date(Date.now() + 86400000).toISOString());",
+                  "if (!pm.variables.get('activityEndsAt')) pm.collectionVariables.set('activityEndsAt', new Date(Date.parse(pm.variables.get('activityStartsAt')) + 7200000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) pm.collectionVariables.set('activityId', pm.response.json().activity.id);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Activities - Mine",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/activities/mine?page=1&limit=20"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Activities - Detail",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/activities/{{activityId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Activities - Update",
+          "request": {
+            "method": "PATCH",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/activities/{{activityId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Updated weekend games\",\n  \"estimatedCost\": 50000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Owner only; omit unchanged fields. Started activities cannot be edited. Capacity must be at least the current member count."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Activities - Delete (manual)",
+          "request": {
+            "method": "DELETE",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/activities/{{activityId}}",
+            "description": "Owner only. Removes this activity from discovery, detail and owner list by marking it deleted. Send only when you intend to delete activityId."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "05 - Join Requests",
+      "description": "Send individually: Login Host -> Create Activity -> Login Member -> Submit -> List. Choose Cancel, Approve OR Reject. Submit again after cancel/reject saves a new ID. Approved requests cannot be cancelled.",
+      "item": [
+        {
+          "name": "01 - Setup (two accounts)",
+          "description": "Run in order to prepare separate host/member tokens and an activity.",
+          "item": [
+            {
+              "name": "Join - Login Host",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "auth": {
+                  "type": "noauth"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/auth/login",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "auth",
+                    "login"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{hostEmail}}\",\n  \"password\": \"{{hostPassword}}\",\n  \"rememberMe\": true\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "description": "Login a verified account. Saves only the role-specific token, not the shared accessToken. Host and member must be different accounts."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.collectionVariables.set('hostAccessToken', '');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                      "if (pm.response.code === 200) { const data = pm.response.json(); pm.test('Token returned', () => pm.expect(data.accessToken).to.be.a('string').and.not.empty); pm.collectionVariables.set('hostAccessToken', data.accessToken); }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "Join - Create Activity (Host)",
+              "request": {
+                "method": "POST",
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{hostAccessToken}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/api/activities",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"title\": \"Weekend games\",\n  \"description\": \"Meet and play board games\",\n  \"category\": \"Gaming\",\n  \"location\": \"Ho Chi Minh City\",\n  \"startsAt\": \"{{activityStartsAt}}\",\n  \"endsAt\": \"{{activityEndsAt}}\",\n  \"estimatedCost\": 0,\n  \"maxParticipants\": 6,\n  \"coordinates\": {\n    \"type\": \"Point\",\n    \"coordinates\": [\n      106.7,\n      10.77\n    ]\n  },\n  \"requirements\": [],\n  \"tags\": [\n    \"Games\"\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "description": "Creates a published activity owned by the signed-in account. Optional coverBase64 uploads a local image to Cloudinary. Dates must be ISO UTC. Blank date variables default to tomorrow. Saves activityId."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (!pm.variables.get('activityStartsAt')) pm.collectionVariables.set('activityStartsAt', new Date(Date.now() + 86400000).toISOString());",
+                      "if (!pm.variables.get('activityEndsAt')) pm.collectionVariables.set('activityEndsAt', new Date(Date.parse(pm.variables.get('activityStartsAt')) + 7200000).toISOString());"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                      "if (pm.response.code === 201) pm.collectionVariables.set('activityId', pm.response.json().activity.id);",
+                      "if (pm.response.code === 201) pm.collectionVariables.set('joinRequestId', '');"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "Join - Login Member",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "auth": {
+                  "type": "noauth"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/api/auth/login",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "auth",
+                    "login"
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{memberEmail}}\",\n  \"password\": \"{{memberPassword}}\",\n  \"rememberMe\": true\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "description": "Login a verified account. Saves only the role-specific token, not the shared accessToken. Host and member must be different accounts."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.collectionVariables.set('memberAccessToken', '');"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                      "if (pm.response.code === 200) { const data = pm.response.json(); pm.test('Token returned', () => pm.expect(data.accessToken).to.be.a('string').and.not.empty); pm.collectionVariables.set('memberAccessToken', data.accessToken); }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
           ]
         },
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"idToken\": \"{{googleIdToken}}\",\n  \"rememberMe\": {{rememberMe}}\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        },
-        "description": "Điền googleIdToken thật được cấp cho GOOGLE_CLIENT_ID của BE. Tự lưu token GoMate sau khi thành công. Không cần mã email riêng."
-      },
-      "event": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-              "['accessToken', 'expiresAt', 'expiresIn', 'userId', 'avatarUrl'].forEach(key => pm.collectionVariables.set(key, ''));",
-              "if (pm.response.code === 200) {",
-              "  const data = pm.response.json();",
-              "  pm.test('Session returned', () => { pm.expect(data.accessToken).to.be.a('string').and.not.empty; pm.expect(data.expiresIn).to.be.above(0); pm.expect(Number.isFinite(Date.parse(data.expiresAt))).to.eql(true); });",
-              "  pm.collectionVariables.set('accessToken', data.accessToken);",
-              "  pm.collectionVariables.set('expiresAt', data.expiresAt);",
-              "  pm.collectionVariables.set('expiresIn', String(data.expiresIn));",
-              "  pm.collectionVariables.set('userId', data.user.id);",
-              "}"
-            ]
-          }
+          "name": "02 - Member",
+          "description": "Submit a request or cancel a pending request. Uses memberAccessToken. Submit saves joinRequestId.",
+          "item": [
+            {
+              "name": "Join - Submit (Member)",
+              "request": {
+                "method": "POST",
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{memberAccessToken}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/api/activities/{{activityId}}/join-requests",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "description": "Send individually. Requires a future published activity. 401: token; 403: permission; 404: missing ID; 409: invalid state or capacity. See postman/README.md."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+                      "if (pm.response.code === 201) { const data = pm.response.json(); pm.test('Pending request', () => pm.expect(data.request.status).to.eql('pending')); pm.collectionVariables.set('joinRequestId', data.request.id); }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "Join - Cancel (Member, manual)",
+              "request": {
+                "method": "DELETE",
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{memberAccessToken}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "header": [],
+                "url": "{{baseUrl}}/api/activities/{{activityId}}/join-requests/me",
+                "description": "Send individually. Requires a future published activity. 401: token; 403: permission; 404: missing ID; 409: invalid state or capacity. See postman/README.md."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP 204', () => pm.response.to.have.status(204));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "03 - Host",
+          "description": "List requests and choose Approve OR Reject. Uses hostAccessToken. Do not run both decisions consecutively.",
+          "item": [
+            {
+              "name": "Join - List (Host)",
+              "request": {
+                "method": "GET",
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{hostAccessToken}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "header": [],
+                "url": "{{baseUrl}}/api/activities/{{activityId}}/join-requests?status=pending&page=1&limit=20",
+                "description": "Send individually. Requires a future published activity. 401: token; 403: permission; 404: missing ID; 409: invalid state or capacity. See postman/README.md. Remove status to list all, or use approved/rejected/cancelled. Does not overwrite joinRequestId."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                      "if (pm.response.code === 200) pm.test('Paginated requests', () => { const data = pm.response.json(); pm.expect(data.items).to.be.an('array'); pm.expect(data.total).to.be.a('number'); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "Join - Approve (Host, manual)",
+              "request": {
+                "method": "PATCH",
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{hostAccessToken}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/api/activities/{{activityId}}/join-requests/{{joinRequestId}}",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"status\": \"approved\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "description": "Send individually. Requires a future published activity. 401: token; 403: permission; 404: missing ID; 409: invalid state or capacity. See postman/README.md."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                      "if (pm.response.code === 200) pm.test('Decision saved', () => pm.expect(pm.response.json().request.status).to.eql('approved'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "Join - Reject (Host, manual)",
+              "request": {
+                "method": "PATCH",
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{hostAccessToken}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/api/activities/{{activityId}}/join-requests/{{joinRequestId}}",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"status\": \"rejected\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "description": "Send individually. Requires a future published activity. 401: token; 403: permission; 404: missing ID; 409: invalid state or capacity. See postman/README.md."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                      "if (pm.response.code === 200) pm.test('Decision saved', () => pm.expect(pm.response.json().request.status).to.eql('rejected'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
         }
-      ],
-      "response": []
+      ]
     }
   ]
 }

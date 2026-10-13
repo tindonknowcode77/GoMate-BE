@@ -1,8 +1,23 @@
 # GoMate Postman
 
 Import lại `GoMate-Auth.postman_collection.json` trong Postman. Collection mới có
-tên **GoMate - Auth & Profile**, gồm 18 request. Đây là file trong repository,
+tên **GoMate - Auth, Profile & Activities**, gồm 26 request. Đây là file trong repository,
 chưa được đồng bộ trực tiếp lên Postman cloud/workspace.
+
+## Cấu trúc collection
+
+- **01 - System**: kiểm tra Health.
+- **02 - Authentication**: đăng ký, xác minh/gửi lại mã, đăng nhập email/Google,
+  xem phiên và đăng xuất.
+- **03 - Profile**: xem/sửa hồ sơ, upload/xem avatar.
+- **04 - Activities**: tìm kiếm, tạo, danh sách của tôi, chi tiết, sửa và xóa.
+- **05 - Join Requests**:
+  - **01 - Setup (two accounts)**: đăng nhập host, tạo hoạt động, đăng nhập member.
+  - **02 - Member**: gửi và hủy yêu cầu.
+  - **03 - Host**: xem danh sách, duyệt hoặc từ chối.
+
+Import lại file để nhận cấu trúc mới. Tên request, biến, body và script được giữ
+nguyên; chỉ thay đổi cách nhóm thư mục. Vẫn dùng Send từng request theo luồng dưới đây.
 
 ## Dùng thử
 
@@ -37,7 +52,31 @@ xem lại nội dung hồ sơ trước các request cập nhật. Dùng **Send**
 Tránh khai báo trùng các biến token/profile trong Environment vì chúng có thể
 ghi đè biến collection mà các script tự lưu.
 
-## Chọn ảnh trên máy và lưu Cloudinary
+## Test yêu cầu tham gia
+
+Mở folder **05 - Join Requests**, dùng Send từng request trong các mục Setup,
+Member và Host:
+
+1. Chuẩn bị hai tài khoản đã xác minh email khác nhau. Điền collection variables
+   `hostEmail`, `hostPassword`, `memberEmail`, `memberPassword` và `baseUrl`.
+2. **Login Host → Create Activity (Host)**: tự lưu `hostAccessToken`, `activityId`.
+   Nếu ngày cũ đã hết hạn, xóa `activityStartsAt`/`activityEndsAt` để tự tạo ngày mai.
+3. **Login Member → Submit (Member)**: tự lưu `memberAccessToken`, `joinRequestId`.
+4. **List (Host)**: xem danh sách pending. Bỏ query `status` để xem mọi trạng thái.
+5. Chọn một nhánh: **Cancel (Member)**, **Approve (Host)** hoặc **Reject (Host)**.
+   Sau Cancel/Reject, bấm Submit lại để thử nhánh khác; ID mới được tự lưu.
+   Sau Approve không thể hủy bằng API này; tạo hoạt động khác để thử lại từ đầu.
+
+Hai token riêng không thay đổi `accessToken` chung. Không khai báo trùng các biến
+này trong Environment. List không tự chọn yêu cầu: muốn xử lý người khác thì copy
+ID từ danh sách vào `joinRequestId`. Không chạy toàn bộ folder bằng Runner vì các
+nhánh Cancel/Approve/Reject loại trừ nhau. Các test hiện mong đợi thành công;
+thử gửi trùng hoặc duyệt lại sẽ trả 409 và test HTTP báo đỏ như dự kiến.
+
+Khi chia sẻ collection đã dùng, xóa cả `hostPassword`, `memberPassword`,
+`hostAccessToken` và `memberAccessToken`.
+
+## Upload ảnh
 
 Ảnh JPEG/PNG/WebP tĩnh, tối đa 2 MiB và 20 megapixels. Request Upload Avatar đã
 cấu hình form-data với field `avatar`; chọn File từ máy, không cần đổi base64.

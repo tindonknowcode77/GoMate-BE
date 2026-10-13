@@ -71,6 +71,40 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     return coverStorage.upload(image, owner)
   }
   const writes = rateLimit({ windowMs: 15 * 60 * 1000, limit: 40, standardHeaders: 'draft-8', legacyHeaders: false })
+  router.post('/:id/join-requests', writes, express.json({ limit: '16kb' }), async (req, res) => {
+    if (req.body !== undefined && (!req.body || Array.isArray(req.body) || typeof req.body !== 'object' || Object.keys(req.body).length)) throw new HttpError(400, 'Join request body must be empty')
+    const activity = await find(req.params.id)
+    if (activity.hostId === req.auth.user.id) throw new HttpError(403, 'Host cannot request to join their own activity')
+    const request = await repository.submitJoinRequest(activity.id, req.auth.user)
+    if (!request) throw new HttpError(409, 'Activity is unavailable, full, request limit reached, or you already have a pending/approved request')
+    res.status(201).json({ request })
+  })
+  router.delete('/:id/join-requests/me', writes, async (req, res) => {
+    const activity = await find(req.params.id)
+    const existing = activity.joinRequests?.find(item => item.userId === req.auth.user.id)
+    if (!existing) throw new HttpError(404, 'Join request not found')
+    const request = await repository.changeJoinRequest(activity.id, { userId: req.auth.user.id, status: 'cancelled' })
+    if (!request) throw new HttpError(409, 'Only pending requests for upcoming published activities can be cancelled')
+    res.status(204).end()
+  })
+  router.get('/:id/join-requests', async (req, res) => {
+    const activity = await find(req.params.id, req.auth.user.id)
+    const { status, ...pagination } = req.query
+    if (status !== undefined && !['pending', 'approved', 'rejected', 'cancelled'].includes(status)) throw new HttpError(400, 'Invalid request status')
+    if (Object.keys(pagination).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Only status, page and limit are supported')
+    const { page, limit } = searchOptions(pagination)
+    const items = (activity.joinRequests ?? []).filter(item => !status || item.status === status)
+      .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id))
+    res.json({ items: items.slice((page - 1) * limit, page * limit), total: items.length, page, limit, hasMore: page * limit < items.length })
+  })
+  router.patch('/:id/join-requests/:requestId', writes, express.json({ limit: '16kb' }), async (req, res) => {
+    if (!req.body || Array.isArray(req.body) || Object.keys(req.body).length !== 1 || !['approved', 'rejected'].includes(req.body.status)) throw new HttpError(400, 'Provide only status: approved or rejected')
+    const activity = await find(req.params.id, req.auth.user.id)
+    if (!activity.joinRequests?.some(item => item.id === req.params.requestId)) throw new HttpError(404, 'Join request not found')
+    const request = await repository.changeJoinRequest(activity.id, { hostId: req.auth.user.id, requestId: req.params.requestId, status: req.body.status })
+    if (!request) throw new HttpError(409, 'Request is no longer pending, activity unavailable, or capacity reached')
+    res.json({ request })
+  })
   router.post('/', writes, express.json({ limit: '3mb' }), async (req, res) => {
     const fields = activityFields(req.body)
     const image = await cover(req.body.coverBase64, req.auth.user.id)
