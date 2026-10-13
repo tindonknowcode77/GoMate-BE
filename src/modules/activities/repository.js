@@ -13,6 +13,12 @@ export function createActivityRepository(db) {
       return row
     },
     async get(id) { return activities.findOne({ id, status: { $ne: 'deleted' } }) },
+    async lifecycle(previous, hostId, fields, event) {
+      return activities.findOneAndUpdate({ id: previous.id, hostId,
+        status: previous.status, version: previous.version ?? { $exists: false },
+      }, { $set: { ...fields, updatedAt: event.createdAt },
+        $push: { updates: event }, $inc: { version: 1 } }, { returnDocument: 'after' })
+    },
     async participating(userId, { page, limit, status }, requests = false) {
       const member = { userId, ...(!requests ? { status: 'approved' } : status ? { status } : {}) }
       const [result] = await activities.aggregate([
@@ -80,7 +86,7 @@ export function createActivityRepository(db) {
     },
     async update(previous, fields) {
       return activities.findOneAndUpdate({ id: previous.id, hostId: previous.hostId,
-        version: previous.version ?? { $exists: false }, status: { $ne: 'deleted' },
+        version: previous.version ?? { $exists: false }, status: 'published',
         memberCount: { $lte: fields.maxParticipants ?? previous.maxParticipants },
       }, { $set: { ...fields, updatedAt: new Date() }, $inc: { version: 1 } }, { returnDocument: 'after' })
     },

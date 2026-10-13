@@ -1,7 +1,7 @@
 # GoMate Postman
 
 Import lại `GoMate-Auth.postman_collection.json` trong Postman. Collection mới có
-tên **GoMate - Auth, Profile & Activities**, gồm 43 request. Đây là file trong repository,
+tên **GoMate - Auth, Profile & Activities**, gồm 49 request. Đây là file trong repository,
 chưa được đồng bộ trực tiếp lên Postman cloud/workspace.
 
 ## Cấu trúc collection
@@ -24,6 +24,10 @@ Import lại file để nhận cấu trúc mới. Tên request, biến, body và
 nguyên; chỉ thay đổi cách nhóm thư mục. Vẫn dùng Send từng request theo luồng dưới đây.
 
 ## Dùng thử
+
+Folder **09 - Activity Lifecycle**: Start → Attendance → Mark Attendance → Add Note
+→ Updates → Complete. Cần hostAccessToken, activityId và memberUserId từ Setup /
+duyệt tham gia trước. Xem [vòng đời và điểm danh](../docs/activity-lifecycle.md).
 
 Quên/đổi mật khẩu: **02 - Authentication → Password Recovery & Change**.
 Forgot gửi mã về email, điền `resetCode` và `newPassword` rồi Reset. Change cần

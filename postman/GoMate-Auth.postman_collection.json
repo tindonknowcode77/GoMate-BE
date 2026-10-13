@@ -2098,6 +2098,226 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "09 - Activity Lifecycle",
+      "description": "Start -> Attendance -> Mark -> Add Note -> Updates -> Complete. Send individually.",
+      "item": [
+        {
+          "name": "Lifecycle - Start (Host)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{hostAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/activities/{{activityId}}/start",
+            "description": "Run Join Requests Setup -> Submit -> Approve first. Start locks joining/editing. Complete locks attendance/notes. Only host writes; approved members may read. See docs/activity-lifecycle.md."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Lifecycle - Attendance",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{hostAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/activities/{{activityId}}/attendance?page=1&limit=20",
+            "description": "Run Join Requests Setup -> Submit -> Approve first. Start locks joining/editing. Complete locks attendance/notes. Only host writes; approved members may read. See docs/activity-lifecycle.md."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Lifecycle - Mark Attendance (Host)",
+          "request": {
+            "method": "PATCH",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{hostAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/activities/{{activityId}}/attendance/{{memberUserId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"present\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Run Join Requests Setup -> Submit -> Approve first. Start locks joining/editing. Complete locks attendance/notes. Only host writes; approved members may read. See docs/activity-lifecycle.md."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Lifecycle - Add Note (Host)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{hostAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/activities/{{activityId}}/updates",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Meet at the entrance\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Run Join Requests Setup -> Submit -> Approve first. Start locks joining/editing. Complete locks attendance/notes. Only host writes; approved members may read. See docs/activity-lifecycle.md."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Lifecycle - Updates",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{hostAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/activities/{{activityId}}/updates?page=1&limit=20",
+            "description": "Run Join Requests Setup -> Submit -> Approve first. Start locks joining/editing. Complete locks attendance/notes. Only host writes; approved members may read. See docs/activity-lifecycle.md."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Lifecycle - Complete (Host)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{hostAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/activities/{{activityId}}/complete",
+            "description": "Run Join Requests Setup -> Submit -> Approve first. Start locks joining/editing. Complete locks attendance/notes. Only host writes; approved members may read. See docs/activity-lifecycle.md."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
     }
   ]
 }

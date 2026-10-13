@@ -4,6 +4,7 @@ import { rateLimit } from 'express-rate-limit'
 import { activityCategories, activityFields, publicActivity } from './validation.js'
 import { authenticate } from '../../middlewares/authenticate.js'
 import { HttpError } from '../../common/http-error.js'
+import { randomUUID } from 'node:crypto'
 
 const categories = activityCategories
 export function searchOptions(query) {
@@ -52,7 +53,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   }
   router.get('/:id', async (req, res) => {
     const row = await find(req.params.id)
-    if (row.status !== 'published' && row.hostId !== req.auth.user.id) throw new HttpError(404, 'Activity not found')
+    if (row.status !== 'published' && row.hostId !== req.auth.user.id && !row.joinRequests?.some(item => item.userId === req.auth.user.id && item.status === 'approved')) throw new HttpError(404, 'Activity not found')
     res.json({ activity: publicActivity(row) })
   })
   const cleanup = async id => { try { await coverStorage.remove(id) } catch { console.warn('Activity cover cleanup failed') } }
@@ -71,6 +72,68 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     return coverStorage.upload(image, owner)
   }
   const writes = rateLimit({ windowMs: 15 * 60 * 1000, limit: 40, standardHeaders: 'draft-8', legacyHeaders: false })
+  const json = express.json({ limit: '16kb' })
+  const event = (req, type, details = {}) => ({ id: randomUUID(), type, actorId: req.auth.user.id, createdAt: new Date(), ...details })
+  function emptyBody(body) {
+    if (body !== undefined && (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length)) throw new HttpError(400, 'Body must be empty')
+  }
+  async function saveLifecycle(activity, req, fields, entry) {
+    const row = await repository.lifecycle(activity, req.auth.user.id, fields, entry)
+    if (!row) throw new HttpError(409, 'Activity changed. Reload and try again.')
+    return row
+  }
+  for (const action of ['start', 'complete']) {
+    router.post(`/:id/${action}`, writes, json, async (req, res) => {
+      emptyBody(req.body)
+      const activity = await find(req.params.id, req.auth.user.id)
+      const starting = action === 'start'
+      if (activity.status !== (starting ? 'published' : 'in-progress')) throw new HttpError(409, 'Invalid activity transition')
+      const entry = event(req, starting ? 'started' : 'completed')
+      const fields = starting ? { status: 'in-progress', startedAt: entry.createdAt,
+        attendance: [{ userId: activity.hostId, name: activity.hostName },
+          ...(activity.joinRequests ?? []).filter(item => item.status === 'approved').map(item => ({ userId: item.userId, name: item.name }))]
+          .map(item => ({ ...item, status: 'unmarked' })),
+      } : { status: 'completed', completedAt: entry.createdAt }
+      const row = await saveLifecycle(activity, req, fields, entry)
+      res.json({ activity: publicActivity(row) })
+    })
+  }
+  async function groupActivity(req) {
+    const activity = await find(req.params.id)
+    if (activity.hostId !== req.auth.user.id && !activity.joinRequests?.some(item => item.userId === req.auth.user.id && item.status === 'approved')) throw new HttpError(403, 'Only host and approved members can view this data')
+    return activity
+  }
+  for (const kind of ['attendance', 'updates']) {
+    router.get(`/:id/${kind}`, async (req, res) => {
+      const activity = await groupActivity(req)
+      if (Object.keys(req.query).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Only page and limit are supported')
+      const { page, limit } = searchOptions(req.query)
+      const items = kind === 'updates' ? [...(activity.updates ?? [])].reverse() : activity.attendance ?? []
+      res.json({ items: items.slice((page - 1) * limit, page * limit), total: items.length, page, limit, hasMore: page * limit < items.length })
+    })
+  }
+  router.patch('/:id/attendance/:userId', writes, json, async (req, res) => {
+    if (!req.body || Array.isArray(req.body) || Object.keys(req.body).length !== 1 || !['present', 'absent', 'late', 'unmarked'].includes(req.body.status)) throw new HttpError(400, 'Provide only status: present, absent, late or unmarked')
+    const activity = await find(req.params.id, req.auth.user.id)
+    if (activity.status !== 'in-progress') throw new HttpError(409, 'Attendance can only change while in progress')
+    const target = activity.attendance?.find(item => item.userId === req.params.userId)
+    if (!target) throw new HttpError(404, 'Participant not found in attendance roster')
+    if (target.status === req.body.status) { res.json({ attendance: target }); return }
+    if ((activity.updates?.length ?? 0) >= 2000) throw new HttpError(409, 'Activity update limit reached')
+    const entry = event(req, 'attendance-changed', { userId: target.userId, previousStatus: target.status, status: req.body.status })
+    const attendance = activity.attendance.map(item => item.userId === target.userId ? { ...item, status: req.body.status, updatedAt: entry.createdAt, updatedBy: req.auth.user.id } : item)
+    await saveLifecycle(activity, req, { attendance }, entry)
+    res.json({ attendance: attendance.find(item => item.userId === target.userId) })
+  })
+  router.post('/:id/updates', writes, json, async (req, res) => {
+    if (!req.body || Array.isArray(req.body) || Object.keys(req.body).length !== 1 || typeof req.body.text !== 'string' || !req.body.text.trim() || req.body.text.length > 1000) throw new HttpError(400, 'Provide only text of 1-1000 characters')
+    const activity = await find(req.params.id, req.auth.user.id)
+    if (activity.status !== 'in-progress') throw new HttpError(409, 'Updates can only be added while in progress')
+    if ((activity.updates?.length ?? 0) >= 2000) throw new HttpError(409, 'Activity update limit reached')
+    const entry = event(req, 'note', { text: req.body.text.trim() })
+    await saveLifecycle(activity, req, {}, entry)
+    res.status(201).json({ update: entry })
+  })
   router.get('/:id/members', async (req, res) => {
     const activity = await find(req.params.id)
     const approved = (activity.joinRequests ?? []).filter(item => item.status === 'approved')
@@ -136,7 +199,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   })
   router.patch('/:id', writes, express.json({ limit: '3mb' }), async (req, res) => {
     const previous = await find(req.params.id, req.auth.user.id)
-    if (previous.startsAt <= new Date()) throw new HttpError(409, 'Started activities cannot be edited')
+    if (previous.status !== 'published' || previous.startsAt <= new Date()) throw new HttpError(409, 'Started activities cannot be edited')
     const fields = activityFields(req.body, previous)
     const image = await cover(req.body.coverBase64, req.auth.user.id)
     let row

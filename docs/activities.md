@@ -1,5 +1,9 @@
 # API hoạt động: tạo, sửa, xóa và tìm kiếm
 
+Bắt đầu/kết thúc, điểm danh và nhật ký: [activity-lifecycle.md](activity-lifecycle.md).
+Trạng thái hỗ trợ thêm `in-progress`/`completed`; host có thể bắt đầu chủ động.
+Thành viên approved vẫn xem được chi tiết sau khi bắt đầu/kết thúc.
+
 Tất cả endpoint yêu cầu `Authorization: Bearer <accessToken>`.
 
 | Method | Path | Kết quả |

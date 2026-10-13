@@ -1,5 +1,26 @@
 # Development log
 
+## 2026-10-13 - Activity lifecycle, attendance and updates
+
+- Added host-only start/complete transitions, attendance marking and notes;
+  host/approved members can read paginated attendance and chronological updates.
+  Start snapshots host/approved roster, initializes unmarked attendance and records
+  actual time. Host may start early/late; complete freezes attendance/notes.
+- Status/attendance changes and audit entries share atomic version-checked writes.
+  Repeated identical attendance marks do not add logs; stale writes return 409.
+  Bound note/attendance log growth while reserving ability to complete.
+- Preserve member detail access after start/completion; block normal edits after
+  early start. Existing membership/chat/personal lists continue to work.
+- Files: activity routes/repository/validation, new lifecycle integration test,
+  lifecycle/activity docs, Postman collection and guide (49 requests).
+- Verification: full backend suite 51/51 passed using isolated MongoDB 8.3.1 and
+  `npm.cmd test -- --test-concurrency=1` with installed MONGOMS_SYSTEM_BINARY.
+  Covers concurrent starts, permissions, roster, audit consistency, stale writes,
+  completion locking, chat access and personal-list integration. Postman JSON and
+  scripts validated. No live database touched.
+- Remaining: FE wiring; no automatic lifecycle scheduler, self-check-in, push,
+  location/time changes during progress or reopening completed activities.
+
 ## 2026-10-13 - Password recovery and authenticated password change
 
 - Added forgot/reset/change-password endpoints, separate SMTP reset template,

@@ -48,6 +48,6 @@ export function activityFields(body, previous) {
 }
 
 export function publicActivity(row) {
-  const keys = ['id', 'hostId', 'hostName', 'title', 'description', 'category', 'location', 'coordinates', 'startsAt', 'endsAt', 'estimatedCost', 'maxParticipants', 'memberCount', 'tags', 'requirements', 'plan', 'imageUrl', 'status', 'createdAt', 'updatedAt', 'version']
+  const keys = ['id', 'hostId', 'hostName', 'title', 'description', 'category', 'location', 'coordinates', 'startsAt', 'endsAt', 'estimatedCost', 'maxParticipants', 'memberCount', 'tags', 'requirements', 'plan', 'imageUrl', 'status', 'createdAt', 'updatedAt', 'version', 'startedAt', 'completedAt']
   return Object.fromEntries(keys.filter(key => row[key] !== undefined).map(key => [key, row[key]]))
 }
