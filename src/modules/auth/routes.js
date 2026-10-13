@@ -80,6 +80,7 @@ export function createAuthRouter(repository, config, verifyGoogle = createGoogle
     await repository.createSession({
       tokenHash: hashToken(accessToken), userId: user.id,
       expiresAt,
+      credentialVersion: user.credential_version ?? 0,
     })
     res.json({ accessToken, tokenType: 'Bearer', expiresIn, expiresAt: expiresAt.toISOString(), user: publicUser(user) })
   }
@@ -119,6 +120,37 @@ export function createAuthRouter(repository, config, verifyGoogle = createGoogle
   router.post('/logout', protect, async (req, res) => {
     await repository.deleteSession(req.auth.tokenHash)
     res.status(204).end()
+  })
+  function passwordBody(body, keys) {
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== keys.length ||
+      keys.some(key => typeof body[key] !== 'string') || Object.keys(body).some(key => !keys.includes(key))) throw new HttpError(400, 'Invalid password request body')
+    if (keys.includes('newPassword') && (body.newPassword.length < 12 || body.newPassword.length > 128)) throw new HttpError(400, 'Password must contain 12 to 128 characters')
+  }
+  router.post('/forgot-password', rateLimit({ ...limitOptions, limit: 5 }), async (req, res) => {
+    passwordBody(req.body, ['email'])
+    const email = readEmail(req.body)
+    mailer.assertConfigured()
+    const code = String(randomInt(0, 1000000)).padStart(6, '0'), hash = await hashPassword(code)
+    const user = await repository.reservePasswordReset(email, hash)
+    if (user) {
+      try { await mailer.sendResetCode(email, code) }
+      catch { await repository.cancelPasswordReset(user.id, hash) }
+    }
+    res.json({ message: 'If this account is eligible, a password reset code will be sent. Wait 60 seconds before requesting another.' })
+  })
+  router.post('/reset-password', rateLimit({ ...limitOptions, limit: 20 }), async (req, res) => {
+    passwordBody(req.body, ['email', 'code', 'newPassword'])
+    const email = readEmail(req.body)
+    if (!/^\d{6}$/.test(req.body.code)) throw new HttpError(400, 'A 6-digit reset code is required')
+    if (!await repository.resetPassword(email, req.body.code, await hashPassword(req.body.newPassword))) throw new HttpError(400, 'Invalid or expired reset code')
+    res.json({ message: 'Password reset. All sessions revoked. Please log in again.' })
+  })
+  router.post('/change-password', protect, rateLimit({ ...limitOptions, limit: 10 }), async (req, res) => {
+    passwordBody(req.body, ['currentPassword', 'newPassword'])
+    if (!req.body.currentPassword.length || req.body.currentPassword.length > 128) throw new HttpError(400, 'Invalid current password')
+    if (req.body.currentPassword === req.body.newPassword) throw new HttpError(400, 'New password must differ from current password')
+    if (!await repository.changePassword(req.auth.user.id, req.body.currentPassword, await hashPassword(req.body.newPassword), req.auth.credentialVersion)) throw new HttpError(400, 'Current password is invalid or credentials changed. Sign in again if needed.')
+    res.json({ message: 'Password changed. All sessions revoked. Please log in again.' })
   })
   return router
 }

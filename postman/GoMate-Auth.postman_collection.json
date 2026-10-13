@@ -157,6 +157,48 @@
       "value": "",
       "type": "string",
       "description": "Saved by Submit. Copy another request ID from List to review it."
+    },
+    {
+      "key": "memberUserId",
+      "value": "",
+      "type": "string",
+      "description": "Saved by Login Member. Target for host removal; may be set from member list."
+    },
+    {
+      "key": "conversationId",
+      "value": "",
+      "type": "string",
+      "description": "Automatically saved by Chat requests."
+    },
+    {
+      "key": "messageId",
+      "value": "",
+      "type": "string",
+      "description": "Automatically saved by Chat requests."
+    },
+    {
+      "key": "clientMessageId",
+      "value": "",
+      "type": "string",
+      "description": "Automatically saved by Chat requests."
+    },
+    {
+      "key": "resetCode",
+      "value": "",
+      "type": "string",
+      "description": "Six-digit password reset code from email; different from verificationCode."
+    },
+    {
+      "key": "newPassword",
+      "value": "",
+      "type": "string",
+      "description": "New password: 12-128 characters."
+    },
+    {
+      "key": "currentPassword",
+      "value": "",
+      "type": "string",
+      "description": "Current password for authenticated change."
     }
   ],
   "item": [
@@ -552,6 +594,136 @@
             }
           ],
           "response": []
+        },
+        {
+          "name": "Password Recovery & Change",
+          "description": "Forgot -> enter emailed resetCode -> Reset, OR Login -> Change. Do not run all requests sequentially.",
+          "item": [
+            {
+              "name": "Password - Forgot",
+              "request": {
+                "method": "POST",
+                "auth": {
+                  "type": "noauth"
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/api/auth/forgot-password",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{email}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "description": "Send individually. Reset/change revoke ALL sessions, including host/member tokens. Update password variables and log in again after success. See docs/password-recovery.md."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                      "if (pm.response.code === 200) pm.collectionVariables.set('resetCode', '');"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "Password - Reset",
+              "request": {
+                "method": "POST",
+                "auth": {
+                  "type": "noauth"
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/api/auth/reset-password",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{email}}\",\n  \"code\": \"{{resetCode}}\",\n  \"newPassword\": \"{{newPassword}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "description": "Send individually. Reset/change revoke ALL sessions, including host/member tokens. Update password variables and log in again after success. See docs/password-recovery.md."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                      "if (pm.response.code === 200) ['accessToken','hostAccessToken','memberAccessToken','expiresAt','expiresIn','resetCode'].forEach(key => pm.collectionVariables.set(key, ''));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "Password - Change (signed in)",
+              "request": {
+                "method": "POST",
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{accessToken}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/api/auth/change-password",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"currentPassword\": \"{{currentPassword}}\",\n  \"newPassword\": \"{{newPassword}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "description": "Send individually. Reset/change revoke ALL sessions, including host/member tokens. Update password variables and log in again after success. See docs/password-recovery.md."
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                      "if (pm.response.code === 200) ['accessToken','hostAccessToken','memberAccessToken','expiresAt','expiresIn','resetCode'].forEach(key => pm.collectionVariables.set(key, ''));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
         }
       ]
     },
@@ -1189,7 +1361,8 @@
                     "type": "text/javascript",
                     "exec": [
                       "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-                      "if (pm.response.code === 200) { const data = pm.response.json(); pm.test('Token returned', () => pm.expect(data.accessToken).to.be.a('string').and.not.empty); pm.collectionVariables.set('memberAccessToken', data.accessToken); }"
+                      "if (pm.response.code === 200) { const data = pm.response.json(); pm.test('Token returned', () => pm.expect(data.accessToken).to.be.a('string').and.not.empty); pm.collectionVariables.set('memberAccessToken', data.accessToken); }",
+                      "if (pm.response.code === 200) pm.collectionVariables.set('memberUserId', pm.response.json().user.id);"
                     ]
                   }
                 }
@@ -1410,6 +1583,519 @@
               "response": []
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "06 - My Participation",
+      "description": "Member activities and own join requests. Uses memberAccessToken from Join Requests setup.",
+      "item": [
+        {
+          "name": "My Joined Activities",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{memberAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/me/activities?page=1&limit=20",
+            "description": "Use Join Requests / Setup to log in the member. Results belong only to the token owner. For regular Login, change bearer token to accessToken. Remove status to list all request states."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) pm.test('Paginated result', () => { const data = pm.response.json(); pm.expect(data.items).to.be.an('array'); pm.expect(data.total).to.be.a('number'); pm.expect(data.hasMore).to.be.a('boolean'); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "My Pending Join Requests",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{memberAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/me/join-requests?status=pending&page=1&limit=20",
+            "description": "Use Join Requests / Setup to log in the member. Results belong only to the token owner. For regular Login, change bearer token to accessToken. Remove status to list all request states."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) pm.test('Paginated result', () => { const data = pm.response.json(); pm.expect(data.items).to.be.an('array'); pm.expect(data.total).to.be.a('number'); pm.expect(data.hasMore).to.be.a('boolean'); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "My Join Requests - All States",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{memberAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/me/join-requests?page=1&limit=20",
+            "description": "Use Join Requests / Setup to log in the member. Results belong only to the token owner. For regular Login, change bearer token to accessToken. Remove status to list all request states."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) pm.test('Paginated result', () => { const data = pm.response.json(); pm.expect(data.items).to.be.an('array'); pm.expect(data.total).to.be.a('number'); pm.expect(data.hasMore).to.be.a('boolean'); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "07 - Group Members",
+      "description": "List current host and approved members; leave or host removal. Send individually.",
+      "item": [
+        {
+          "name": "Members - List (Host)",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{hostAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/activities/{{activityId}}/members?page=1&limit=20",
+            "description": "Run Join Requests setup, Submit and Approve first. Send Leave OR Remove manually. Host cannot leave or remove self. Changes require upcoming published activity. Removed/left members can submit a new request requiring host approval."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Members - List (Member)",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{memberAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/activities/{{activityId}}/members?page=1&limit=20",
+            "description": "Run Join Requests setup, Submit and Approve first. Send Leave OR Remove manually. Host cannot leave or remove self. Changes require upcoming published activity. Removed/left members can submit a new request requiring host approval."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Members - Leave (Member, manual)",
+          "request": {
+            "method": "DELETE",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{memberAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/activities/{{activityId}}/members/me",
+            "description": "Run Join Requests setup, Submit and Approve first. Send Leave OR Remove manually. Host cannot leave or remove self. Changes require upcoming published activity. Removed/left members can submit a new request requiring host approval."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Members - Remove (Host, manual)",
+          "request": {
+            "method": "DELETE",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{hostAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/activities/{{activityId}}/members/{{memberUserId}}",
+            "description": "Run Join Requests setup, Submit and Approve first. Send Leave OR Remove manually. Host cannot leave or remove self. Changes require upcoming published activity. Removed/left members can submit a new request requiring host approval."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "08 - Chat",
+      "description": "Direct/group conversations, text messages, read state and SSE. Choose one Open request then send individually. SSE holds a connection.",
+      "item": [
+        {
+          "name": "Chat - Open Direct (Host)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{hostAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/conversations",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"direct\",\n  \"userId\": \"{{memberUserId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Use host/member login from Join Requests setup. Group requires approved membership. See docs/chat.md. Send requests individually."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('conversationId', pm.response.json().conversation.id); pm.collectionVariables.set('messageId', ''); }"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Chat - Open Group (Host)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{hostAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/conversations",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"group\",\n  \"activityId\": \"{{activityId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Use host/member login from Join Requests setup. Group requires approved membership. See docs/chat.md. Send requests individually."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('conversationId', pm.response.json().conversation.id); pm.collectionVariables.set('messageId', ''); }"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Chat - List (Member)",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{memberAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/conversations?page=1&limit=20",
+            "description": "Use host/member login from Join Requests setup. Group requires approved membership. See docs/chat.md. Send requests individually."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Chat - History (Member)",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{memberAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/conversations/{{conversationId}}/messages?limit=30",
+            "description": "Use host/member login from Join Requests setup. Group requires approved membership. See docs/chat.md. Send requests individually."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Chat - Send Message (Host)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{hostAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/conversations/{{conversationId}}/messages",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from host\",\n  \"clientMessageId\": \"{{clientMessageId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Use host/member login from Join Requests setup. Group requires approved membership. See docs/chat.md. Send requests individually."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('clientMessageId', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) pm.collectionVariables.set('messageId', pm.response.json().message.id);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Chat - Mark Read (Member)",
+          "request": {
+            "method": "PATCH",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{memberAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/conversations/{{conversationId}}/read",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messageId\": \"{{messageId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Use host/member login from Join Requests setup. Group requires approved membership. See docs/chat.md. Send requests individually."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Chat - Events (Member, streaming)",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{memberAccessToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{baseUrl}}/api/conversations/{{conversationId}}/events",
+            "description": "Long-lived SSE. Open separately before Send Message. Authorization uses memberAccessToken. Initial snapshot then updates about every second. Stop manually; do not use collection Runner. Reconnect on stream end. No replay log."
+          },
+          "event": [],
+          "response": []
         }
       ]
     }

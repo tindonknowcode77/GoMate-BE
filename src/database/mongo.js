@@ -6,10 +6,18 @@ export function createClient(config) {
 }
 
 export async function initializeDatabase(db) {
+  await db.collection('conversations').createIndex({ id: 1 }, { unique: true })
+  await db.collection('conversations').createIndex({ key: 1 }, { unique: true })
+  await db.collection('conversations').createIndex({ participantIds: 1, createdAt: -1 })
+  await db.collection('conversations').createIndex({ activityId: 1 })
+  await db.collection('chat_messages').createIndex({ conversationId: 1, _id: -1 })
+  await db.collection('chat_messages').createIndex({ conversationId: 1, senderId: 1, clientMessageId: 1 }, { unique: true })
+  await db.collection('chat_reads').createIndex({ conversationId: 1, userId: 1 }, { unique: true })
   await db.collection('activities').createIndex({ id: 1 }, { unique: true })
   await db.collection('activities').createIndex({ coordinates: '2dsphere' })
   await db.collection('activities').createIndex({ status: 1, startsAt: 1, id: 1 })
   await db.collection('activities').createIndex({ hostId: 1, createdAt: -1, id: 1 })
+  await db.collection('activities').createIndex({ 'joinRequests.userId': 1, 'joinRequests.status': 1 })
   await db.collection('users').createIndex({ email: 1 }, { unique: true })
   await db.collection('users').createIndex({ id: 1 }, { unique: true })
   await db.collection('users').createIndex({ username: 1 }, {

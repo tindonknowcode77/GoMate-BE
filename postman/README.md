@@ -1,7 +1,7 @@
 # GoMate Postman
 
 Import lại `GoMate-Auth.postman_collection.json` trong Postman. Collection mới có
-tên **GoMate - Auth, Profile & Activities**, gồm 26 request. Đây là file trong repository,
+tên **GoMate - Auth, Profile & Activities**, gồm 43 request. Đây là file trong repository,
 chưa được đồng bộ trực tiếp lên Postman cloud/workspace.
 
 ## Cấu trúc collection
@@ -15,11 +15,32 @@ chưa được đồng bộ trực tiếp lên Postman cloud/workspace.
   - **01 - Setup (two accounts)**: đăng nhập host, tạo hoạt động, đăng nhập member.
   - **02 - Member**: gửi và hủy yêu cầu.
   - **03 - Host**: xem danh sách, duyệt hoặc từ chối.
+- **06 - My Participation**: hoạt động đã tham gia, yêu cầu đang chờ và mọi trạng thái.
+  Dùng `memberAccessToken` từ Login Member. Sau Submit kiểm tra My Pending Join
+  Requests; sau Approve kiểm tra My Joined Activities. Sau Cancel/Reject xem My
+  Join Requests - All States. Nếu dùng Login thường, đổi Bearer thành `{{accessToken}}`.
 
 Import lại file để nhận cấu trúc mới. Tên request, biến, body và script được giữ
 nguyên; chỉ thay đổi cách nhóm thư mục. Vẫn dùng Send từng request theo luồng dưới đây.
 
 ## Dùng thử
+
+Quên/đổi mật khẩu: **02 - Authentication → Password Recovery & Change**.
+Forgot gửi mã về email, điền `resetCode` và `newPassword` rồi Reset. Change cần
+Login trước, điền `currentPassword`/`newPassword`. Thành công thu hồi tất cả phiên;
+cập nhật biến mật khẩu và Login lại. Xem [hướng dẫn](../docs/password-recovery.md).
+
+Folder **08 - Chat**: chọn Open Direct hoặc Open Group, tự lưu conversationId.
+Nhóm cần member đã được host duyệt. Mở Events (Member) riêng để nhận SSE, rồi Send
+Message (Host) ở request khác; History/List để xem tin và số chưa đọc, Mark Read
+để đánh dấu. Không chạy Events bằng Runner vì giữ kết nối. Chi tiết: [chat.md](../docs/chat.md).
+
+Folder **07 - Group Members**: sau Setup → Submit → Approve trong Join Requests,
+gọi List bằng host hoặc member. Chọn Leave (member tự rời) hoặc Remove (host loại).
+Login Member tự lưu `memberUserId`; nếu đã login từ collection cũ thì login lại,
+hoặc lấy userId từ List điền vào biến. Sau rời/loại, Submit → Approve lại trước
+khi thử nhánh còn lại. List gồm host và các thành viên đã duyệt; người ngoài nhận 403.
+Xem `/me/join-requests?status=left` hoặc `status=removed` để kiểm tra kết quả.
 
 1. Đặt `baseUrl` là địa chỉ BE **không có `/api`**, ví dụ `http://127.0.0.1:3000`.
 2. Tài khoản mới: Register → lấy mã email điền `verificationCode` → Verify Email.

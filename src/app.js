@@ -8,11 +8,13 @@ import { HttpError } from './common/http-error.js'
 import { createAuthRouter } from './modules/auth/routes.js'
 import { createProfileRouter } from './modules/profile/routes.js'
 import { createActivityRouter } from './modules/activities/routes.js'
+import { createMyActivityRouter } from './modules/activities/me-routes.js'
+import { createChatRouter } from './modules/chat/routes.js'
 import { createAvatarStorage } from './modules/profile/cloudinary.js'
 
 const defaultFrontendDir = fileURLToPath(new URL('../../GoMate-FE/dist/', import.meta.url))
 
-export function createApp(config = readConfig(), { authRepository, activityRepository, verifyGoogle, verificationMailer, avatarStorage, coverStorage, frontendDir = defaultFrontendDir } = {}) {
+export function createApp(config = readConfig(), { authRepository, activityRepository, chatRepository, chatOptions, verifyGoogle, verificationMailer, avatarStorage, coverStorage, frontendDir = defaultFrontendDir } = {}) {
   const app = express()
   app.disable('x-powered-by')
   app.set('trust proxy', config.trustProxyHops)
@@ -31,7 +33,9 @@ export function createApp(config = readConfig(), { authRepository, activityRepos
   app.use(cors({ origin: config.corsOrigin }))
   if (authRepository) app.use('/api/profile', createProfileRouter(authRepository, config, avatarStorage))
   if (activityRepository && authRepository) app.use('/api/activities', createActivityRouter(activityRepository, authRepository, coverStorage ?? createAvatarStorage(config, undefined, 'activities')))
+  if (activityRepository && authRepository) app.use('/api/me', createMyActivityRouter(activityRepository, authRepository))
   app.use(express.json({ limit: '16kb' }))
+  if (chatRepository && authRepository) app.use('/api/conversations', createChatRouter(chatRepository, authRepository, chatOptions))
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', service: 'gomate-be' })

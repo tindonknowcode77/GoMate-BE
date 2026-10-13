@@ -71,6 +71,27 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     return coverStorage.upload(image, owner)
   }
   const writes = rateLimit({ windowMs: 15 * 60 * 1000, limit: 40, standardHeaders: 'draft-8', legacyHeaders: false })
+  router.get('/:id/members', async (req, res) => {
+    const activity = await find(req.params.id)
+    const approved = (activity.joinRequests ?? []).filter(item => item.status === 'approved')
+    if (activity.hostId !== req.auth.user.id && !approved.some(item => item.userId === req.auth.user.id)) throw new HttpError(403, 'Only host and approved members can view members')
+    if (Object.keys(req.query).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Only page and limit are supported')
+    const { page, limit } = searchOptions(req.query)
+    approved.sort((a, b) => a.updatedAt - b.updatedAt || a.userId.localeCompare(b.userId))
+    const items = [{ userId: activity.hostId, name: activity.hostName, role: 'host' },
+      ...approved.map(item => ({ userId: item.userId, name: item.name, role: 'member' }))]
+    res.json({ items: items.slice((page - 1) * limit, page * limit), total: items.length, page, limit, hasMore: page * limit < items.length })
+  })
+  async function removeMember(req, res, hostAction) {
+    const activity = await find(req.params.id, hostAction ? req.auth.user.id : undefined)
+    const userId = hostAction ? req.params.userId : req.auth.user.id
+    if (userId === activity.hostId) throw new HttpError(403, 'Host cannot leave or be removed')
+    if (!activity.joinRequests?.some(item => item.userId === userId && item.status === 'approved')) throw new HttpError(404, 'Approved member not found')
+    if (!await repository.removeMember(activity.id, userId, req.auth.user.id, hostAction)) throw new HttpError(409, 'Membership changed or activity is no longer upcoming and published')
+    res.status(204).end()
+  }
+  router.delete('/:id/members/me', writes, (req, res) => removeMember(req, res, false))
+  router.delete('/:id/members/:userId', writes, (req, res) => removeMember(req, res, true))
   router.post('/:id/join-requests', writes, express.json({ limit: '16kb' }), async (req, res) => {
     if (req.body !== undefined && (!req.body || Array.isArray(req.body) || typeof req.body !== 'object' || Object.keys(req.body).length)) throw new HttpError(400, 'Join request body must be empty')
     const activity = await find(req.params.id)
@@ -90,7 +111,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   router.get('/:id/join-requests', async (req, res) => {
     const activity = await find(req.params.id, req.auth.user.id)
     const { status, ...pagination } = req.query
-    if (status !== undefined && !['pending', 'approved', 'rejected', 'cancelled'].includes(status)) throw new HttpError(400, 'Invalid request status')
+    if (status !== undefined && !['pending', 'approved', 'rejected', 'cancelled', 'left', 'removed'].includes(status)) throw new HttpError(400, 'Invalid request status')
     if (Object.keys(pagination).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Only status, page and limit are supported')
     const { page, limit } = searchOptions(pagination)
     const items = (activity.joinRequests ?? []).filter(item => !status || item.status === status)

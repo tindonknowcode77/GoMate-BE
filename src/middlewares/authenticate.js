@@ -9,7 +9,7 @@ export function authenticate(repository) {
     const tokenHash = hashToken(match[1])
     const session = await repository.findSession(tokenHash)
     if (!session) throw new HttpError(401, 'Invalid or expired token', 'SESSION_INVALID_OR_EXPIRED')
-    req.auth = { user: publicUser(session.user), tokenHash, expiresAt: session.expiresAt }
+    req.auth = { user: publicUser(session.user), tokenHash, expiresAt: session.expiresAt, credentialVersion: session.user.credential_version ?? 0 }
     next()
   }
 }

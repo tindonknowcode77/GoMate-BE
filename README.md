@@ -2,6 +2,9 @@
 
 Node.js 22.12+ / 24+, Express 5 và MongoDB (driver chính thức).
 
+Chat riêng/nhóm, tin nhắn và SSE: xem [docs/chat.md](docs/chat.md).
+Khôi phục/đổi mật khẩu: xem [docs/password-recovery.md](docs/password-recovery.md).
+
 ## Chạy FE và API cùng server
 
 Tại C:\GoMate chạy npm.cmd start, mở http://127.0.0.1:3000.

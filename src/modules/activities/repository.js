@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { publicActivity } from './validation.js'
 
 export function createActivityRepository(db) {
   const activities = db.collection('activities')
@@ -12,6 +13,22 @@ export function createActivityRepository(db) {
       return row
     },
     async get(id) { return activities.findOne({ id, status: { $ne: 'deleted' } }) },
+    async participating(userId, { page, limit, status }, requests = false) {
+      const member = { userId, ...(!requests ? { status: 'approved' } : status ? { status } : {}) }
+      const [result] = await activities.aggregate([
+        { $match: { status: { $ne: 'deleted' }, hostId: { $ne: userId }, joinRequests: { $elemMatch: member } } },
+        { $set: { ownRequest: { $arrayElemAt: [{ $filter: { input: '$joinRequests', as: 'request',
+          cond: { $eq: ['$$request.userId', userId] } } }, 0] } } },
+        { $unset: ['joinRequests', '_id', 'imagePublicId'] },
+        { $sort: requests ? { 'ownRequest.createdAt': -1, id: 1 } : { startsAt: 1, id: 1 } },
+        { $facet: { items: [{ $skip: (page - 1) * limit }, { $limit: limit }], total: [{ $count: 'count' }] } },
+      ], { maxTimeMS: 5000 }).toArray()
+      const total = result?.total[0]?.count ?? 0
+      const items = (result?.items ?? []).map(row => requests
+        ? { ...row.ownRequest, activityId: row.id, activity: publicActivity(row) }
+        : publicActivity(row))
+      return { items, total, page, limit, hasMore: page * limit < total }
+    },
     // Keep requests and capacity in one document so approval is atomic even on standalone MongoDB.
     async submitJoinRequest(id, user) {
       const now = new Date()
@@ -23,7 +40,7 @@ export function createActivityRepository(db) {
       if (row) return request
       // Reuse the user's existing entry after cancellation/rejection; never create duplicate membership.
       const retry = await activities.findOneAndUpdate({ id, status: 'published', startsAt: { $gt: now }, hostId: { $ne: user.id },
-        joinRequests: { $elemMatch: { userId: user.id, status: { $in: ['cancelled', 'rejected'] } } },
+        joinRequests: { $elemMatch: { userId: user.id, status: { $in: ['cancelled', 'rejected', 'left', 'removed'] } } },
         $expr: { $lt: ['$memberCount', '$maxParticipants'] },
       }, { $set: { 'joinRequests.$': request, updatedAt: now }, $inc: { version: 1 } }, { returnDocument: 'after' })
       return retry ? request : null
@@ -40,6 +57,18 @@ export function createActivityRepository(db) {
         $inc: { version: 1, ...(status === 'approved' ? { memberCount: 1 } : {}) },
       }, { returnDocument: 'after' })
       return row?.joinRequests.find(item => userId ? item.userId === userId : item.id === requestId) ?? null
+    },
+    async removeMember(id, userId, actorId, hostAction) {
+      const now = new Date()
+      if (!hostAction && actorId !== userId) return null
+      return activities.findOneAndUpdate({ id, status: 'published', startsAt: { $gt: now },
+        hostId: hostAction ? { $eq: actorId, $ne: userId } : { $ne: userId },
+        memberCount: { $gt: 1 },
+        joinRequests: { $elemMatch: { userId, status: 'approved' } },
+      }, { $set: { 'joinRequests.$.status': hostAction ? 'removed' : 'left',
+        'joinRequests.$.updatedAt': now, updatedAt: now },
+        $inc: { memberCount: -1, version: 1 },
+      }, { returnDocument: 'after' })
     },
     async owned(hostId, page, limit) {
       const query = { hostId, status: { $ne: 'deleted' } }

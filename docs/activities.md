@@ -11,7 +11,59 @@ Tất cả endpoint yêu cầu `Authorization: Bearer <accessToken>`.
 | DELETE | `/api/activities/:id` | Host xóa mềm; 204; không còn trong tìm kiếm, danh sách riêng và chi tiết |
 | GET | `/api/activities` | Tìm kiếm/Match như mô tả bên dưới |
 
-## Yêu cầu tham gia
+## Hoạt động và yêu cầu của người đăng nhập
+
+Hai API dùng `Authorization: Bearer <accessToken>`, lấy user từ token:
+
+| Method | Path | Nội dung items |
+| --- | --- | --- |
+| GET | `/api/me/activities?page=1&limit=20` | Các activity đã có yêu cầu approved của mình |
+| GET | `/api/me/join-requests?status=pending&page=1&limit=20` | Các yêu cầu của mình, mỗi item kèm `activityId` và `activity` |
+
+Response: `{ items, total, page, limit, hasMore }`. Mặc định page=1, limit=20;
+page tối đa 500, limit tối đa 50. Query sai/không được hỗ trợ trả 400; thiếu hoặc
+hết hạn token trả 401. Danh sách rỗng trả 200 với items=[], total=0.
+
+- `/me/activities` không gồm hoạt động mình tổ chức (dùng `/activities/mine`),
+  không gồm pending/rejected/cancelled; có cả hoạt động đã bắt đầu và còn đủ chỗ hay hết chỗ.
+  Sắp xếp startsAt tăng dần, sau đó id. Chỉ nhận page/limit, chưa lọc vòng đời.
+- `/me/join-requests` nhận status: pending/approved/rejected/cancelled/left/removed; bỏ status
+  để lấy mọi trạng thái. Sắp xếp ngày gửi giảm dần, sau đó activity id.
+  Item gồm id, userId, name, status, createdAt, updatedAt, activityId, activity.
+- Không trả hoạt động đã xóa mềm hoặc yêu cầu của chúng. Yêu cầu pending đã quá
+  giờ bắt đầu vẫn được hiển thị với trạng thái hiện có; chưa tự chuyển hết hạn.
+- Không trả danh sách yêu cầu của người khác, `_id` hoặc mã nội bộ ảnh Cloudinary.
+  Gửi lại sau hủy/từ chối thay bản ghi cũ, nên đây không phải lịch sử mọi lần gửi.
+- Index `joinRequests.userId + joinRequests.status` được tạo tự động khi BE khởi động
+  (hoặc chạy `npm run db:migrate`). Không cần thay đổi dữ liệu cũ.
+
+## Thành viên nhóm
+
+Các API yêu cầu Bearer token:
+
+| Method | Path | Kết quả |
+| --- | --- | --- |
+| GET | `/api/activities/:id/members?page=1&limit=20` | Host hoặc thành viên approved; `{ items, total, page, limit, hasMore }` |
+| DELETE | `/api/activities/:id/members/me` | Thành viên tự rời nhóm; 204 |
+| DELETE | `/api/activities/:id/members/:userId` | Host loại thành viên approved; 204 |
+
+Mỗi item chỉ gồm `{ userId, name, role }`, role là host/member. Host đứng đầu,
+thành viên sắp theo thời gian duyệt rồi userId. Tên là snapshot lúc tạo hoạt động/
+gửi yêu cầu. Mặc định page=1, limit=20; tối đa page=500, limit=50.
+
+- Người ngoài, người pending hoặc đã rời/bị loại không được xem danh sách (403).
+- Host không thể tự rời hoặc bị loại (403). Chỉ host được loại người khác.
+- Rời/loại chỉ áp dụng cho hoạt động published chưa bắt đầu; quá giờ trả 409.
+- Không có hoạt động hoặc không còn thành viên approved trả 404. Ghi đồng thời
+  có thể trả 409; trạng thái và memberCount giảm nguyên tử, không giảm hai lần.
+- Yêu cầu chuyển từ approved sang `left` (tự rời) hoặc `removed` (host loại).
+  Hai trạng thái này lọc được ở cả danh sách yêu cầu của host và `/api/me/join-requests`.
+  Người đó không còn trong `/api/me/activities` hoặc danh sách members.
+- Sau left/removed được gửi lại yêu cầu nếu còn chỗ và chưa bắt đầu, luôn cần host
+  duyệt lại. Đây không phải chức năng chặn người dùng. Bản ghi cũ được thay thế.
+- Các API ghi dùng chung giới hạn 40 lần/15 phút/IP. Không cần migration dữ liệu.
+
+## Gửi yêu cầu
 
 Các endpoint dưới đây đều yêu cầu Bearer token:
 
@@ -24,14 +76,14 @@ Các endpoint dưới đây đều yêu cầu Bearer token:
 
 `request` gồm `id`, `userId`, `name` (tên lúc gửi), `status`, `createdAt`, `updatedAt`.
 Thời gian trả về ISO UTC. GET không truyền status sẽ lấy mọi trạng thái;
-status hợp lệ: `pending`, `approved`, `rejected`, `cancelled`. Phân trang mặc định
+status hợp lệ: `pending`, `approved`, `rejected`, `cancelled`, `left`, `removed`. Phân trang mặc định
 page=1, limit=20; limit tối đa 50, page tối đa 500.
 
 - Host không được xin tham gia hoạt động của mình. User lấy từ token, không nhận từ body.
 - Gửi/duyệt/từ chối/hủy chỉ áp dụng khi hoạt động published và chưa bắt đầu.
 - Gửi và duyệt yêu cầu cần còn chỗ; host đã chiếm 1 chỗ trong memberCount.
 - Một người chỉ có một bản ghi yêu cầu trên mỗi hoạt động. Pending/approved không được gửi trùng.
-- Sau cancelled/rejected được gửi lại với ID và thời gian mới; bản ghi cũ được thay thế, không lưu lịch sử từng lần gửi.
+- Sau cancelled/rejected/left/removed được gửi lại với ID và thời gian mới; bản ghi cũ được thay thế, không lưu lịch sử từng lần gửi.
 - Hủy chỉ dành cho pending, không phải rời nhóm sau khi đã được duyệt.
 - Duyệt cập nhật trạng thái và memberCount nguyên tử; duyệt lặp hoặc đồng thời không tăng quá sức chứa.
 - Danh sách yêu cầu chỉ host được xem, không xuất hiện trong response chi tiết/tìm kiếm hoạt động.

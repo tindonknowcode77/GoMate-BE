@@ -1,5 +1,88 @@
 # Development log
 
+## 2026-10-13 - Password recovery and authenticated password change
+
+- Added forgot/reset/change-password endpoints, separate SMTP reset template,
+  hashed six-digit reset codes, ten-minute expiry, five attempts, 60-second resend
+  cooldown and endpoint rate limits. Forgot uses a generic response for unknown,
+  ineligible/cooldown accounts and SMTP delivery failure; missing config is 503.
+- Atomic credential-version increment revokes all prior sessions on reset/change,
+  including delayed login sessions issued from stale credentials. Legacy sessions
+  default to version 0. Changes clear pending reset codes; Google-only users do
+  not receive local-password resets. Sensitive reset state excluded from profile
+  and session repository projections.
+- Files: auth routes/repository/email, authenticate middleware, recovery and email
+  tests, password-recovery docs, README, Postman collection/guide.
+- Verification: full backend suite 50/50 passed on isolated MongoDB 8.3.1 using
+  `npm.cmd test -- --test-concurrency=1` with installed MONGOMS_SYSTEM_BINARY.
+  Covers concurrent reset consumption, expiry/attempts, wrong/old passwords,
+  stale-session creation, all-session revocation and SMTP failure rollback.
+  Postman JSON/scripts validated (43 requests). No real email sent or .env read.
+- Remaining: FE integration and live SMTP delivery verification by the user.
+
+## 2026-10-13 - Direct/group chat and SSE updates
+
+- Added persistent conversations, paginated text messages, idempotent sends using
+  clientMessageId, per-user monotonic read markers and unread counts. Unique indexes
+  enforce one direct conversation per pair and one group conversation per activity.
+- Group authorization uses live approved membership/host ownership. Deleted
+  activities and removed members cannot access chat. SSE provides per-conversation
+  snapshots on connect/change, with session/membership rechecks, heartbeat,
+  connection limits, slow-client cleanup and a five-minute reconnect boundary.
+- Architecture choice: poll shared MongoDB once per second per stream rather than
+  require Redis, replica sets or change streams. Snapshot invalidation is not a
+  durable event log; clients refetch/merge messages and reconnect explicitly.
+- Files: new `src/modules/chat/{repository,routes}.js`, server/app wiring, database
+  indexes, `tests/chat.test.js`, `docs/chat.md`, README and Postman files.
+- Verification: full backend suite 49/49 passed on isolated MongoDB 8.3.1 via
+  `npm.cmd test -- --test-concurrency=1` with MONGOMS_SYSTEM_BINARY and MONGOMS_VERSION.
+  Includes concurrent creation/send deduplication, history paging, read monotonicity,
+  cross-user isolation, SSE messages/read updates, removal/session revocation and
+  activity deletion. Syntax checks passed; Postman JSON/scripts valid (40 requests).
+- Remaining: FE wiring; attachments, typing/presence, push notifications and user
+  blocking are not implemented. Conversation list orders by creation time; refresh
+  it on app focus for new conversations. Polling cost grows with active streams.
+
+## 2026-10-13 - Group membership list, leave and removal
+
+- Added paginated GET `/api/activities/:id/members` for host/approved members,
+  DELETE `/members/me` for self-leave and DELETE `/members/:userId` for host removal.
+  Host cannot leave/be removed; writes require an upcoming published activity.
+- Atomically transition approved to left/removed with memberCount decrement and
+  version increment. Concurrent leave/removal cannot decrement twice. New states
+  support request filtering and reapplication (requires approval again).
+- Added Group Members Postman folder and memberUserId auto-capture on member login;
+  documented visibility, snapshot names, resubmission and lifecycle restrictions.
+- Files: activity routes/repository/me-routes, join-requests integration test,
+  activity API docs, Postman collection and guide.
+- Verification: focused integration tests passed on local isolated MongoDB 8.3.1;
+  full backend suite passed 48/48 using `npm.cmd test -- --test-concurrency=1`
+  with MONGOMS_SYSTEM_BINARY pointing to installed mongod and MONGOMS_VERSION=8.3.1.
+  Includes permission checks, concurrent leave/removal, count consistency,
+  resubmission, personal list updates, started/deleted activities. Postman JSON
+  and scripts validated (33 requests). Earlier MongoDB-blocked tests now pass.
+- Remaining: FE wiring; member names are snapshots, not live profile lookups.
+
+## 2026-10-13 - Personal activities and join requests
+
+- Added authenticated GET `/api/me/activities` for approved participation and
+  GET `/api/me/join-requests` with optional pending/approved/rejected/cancelled
+  filter. Both paginate with stable ordering and derive identity from the token.
+- Exclude hosted/deleted activities and sanitize activity output. Request lists
+  expose only the caller's request. Include past activities; no automatic request
+  expiry or activity lifecycle inference. Added a multikey participant index,
+  created on startup/migration, and a My Participation Postman folder.
+- Files: activity `me-routes.js` and `repository.js`, `src/app.js`, database
+  `mongo.js`, tests `me-activities.test.js` and `join-requests.test.js`, activity
+  docs, Postman collection and guide.
+- Verification: new HTTP route test passed with stub repositories (identity,
+  authentication, query validation, paging and no-store). Syntax checks passed;
+  Postman JSON and scripts validated (29 requests). Existing full suite run:
+  12 passed, 5 integration suites failed at temporary MongoDB startup with
+  fassert, including retry outside sandbox. Expanded real-database assertions
+  for isolation, state filters, paging and soft deletion remain unverified.
+- Remaining: run MongoDB integration tests in a working environment; FE wiring.
+
 ## 2026-10-13 - Organize Postman by feature
 
 - Grouped collection into System, Authentication, Profile, Activities and Join

@@ -6,6 +6,7 @@ test('mailer fails closed when SMTP is missing', async () => {
   const mailer = createVerificationMailer({})
   assert.throws(() => mailer.assertConfigured(), { status: 503 })
   await assert.rejects(mailer.sendCode('user@example.com', '123456'), { status: 503 })
+  await assert.rejects(mailer.sendResetCode('user@example.com', '123456'), { status: 503 })
 })
 
 test('mailer addresses the user, uses TLS and handles SMTP rejection without leaking details', async () => {
@@ -24,7 +25,10 @@ test('mailer addresses the user, uses TLS and handles SMTP rejection without lea
     } }
   })
   await mailer.sendCode('user@example.com', '123456')
+  await mailer.sendResetCode('user@example.com', '123456')
   reject = true
   await assert.rejects(mailer.sendCode('user@example.com', '123456'), error =>
+    error.status === 503 && !error.message.includes('private'))
+  await assert.rejects(mailer.sendResetCode('user@example.com', '123456'), error =>
     error.status === 503 && !error.message.includes('private'))
 })

@@ -26,5 +26,15 @@ export function createVerificationMailer(config, createTransport = nodemailer.cr
         throw new HttpError(503, 'Could not send verification email. Please request a new code later.')
       }
     },
+    async sendResetCode(email, code) {
+      this.assertConfigured()
+      try {
+        const result = await transport.sendMail({ from: config.mailFrom, to: email,
+          subject: 'GoMate - Dat lai mat khau',
+          text: `Ma dat lai mat khau GoMate: ${code}\nMa co hieu luc 10 phut. Khong chia se ma nay.\nNeu ban khong yeu cau dat lai mat khau, hay bo qua email nay.`,
+        })
+        if (!result.accepted?.length) throw new Error('Recipient rejected')
+      } catch { throw new HttpError(503, 'Could not send password reset email') }
+    },
   }
 }

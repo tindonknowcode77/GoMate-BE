@@ -3,6 +3,7 @@ import { readConfig } from './config/env.js'
 import { createClient, initializeDatabase } from './database/mongo.js'
 import { createAuthRepository } from './modules/auth/repository.js'
 import { createActivityRepository } from './modules/activities/repository.js'
+import { createChatRepository } from './modules/chat/repository.js'
 
 const config = readConfig()
 let client
@@ -17,7 +18,8 @@ try {
 }
 const authRepository = createAuthRepository(client.db())
 const activityRepository = createActivityRepository(client.db())
-const server = createApp(config, { authRepository, activityRepository }).listen(config.port, config.host, () => {
+const chatRepository = createChatRepository(client.db())
+const server = createApp(config, { authRepository, activityRepository, chatRepository }).listen(config.port, config.host, () => {
   console.log(`GoMate (FE + API) running at http://${config.host}:${config.port}`)
 })
 
