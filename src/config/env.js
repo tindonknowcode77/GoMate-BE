@@ -35,6 +35,6 @@ export function readConfig(env = process.env) {
     trustProxyHops,
     port,
     host: env.HOST || (env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1'),
-    corsOrigin: env.CORS_ORIGIN || 'http://localhost:5173',
+    corsOrigin: (env.CORS_ORIGIN || 'http://localhost:8081,http://127.0.0.1:8081,http://localhost:5173').split(',').map(value => value.trim()).filter(Boolean),
   }
 }

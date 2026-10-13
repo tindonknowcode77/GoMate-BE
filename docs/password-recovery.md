@@ -9,7 +9,7 @@
 | POST | `/api/auth/change-password` | `{ "currentPassword": "OldPassword123!", "newPassword": "NewPassword123!" }` |
 
 Change yêu cầu `Authorization: Bearer <accessToken>`. Forgot/reset không cần token.
-Email trim/lowercase; code phải là chuỗi 6 chữ số; mật khẩu mới 12–128 ký tự,
+Email trim/lowercase; code phải là chuỗi 6 chữ số; mật khẩu mới 6–128 ký tự,
 không trim. Change không cho mật khẩu mới giống currentPassword. Không nhận field
 ngoài các field trong bảng. Thành công trả 200 `{ message }`.
 

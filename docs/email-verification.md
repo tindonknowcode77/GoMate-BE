@@ -3,7 +3,8 @@
 1. `POST /api/auth/register` với `name`, `email`, `password`: tạo tài khoản chưa
    xác minh, gửi mã qua SMTP và trả 201 với `verificationRequired: true`.
 2. `POST /api/auth/verify-email` với `{ "email": "ban@gmail.com", "code": "123456" }`.
-3. Khi xác minh thành công, gọi `/api/auth/login` như bình thường.
+3. Xác minh thành công trả `accessToken`, `tokenType`, `expiresIn`, `expiresAt`, `user`
+   giống login. FE lưu phiên và vào app ngay, không yêu cầu nhập lại mật khẩu.
 4. Nếu cần mã mới: `POST /api/auth/resend-verification` với `{ "email": "ban@gmail.com" }`.
 
 Mã gồm 6 số, hết hạn sau 10 phút, tối đa 5 lần nhập mỗi mã; gửi lại sau 60 giây.

@@ -22,9 +22,10 @@ Xem [cấu hình Google và Postman](google-login.md).
 
 Các ví dụ response trong bảng mô tả trường dữ liệu, không phải JSON mẫu hoàn chỉnh.
 Đăng ký tạo tài khoản và gửi mã email; gọi `/auth/verify-email` với `email`, `code`
-trước khi login lấy token. Xem [xác minh email và SMTP](email-verification.md).
+để lấy token trực tiếp sau xác minh (không cần gọi login lần nữa). Xem [xác minh email và SMTP](email-verification.md).
 Email được trim và chuyển
-thành chữ thường, không được trùng. Tên dài 2–100 ký tự, mật khẩu 12–128 ký tự.
+thành chữ thường, không được trùng. Tên dài 2–100 ký tự, mật khẩu 6–128 ký tự;
+không bắt buộc chữ hoa, số hay ký tự đặc biệt.
 Mật khẩu không bị trim hoặc thay đổi. Các trường khác như `role` không được sử dụng.
 
 Lỗi trả JSON `{ "error": "..." }`:

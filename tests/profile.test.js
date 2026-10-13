@@ -60,8 +60,13 @@ test('profiles and avatars persist with owner-only writes', async t => {
     assert.equal(result.status, 200)
     assert.equal(result.body.profile.name, users[0].name)
     assert.equal(result.body.profile.avatarUrl, null)
-    assert.deepEqual(Object.keys(result.body.profile).sort(), ['avatarUrl', 'bio', 'email', 'id', 'interests', 'location', 'name', 'username'])
+    assert.deepEqual(Object.keys(result.body.profile).sort(), ['alcohol', 'avatarUrl', 'bio', 'birthDate', 'coverUrl', 'demo', 'email', 'gender', 'id', 'interests', 'languages', 'location', 'missingFields', 'name', 'occupation', 'profileComplete', 'religion', 'username'])
+    assert.equal(result.body.profile.profileComplete, false)
+    assert.ok(result.body.profile.missingFields.includes('languages'))
     assert.equal(result.headers.get('cache-control'), 'no-store')
+    const publicResult = await request(`/${users[1].id}`)
+    assert.equal(publicResult.status, 200)
+    for (const field of ['email', 'birthDate', 'gender', 'religion', 'alcohol', 'password_hash']) assert.equal(publicResult.body.profile[field], undefined)
   })
   await t.test('updates allowed fields, normalizes usernames and preserves other fields', async () => {
     const result = await request('/me', 'PATCH', { name: ' New Name ', username: '@New_Name', bio: 'Hello', location: 'Ha Noi', interests: ['Coffee', 'Coffee', 'Travel'] })
@@ -83,6 +88,15 @@ test('profiles and avatars persist with owner-only writes', async t => {
       assert.equal((await request('/me', 'PATCH', body)).status, 400)
     }
     assert.equal((await repository.findUserByEmail(users[0].email)).name, 'New Name')
+  })
+  await t.test('completion follows persisted basic fields and sensitive preferences stay optional', async () => {
+    const result = await request('/me', 'PATCH', { name: 'Profile User', bio: 'Hello', location: 'TP.HCM', interests: ['Cà phê'], languages: ['Tiếng Việt'], gender: 'other', religion: 'undisclosed', alcohol: 'no' })
+    assert.equal(result.status, 200)
+    assert.equal(result.body.profile.profileComplete, true)
+    assert.equal(result.body.profile.gender, 'other')
+    assert.equal((await request('/me')).body.profile.languages[0], 'Tiếng Việt')
+    assert.equal((await request('/me', 'PATCH', { languages: [] })).body.profile.profileComplete, false)
+    for (const body of [{ languages: ['a'.repeat(41)] }, { gender: 'invalid' }, { religion: '$gt' }, { alcohol: 'sometimes' }, { birthDate: '2099-01-01' }, { birthDate: '2000-02-30' }, { profileComplete: true }]) assert.equal((await request('/me', 'PATCH', body)).status, 400)
   })
   let avatarUrl
   await t.test('re-encodes avatar for Cloudinary, persists URL and removes replaced cloud image', async () => {

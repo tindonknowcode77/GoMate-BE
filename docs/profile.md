@@ -7,13 +7,28 @@ chỉnh sửa; không tạo bản ghi người dùng thứ hai. Tất cả thao 
 | Method | Đường dẫn | Body / kết quả |
 | --- | --- | --- |
 | GET | `/api/profile/me` | `{ profile }` |
-| PATCH | `/api/profile/me` | Một hoặc nhiều trường `name`, `username`, `bio`, `location`, `interests`; trả `{ profile }` |
+| GET | `/api/profile/:id` | Hồ sơ hiển thị cho người dùng đã đăng nhập: tên, bio, khu vực, sở thích, ngôn ngữ, avatar, ảnh bìa, nghề nghiệp; không có email/ngày sinh/tôn giáo/khả năng uống rượu |
+| PATCH | `/api/profile/me` | Một hoặc nhiều trường `name`, `username`, `bio`, `location`, `interests`, `languages`, `gender`, `birthDate`, `religion`, `alcohol`; trả `{ profile }` |
 | PUT | `/api/profile/me/avatar` | `multipart/form-data`, file field `avatar`; hoặc JSON `{ "base64": "..." }`; trả `{ profile }` |
 | GET | `/api/profile/:id/avatar` | Redirect tới ảnh Cloudinary; ảnh MongoDB cũ vẫn được phục vụ; 404 nếu chưa có ảnh |
 
 Profile trả `id`, `email`, `name`, `username`, `bio`, `location`, `interests`,
 `avatarUrl` (URL HTTPS Cloudinary; ảnh cũ có thể là đường dẫn tương đối; hoặc null).
 Không trả mật khẩu/token/hash.
+
+Hồ sơ riêng trả thêm `coverUrl`, `occupation`, `demo`; nghề nghiệp có thể cập nhật
+bằng PATCH (0–100 ký tự). Dữ liệu demo có avatar Random User và ảnh bìa Unsplash.
+
+Trả thêm `languages`, `gender`, `birthDate`, `religion`, `alcohol`, `profileComplete`
+và `missingFields`. Hoàn thiện khi có tên, khu vực, giới thiệu, ít nhất một sở thích
+và một ngôn ngữ. FE nhắc bổ sung lúc vào app; người dùng có thể chọn để sau.
+Thông tin nâng cao tự nguyện, không tính vào độ hoàn thiện:
+
+- `gender`: `male`, `female`, `other`, `undisclosed`.
+- `religion`: `none`, `buddhist`, `catholic`, `protestant`, `muslim`, `hindu`, `other`, `undisclosed`.
+- `alcohol`: `yes`, `no`, `undisclosed`.
+- `birthDate`: ngày thật `YYYY-MM-DD`, không trong tương lai, hoặc chuỗi rỗng.
+- `languages`: tối đa 12 chuỗi, mỗi chuỗi 1–40 ký tự, loại trùng.
 
 - Tên: 2–100 ký tự; bio: tối đa 500; khu vực: tối đa 100.
 - Username tùy chọn, duy nhất, chuẩn hóa chữ thường và bỏ `@` đầu chuỗi;

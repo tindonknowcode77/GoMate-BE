@@ -74,6 +74,19 @@ test('configuration rejects invalid ports', () => {
   assert.equal(readConfig({}).port, 3000)
 })
 
+test('CORS allows configured Expo origins and supports comma-separated origins', async t => {
+  const config = readConfig({ CORS_ORIGIN: 'http://localhost:8081, http://127.0.0.1:8081' })
+  const server = createApp(config).listen(0, '127.0.0.1')
+  await once(server, 'listening'); t.after(() => new Promise(resolve => server.close(resolve)))
+  const base = `http://127.0.0.1:${server.address().port}/api/health`
+  for (const origin of config.corsOrigin) {
+    const response = await fetch(base, { headers: { Origin: origin } })
+    assert.equal(response.headers.get('access-control-allow-origin'), origin)
+  }
+  const blocked = await fetch(base, { headers: { Origin: 'https://untrusted.example' } })
+  assert.equal(blocked.headers.get('access-control-allow-origin'), null)
+})
+
 test('production binds publicly and respects the platform port', () => {
   const config = readConfig({ NODE_ENV: 'production', PORT: '10000' })
   assert.equal(config.host, '0.0.0.0')

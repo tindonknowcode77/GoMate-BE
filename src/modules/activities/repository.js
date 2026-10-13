@@ -36,16 +36,20 @@ export function createActivityRepository(db) {
       return { items, total, page, limit, hasMore: page * limit < total }
     },
     // Keep requests and capacity in one document so approval is atomic even on standalone MongoDB.
-    async submitJoinRequest(id, user) {
+    async submitJoinRequest(id, user, version) {
       const now = new Date()
       const request = { id: randomUUID(), userId: user.id, name: user.name, status: 'pending', createdAt: now, updatedAt: now }
       const row = await activities.findOneAndUpdate({ id, status: 'published', startsAt: { $gt: now }, hostId: { $ne: user.id },
+        ...(version !== undefined ? { version } : {}),
+        $or: [{ registrationDeadline: { $exists: false } }, { registrationDeadline: { $gt: now } }],
         joinRequests: { $not: { $elemMatch: { userId: user.id } } },
         $expr: { $and: [{ $lt: ['$memberCount', '$maxParticipants'] }, { $lt: [{ $size: { $ifNull: ['$joinRequests', []] } }, 5000] }] },
       }, { $push: { joinRequests: request }, $set: { updatedAt: now }, $inc: { version: 1 } }, { returnDocument: 'after' })
       if (row) return request
       // Reuse the user's existing entry after cancellation/rejection; never create duplicate membership.
       const retry = await activities.findOneAndUpdate({ id, status: 'published', startsAt: { $gt: now }, hostId: { $ne: user.id },
+        ...(version !== undefined ? { version } : {}),
+        $or: [{ registrationDeadline: { $exists: false } }, { registrationDeadline: { $gt: now } }],
         joinRequests: { $elemMatch: { userId: user.id, status: { $in: ['cancelled', 'rejected', 'left', 'removed'] } } },
         $expr: { $lt: ['$memberCount', '$maxParticipants'] },
       }, { $set: { 'joinRequests.$': request, updatedAt: now }, $inc: { version: 1 } }, { returnDocument: 'after' })
@@ -109,6 +113,22 @@ export function createActivityRepository(db) {
       }
       const date = { date: '$startsAt', timezone: 'Asia/Bangkok' }
       const checks = [match.$expr]
+      if (options.dateFrom || options.dateTo) {
+        const day = { $dateToString: { ...date, format: '%Y-%m-%d' } }
+        if (options.dateFrom) checks.push({ $gte: [day, options.dateFrom] })
+        if (options.dateTo) checks.push({ $lte: [day, options.dateTo] })
+      }
+      const minutes = { $add: [{ $multiply: [{ $hour: date }, 60] }, { $minute: date }] }
+      if (options.fromTime !== undefined) checks.push({ $gte: [minutes, options.fromTime] })
+      if (options.toTime !== undefined) checks.push({ $lte: [minutes, options.toTime] })
+      if (options.minParticipants !== undefined) checks.push({ $gte: [{ $ifNull: ['$minParticipants', 2] }, options.minParticipants] })
+      if (options.maxParticipants !== undefined) checks.push({ $lte: ['$maxParticipants', options.maxParticipants] })
+      for (const [key, field] of [['gender', 'genders'], ['language', 'languages'], ['religion', 'religions']]) if (options[key]) {
+        const list = { $ifNull: [`$participantPreferences.${field}`, []] }
+        checks.push({ $or: [{ $eq: [{ $size: list }, 0] }, { $in: [options[key], list] }] })
+      }
+      if (options.alcohol) checks.push({ $in: [{ $ifNull: ['$participantPreferences.alcohol', 'any'] }, ['any', options.alcohol]] })
+      if (options.dressCode) checks.push({ [options.dressCode === 'yes' ? '$ne' : '$eq']: [{ $ifNull: ['$participantPreferences.dressCode', ''] }, ''] })
       if (options.days.length) checks.push({ $in: [{ $isoDayOfWeek: date }, options.days] })
       checks.push({ $gte: [{ $hour: date }, options.fromHour] }, { $lt: [{ $hour: date }, options.toHour] })
       match.$expr = { $and: checks }
@@ -121,7 +141,7 @@ export function createActivityRepository(db) {
         { $facet: {
           items: [{ $skip: (options.page - 1) * options.limit }, { $limit: options.limit },
             { $project: { _id: 0, id: 1, title: 1, hostId: 1, hostName: 1, location: 1, startsAt: 1,
-              memberCount: 1, maxParticipants: 1, category: 1, tags: 1, description: 1, estimatedCost: 1,
+              memberCount: 1, minParticipants: 1, maxParticipants: 1, participantPreferences: 1, endsAt: 1, registrationDeadline: 1, meetingPoint: 1, financialConfig: 1, category: 1, tags: 1, description: 1, estimatedCost: 1,
               requirements: 1, plan: 1, imageUrl: 1, distanceKm: geo ? { $divide: ['$distanceMeters', 1000] } : { $literal: null },
             } }], total: [{ $count: 'count' }],
         } })

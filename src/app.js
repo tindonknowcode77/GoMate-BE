@@ -26,7 +26,7 @@ export function createApp(config = readConfig(), { authRepository, activityRepos
       'script-src': ["'self'", 'https://accounts.google.com/gsi/client'],
       'frame-src': ["'self'", 'https://accounts.google.com/gsi/'],
       'connect-src': ["'self'", 'https://accounts.google.com/gsi/'],
-      'img-src': ["'self'", 'data:', 'blob:', 'https://res.cloudinary.com'],
+      'img-src': ["'self'", 'data:', 'blob:', 'https://res.cloudinary.com', 'https://images.unsplash.com', 'https://randomuser.me'],
       'style-src': ["'self'", "'unsafe-inline'", 'https://accounts.google.com/gsi/style'],
     } },
   }))

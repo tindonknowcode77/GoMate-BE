@@ -1,5 +1,40 @@
 # Development log
 
+## 2026-10-13 - Remote demo images, complete member accounts and real group rosters
+
+- Added curated external Unsplash activity photos and Random User avatars/Unsplash
+  covers. Ten complete member accounts bring demo total to 14. Enriched only marked
+  demo records; kept existing credentials, dates and roster decisions intact.
+- Seeded 59 approved memberships and 20 pending requests across 20 groups (3–5
+  people including host); version guards prevent reintroducing departed members.
+- Added authenticated public-profile read with private fields omitted and member
+  avatar responses. Narrow CSP permits the two selected external media providers.
+- Verification: 57 BE tests passed; FE integration/typecheck/lint/Expo Doctor and
+  export passed. Remote URLs and browser profile/group images verified; actual DB
+  counts, completion and membership totals audited without exposing credentials.
+- Sources and account instructions: docs/demo.md and database/demo-media.js.
+- Remaining: external image availability and physical-device QA.
+
+## 2026-10-13 - Signup sessions, exact activity filters, profiles and TP.HCM demo
+
+- Set password creation/reset/change minimum to six without composition rules;
+  successful verification returns a live Bearer session. Tested expiry, revocation,
+  verification replay and short-password registration.
+- Added min/max activity size and validated optional participant requirements.
+  Discovery matches Vietnam date ranges, minute ranges, group size and preferences;
+  join requests check volunteered profile fields and activity version.
+- Extended profile writes with languages and optional personal fields; responses
+  derive completion/missing fields. Account-owner permission and avatar handling preserved.
+- Added insert-only demo seeder: 20 fictional future TP.HCM activities, four demo
+  users; ran it against configured database without replacing previous rows.
+- Files: auth/profile/activity modules, common/preferences, database demo scripts,
+  package script, tests, docs and Postman metadata.
+- Verification: npm test 57/57 passed; FE real-service integration, typecheck/lint,
+  Expo Doctor 21/21 and web export passed. Browser profile save, creation, precise
+  filtering and demo reminder checked; test activity removed afterward.
+- Remaining: financial transaction processing and broader UI integrations are outside
+  this task. Demo schedules remain fixed after first seed; records clearly marked demo.
+
 ## 2026-10-13 - Activity lifecycle, attendance and updates
 
 - Added host-only start/complete transitions, attendance marking and notes;

@@ -27,7 +27,7 @@
       "key": "password",
       "value": "GoMate@Test123456",
       "type": "string",
-      "description": "Mật khẩu 12–128 ký tự."
+      "description": "Mật khẩu 6–128 ký tự."
     },
     {
       "key": "accessToken",
@@ -192,7 +192,7 @@
       "key": "newPassword",
       "value": "",
       "type": "string",
-      "description": "New password: 12-128 characters."
+      "description": "New password: 6-128 characters."
     },
     {
       "key": "currentPassword",

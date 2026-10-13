@@ -98,7 +98,7 @@ test('join requests: authorization, lifecycle and concurrent capacity enforcemen
   assert.equal((await req(0, '/members?limit=0')).status, 400)
   const members = (await req(approvedUser, '/members')).body
   assert.equal(members.total, 2)
-  assert.deepEqual(members.items[0], { userId: users[0].id, name: users[0].name, role: 'host' })
+  assert.deepEqual(members.items[0], { userId: users[0].id, name: users[0].name, role: 'host', avatarUrl: null })
   assert.equal(members.items[1].status, undefined)
   assert.equal((await req(0, '/members/me', 'DELETE')).status, 403)
   assert.equal((await req(0, `/members/${users[0].id}`, 'DELETE')).status, 403)

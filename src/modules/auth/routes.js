@@ -63,7 +63,8 @@ export function createAuthRouter(repository, config, verifyGoogle = createGoogle
     const code = req.body?.code
     if (typeof code !== 'string' || !/^\d{6}$/.test(code)) throw new HttpError(400, 'A 6-digit verification code is required')
     if (!await repository.verifyEmail(email, code)) throw new HttpError(400, 'Invalid or expired code. Request a new code if needed.')
-    res.json({ message: 'Email verified. You can now log in.' })
+    const user = await repository.findUserByEmail(email)
+    await issueSession(user, res, false)
   })
 
   function readRememberMe(body) {
@@ -124,7 +125,7 @@ export function createAuthRouter(repository, config, verifyGoogle = createGoogle
   function passwordBody(body, keys) {
     if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== keys.length ||
       keys.some(key => typeof body[key] !== 'string') || Object.keys(body).some(key => !keys.includes(key))) throw new HttpError(400, 'Invalid password request body')
-    if (keys.includes('newPassword') && (body.newPassword.length < 12 || body.newPassword.length > 128)) throw new HttpError(400, 'Password must contain 12 to 128 characters')
+    if (keys.includes('newPassword') && (body.newPassword.length < 6 || body.newPassword.length > 128)) throw new HttpError(400, 'Mật khẩu cần từ 6 đến 128 ký tự')
   }
   router.post('/forgot-password', rateLimit({ ...limitOptions, limit: 5 }), async (req, res) => {
     passwordBody(req.body, ['email'])

@@ -9,8 +9,8 @@ export function credentials(body, registration = false) {
     throw new HttpError(400, 'Valid email required')
   }
   const password = body.password
-  if (typeof password !== 'string' || password.length < (registration ? 12 : 1) || password.length > 128) {
-    throw new HttpError(400, registration ? 'Password must contain 12 to 128 characters' : 'Invalid password')
+  if (typeof password !== 'string' || password.length < (registration ? 6 : 1) || password.length > 128) {
+    throw new HttpError(400, registration ? 'Mật khẩu cần từ 6 đến 128 ký tự' : 'Invalid password')
   }
   if (!registration) return { email, password }
   const name = typeof body.name === 'string' ? body.name.trim() : ''

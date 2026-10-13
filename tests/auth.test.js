@@ -84,7 +84,11 @@ test('authentication lifecycle using the MongoDB engine', async t => {
     assert.equal(delivered.length, 1)
     const wrong = code === '000000' ? '111111' : '000000'
     assert.equal((await client.request('/verify-email', { method: 'POST', body: { email: account.email, code: wrong } })).status, 400)
-    assert.equal((await client.request('/verify-email', { method: 'POST', body: { email: account.email, code } })).status, 200)
+    const verified = await client.request('/verify-email', { method: 'POST', body: { email: account.email, code } })
+    assert.equal(verified.status, 200)
+    assert.match(verified.body.accessToken, /^[A-Za-z0-9_-]{43}$/)
+    assert.equal((await client.request('/me', { token: verified.body.accessToken })).status, 200)
+    assert.equal((await client.request('/logout', { method: 'POST', token: verified.body.accessToken })).status, 204)
     assert.equal((await client.request('/verify-email', { method: 'POST', body: { email: account.email, code } })).status, 400)
     assert.equal((await repository.findUserByEmail('test@example.com')).verification, undefined)
   })

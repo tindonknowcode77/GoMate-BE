@@ -5,10 +5,11 @@ import { activityCategories, activityFields, publicActivity } from './validation
 import { authenticate } from '../../middlewares/authenticate.js'
 import { HttpError } from '../../common/http-error.js'
 import { randomUUID } from 'node:crypto'
+import { canParticipate, genders, religions } from '../../common/preferences.js'
 
 const categories = activityCategories
 export function searchOptions(query) {
-  const allowed = ['q', 'categories', 'minCost', 'maxCost', 'days', 'fromHour', 'toHour', 'lat', 'lng', 'distanceKm', 'page', 'limit']
+  const allowed = ['q', 'categories', 'minCost', 'maxCost', 'days', 'fromHour', 'toHour', 'fromTime', 'toTime', 'dateFrom', 'dateTo', 'minParticipants', 'maxParticipants', 'gender', 'language', 'religion', 'alcohol', 'dressCode', 'lat', 'lng', 'distanceKm', 'page', 'limit']
   for (const [key, value] of Object.entries(query)) {
     if (!allowed.includes(key) || typeof value !== 'string' || !value.trim()) throw new HttpError(400, `Invalid query parameter: ${key}`)
   }
@@ -26,10 +27,28 @@ export function searchOptions(query) {
     days: query.days?.split(',').map(Number) ?? [],
     fromHour: number('fromHour', 0, 23, 0, true), toHour: number('toHour', 1, 24, 24, true),
   }
-  if (options.q?.length > 100 || options.categories.some(value => !categories.includes(value)) || options.categories.length > 7) throw new HttpError(400, 'Invalid search or categories')
+  if (options.q?.length > 100 || options.categories.some(value => !categories.includes(value)) || options.categories.length > categories.length) throw new HttpError(400, 'Invalid search or categories')
   if (options.days.length > 7 || options.days.some(value => !Number.isInteger(value) || value < 1 || value > 7)) throw new HttpError(400, 'days must use ISO weekdays 1–7')
   if (options.minCost > options.maxCost || options.fromHour >= options.toHour) throw new HttpError(400, 'Invalid cost or hour range')
   if ((options.lat === undefined) !== (options.lng === undefined) || (options.distanceKm !== undefined && options.lat === undefined)) throw new HttpError(400, 'Distance requires lat and lng')
+  for (const key of ['dateFrom', 'dateTo']) if (query[key] !== undefined) {
+    const value = query[key]
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(new Date(value).getTime()) || new Date(value).toISOString().slice(0, 10) !== value) throw new HttpError(400, `Invalid ${key}`)
+    options[key] = value
+  }
+  for (const key of ['fromTime', 'toTime']) if (query[key] !== undefined) {
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(query[key])) throw new HttpError(400, `Invalid ${key}`)
+    options[key] = query[key].split(':').reduce((hour, minute) => hour * 60 + Number(minute), 0)
+  }
+  options.minParticipants = number('minParticipants', 2, 1000, undefined, true)
+  options.maxParticipants = number('maxParticipants', 2, 1000, undefined, true)
+  if (options.dateFrom > options.dateTo || options.fromTime > options.toTime || options.minParticipants > options.maxParticipants) throw new HttpError(400, 'Invalid date, time or member range')
+  for (const [key, values] of [['gender', genders], ['religion', religions], ['alcohol', ['yes', 'no']], ['dressCode', ['yes', 'no']]]) {
+    if (query[key] !== undefined && !values.includes(query[key])) throw new HttpError(400, `Invalid ${key}`)
+    options[key] = query[key]
+  }
+  if (query.language?.length > 40) throw new HttpError(400, 'Invalid language')
+  options.language = query.language
   return options
 }
 
@@ -143,7 +162,11 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     approved.sort((a, b) => a.updatedAt - b.updatedAt || a.userId.localeCompare(b.userId))
     const items = [{ userId: activity.hostId, name: activity.hostName, role: 'host' },
       ...approved.map(item => ({ userId: item.userId, name: item.name, role: 'member' }))]
-    res.json({ items: items.slice((page - 1) * limit, page * limit), total: items.length, page, limit, hasMore: page * limit < items.length })
+    const paged = await Promise.all(items.slice((page - 1) * limit, page * limit).map(async item => {
+      const user = await authRepository.getProfile(item.userId)
+      return { ...item, name: user?.name ?? item.name, avatarUrl: user?.avatar_url ?? null }
+    }))
+    res.json({ items: paged, total: items.length, page, limit, hasMore: page * limit < items.length })
   })
   async function removeMember(req, res, hostAction) {
     const activity = await find(req.params.id, hostAction ? req.auth.user.id : undefined)
@@ -159,7 +182,8 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     if (req.body !== undefined && (!req.body || Array.isArray(req.body) || typeof req.body !== 'object' || Object.keys(req.body).length)) throw new HttpError(400, 'Join request body must be empty')
     const activity = await find(req.params.id)
     if (activity.hostId === req.auth.user.id) throw new HttpError(403, 'Host cannot request to join their own activity')
-    const request = await repository.submitJoinRequest(activity.id, req.auth.user)
+    if (activity.participantPreferences && !canParticipate(activity.participantPreferences, await authRepository.getProfile(req.auth.user.id))) throw new HttpError(403, 'Hồ sơ chưa đáp ứng yêu cầu nhóm. Hãy kiểm tra giới tính, ngôn ngữ và tùy chọn cá nhân trong hồ sơ.')
+    const request = await repository.submitJoinRequest(activity.id, req.auth.user, activity.version)
     if (!request) throw new HttpError(409, 'Activity is unavailable, full, request limit reached, or you already have a pending/approved request')
     res.status(201).json({ request })
   })
@@ -191,6 +215,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   })
   router.post('/', writes, express.json({ limit: '3mb' }), async (req, res) => {
     const fields = activityFields(req.body)
+    if (fields.financialConfig && fields.financialConfig.treasurerUserId !== req.auth.user.id) throw new HttpError(400, 'Treasurer must be the activity host')
     const image = await cover(req.body.coverBase64, req.auth.user.id)
     try {
       const row = await repository.create({ ...fields, ...(image ? { imageUrl: image.url, imagePublicId: image.publicId } : {}) }, req.auth.user)
@@ -201,6 +226,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const previous = await find(req.params.id, req.auth.user.id)
     if (previous.status !== 'published' || previous.startsAt <= new Date()) throw new HttpError(409, 'Started activities cannot be edited')
     const fields = activityFields(req.body, previous)
+    if (fields.financialConfig && fields.financialConfig.treasurerUserId !== req.auth.user.id) throw new HttpError(400, 'Treasurer must be the activity host')
     const image = await cover(req.body.coverBase64, req.auth.user.id)
     let row
     try {

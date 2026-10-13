@@ -5,22 +5,38 @@ import multer from 'multer'
 import { createAvatarStorage } from './cloudinary.js'
 import { HttpError } from '../../common/http-error.js'
 import { authenticate } from '../../middlewares/authenticate.js'
+import { genders, religions, stringList } from '../../common/preferences.js'
 
 function profile(user) {
   if (!user) throw new HttpError(404, 'Profile not found')
+  const missingFields = ['name', 'location', 'bio'].filter(key => !user[key]?.trim())
+  if (!user.interests?.length) missingFields.push('interests')
+  if (!user.languages?.length) missingFields.push('languages')
   return { id: user.id, name: user.name, email: user.email,
     username: user.username ?? '', bio: user.bio ?? '', location: user.location ?? '',
     interests: user.interests ?? [],
+    languages: user.languages ?? [], gender: user.gender ?? 'undisclosed', religion: user.religion ?? 'undisclosed',
+    alcohol: user.alcohol ?? 'undisclosed', birthDate: user.birthDate ?? '',
+    profileComplete: missingFields.length === 0, missingFields,
     avatarUrl: user.avatar_url ?? (user.avatar_version ? `/api/profile/${user.id}/avatar?v=${user.avatar_version}` : null),
+    coverUrl: user.cover_url ?? null, occupation: user.occupation ?? '', demo: user.demo === true,
   }
 }
 
 function fields(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Invalid profile')
-  const limits = { name: [2, 100], username: [0, 30], bio: [0, 500], location: [0, 100] }
+  const limits = { name: [2, 100], username: [0, 30], bio: [0, 500], location: [0, 100], occupation: [0, 100] }
   const result = {}
   for (const [key, value] of Object.entries(body)) {
-    if (key === 'interests') {
+    if (key === 'languages') { result[key] = stringList(value, key) }
+    else if (['gender', 'religion', 'alcohol'].includes(key)) {
+      const options = key === 'gender' ? genders : key === 'religion' ? religions : ['yes', 'no', 'undisclosed']
+      if (!options.includes(value)) throw new HttpError(400, `Invalid ${key}`)
+      result[key] = value
+    } else if (key === 'birthDate') {
+      if (typeof value !== 'string' || (value && (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(new Date(value).getTime()) || new Date(value).toISOString().slice(0, 10) !== value || new Date(value) > new Date() || value < '1900-01-01'))) throw new HttpError(400, 'Invalid birthDate')
+      result[key] = value
+    } else if (key === 'interests') {
       if (!Array.isArray(value) || value.length > 12 || value.some(item => typeof item !== 'string' || !item.trim() || item.trim().length > 40)) {
         throw new HttpError(400, 'interests must contain at most 12 strings of 1–40 characters')
       }
@@ -68,6 +84,12 @@ export function createProfileRouter(repository, config, storage = createAvatarSt
   })
   router.use(authenticate(repository))
   router.get('/me', async (req, res) => res.json({ profile: profile(await repository.getProfile(req.auth.user.id)) }))
+  router.get('/:id', async (req, res) => {
+    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) throw new HttpError(404, 'Profile not found')
+    const person = profile(await repository.getProfile(req.params.id))
+    const keys = ['id', 'name', 'username', 'bio', 'location', 'interests', 'languages', 'avatarUrl', 'coverUrl', 'occupation', 'demo']
+    res.json({ profile: Object.fromEntries(keys.map(key => [key, person[key]])) })
+  })
   router.patch('/me', express.json({ limit: '16kb' }), async (req, res) => {
     try {
       res.json({ profile: profile(await repository.updateProfile(req.auth.user.id, fields(req.body))) })
