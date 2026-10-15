@@ -1,16 +1,19 @@
 import { randomUUID } from 'node:crypto'
-import { ObjectId } from 'mongodb'
+import { messageLinks } from './content.js'
+import { ObjectId, Binary } from 'mongodb'
 import { HttpError } from '../../common/http-error.js'
 import { createCommunityRepository } from '../community/repository.js'
 
 const messageView = row => row ? { id: row._id.toHexString(), conversationId: row.conversationId,
-  senderId: row.senderId, senderName: row.senderName ?? 'Thành viên', text: row.text, clientMessageId: row.clientMessageId, createdAt: row.createdAt } : null
+  senderId: row.senderId, senderName: row.senderName ?? 'Thành viên', text: row.text, attachments: row.attachments ?? [], location: row.location ?? null, links: row.links ?? messageLinks(row.text), clientMessageId: row.clientMessageId, createdAt: row.createdAt } : null
 const conversationView = row => ({ id: row.id, type: row.type, createdAt: row.createdAt,
   ...(row.type === 'direct' ? { participantIds: row.participantIds } : { activityId: row.activityId }) })
 
 export function createChatRepository(db) {
   const community = createCommunityRepository(db)
   const conversations = db.collection('conversations'), messages = db.collection('chat_messages')
+  const uploads = db.collection('chat_attachments')
+  const attachmentView = row => ({ id: row._id.toHexString(), name: row.name, size: row.size, mimeType: row.mimeType, kind: row.kind })
   const reads = db.collection('chat_reads'), activities = db.collection('activities')
   const membership = userId => ({ status: { $ne: 'deleted' }, $or: [
     { hostId: userId }, { joinRequests: { $elemMatch: { userId, status: 'approved' } } },
@@ -46,6 +49,27 @@ export function createChatRepository(db) {
   }
   return {
     access,
+    async upload(id, userId, file, metadata) {
+      await access(id, userId)
+      const size = await uploads.aggregate([{ $match: { conversationId: id, ownerId: userId } }, { $group: { _id: null, total: { $sum: '$size' } } }]).toArray()
+      if ((size[0]?.total ?? 0) + file.length > 250 * 1024 * 1024) throw new HttpError(413, 'Giới hạn lưu trữ 250 MB trong mỗi cuộc trò chuyện')
+      const row = { _id: new ObjectId(), conversationId: id, ownerId: userId, ...metadata, data: new Binary(file), expiresAt: new Date(Date.now() + 86400000), createdAt: new Date() }
+      await uploads.insertOne(row)
+      return attachmentView(row)
+    },
+    async attachment(id, userId, attachmentId) {
+      await access(id, userId)
+      const row = await uploads.findOne({ _id: new ObjectId(attachmentId), conversationId: id })
+      if (!row || (!row.messageId && row.ownerId !== userId)) throw new HttpError(404, 'Attachment not found')
+      return row
+    },
+    async shared(id, userId, { kind, before, limit }) {
+      await access(id, userId)
+      const condition = kind === 'media' ? { 'attachments.kind': { $in: ['image', 'video', 'audio'] } } : kind === 'files' ? { 'attachments.kind': 'file' } : kind === 'locations' ? { location: { $ne: null } } : { $or: [{ 'links.0': { $exists: true } }, { text: { $regex: 'https?://', $options: 'i' } }] }
+      const rows = await messages.find({ conversationId: id, ...condition, ...(before ? { _id: { $lt: new ObjectId(before) } } : {}) }).sort({ _id: -1 }).limit(limit + 1).toArray()
+      const items = rows.slice(0, limit).map(messageView)
+      return { items, hasMore: rows.length > limit, nextCursor: rows.length > limit ? items.at(-1).id : null }
+    },
     async create(userId, body) {
       let key, fields
       if (body.type === 'direct') {
@@ -95,27 +119,33 @@ export function createChatRepository(db) {
       const hasMore = rows.length > limit, items = rows.slice(0, limit).map(messageView)
       return { items, hasMore, nextCursor: hasMore ? items.at(-1).id : null }
     },
-    async send(id, userId, { text, clientMessageId }) {
+    async send(id, userId, { text, clientMessageId, attachmentIds = [], location = null }) {
       const target = await access(id, userId)
       if (target.type === 'direct') {
         const otherId = target.participantIds.find(id => id !== userId)
         if ((await community.settings(otherId)).directMessages === 'friends' && !await db.collection('friendships').findOne({ key: JSON.stringify([userId, otherId].sort()), status: 'accepted' })) throw new HttpError(403, 'Người này chỉ nhận tin nhắn từ bạn bè')
       }
+      const files = await Promise.all(attachmentIds.map(async fileId => {
+        const file = await uploads.findOne({ _id: new ObjectId(fileId), conversationId: id, ownerId: userId }, { projection: { data: 0 } })
+        if (!file) throw new HttpError(400, 'Invalid attachment')
+        return attachmentView(file)
+      }))
       const sender = await db.collection('users').findOne({ id: userId }, { projection: { name: 1 } })
       let row
       try {
         row = await messages.findOneAndUpdate({ conversationId: id, senderId: userId, clientMessageId }, {
-          $setOnInsert: { conversationId: id, senderId: userId, senderName: sender?.name ?? 'Thành viên', clientMessageId, text, createdAt: new Date() },
+          $setOnInsert: { conversationId: id, senderId: userId, senderName: sender?.name ?? 'Thành viên', clientMessageId, text, attachments: files, location, links: messageLinks(text), createdAt: new Date() },
         }, { upsert: true, returnDocument: 'after' })
       } catch (error) {
         if (error.code !== 11000) throw error
         row = await messages.findOne({ conversationId: id, senderId: userId, clientMessageId })
       }
-      if (row.text !== text) throw new HttpError(409, 'clientMessageId already used for different text')
+      if (row.text !== text || JSON.stringify(row.attachments ?? []) !== JSON.stringify(files) || JSON.stringify(row.location ?? null) !== JSON.stringify(location)) throw new HttpError(409, 'clientMessageId already used for different text')
+      if (attachmentIds.length) await uploads.updateMany({ _id: { $in: attachmentIds.map(value => new ObjectId(value)) }, conversationId: id, ownerId: userId }, { $set: { messageId: row._id, clientMessageId }, $unset: { expiresAt: '' } })
       const conversation = await access(id, userId)
       const group = conversation.type === 'group' ? await activities.findOne({ id: conversation.activityId }) : null
       const recipients = group ? [group.hostId, ...(group.joinRequests ?? []).filter(item => item.status === 'approved').map(item => item.userId)] : conversation.participantIds
-      await Promise.all(recipients.map(recipient => community.notify(recipient, { key: `message:${row._id}`, type: 'message', title: group?.title || sender?.name || 'Tin nhắn mới', text: text.slice(0, 160), conversationId: id, activityId: group?.id, actorId: userId })))
+      await Promise.all(recipients.map(recipient => community.notify(recipient, { key: `message:${row._id}`, type: 'message', title: group?.title || sender?.name || 'Tin nhắn mới', text: (text || (location ? 'Đã chia sẻ vị trí' : 'Đã gửi tệp đính kèm')).slice(0, 160), conversationId: id, activityId: group?.id, actorId: userId })))
       return messageView(row)
     },
     async markRead(id, userId, messageId) {

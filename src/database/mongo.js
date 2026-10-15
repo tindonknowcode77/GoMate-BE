@@ -6,6 +6,9 @@ export function createClient(config) {
 }
 
 export async function initializeDatabase(db) {
+  await db.collection('activity_drafts').createIndex({ ownerId: 1 }, { unique: true })
+  await db.collection('chat_attachments').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
+  await db.collection('chat_attachments').createIndex({ conversationId: 1, ownerId: 1 })
   await db.collection('notifications').createIndex({ userId: 1, key: 1 }, { unique: true })
   await db.collection('notifications').createIndex({ userId: 1, createdAt: -1, id: -1 })
   await db.collection('user_blocks').createIndex({ ownerId: 1, targetId: 1 }, { unique: true })

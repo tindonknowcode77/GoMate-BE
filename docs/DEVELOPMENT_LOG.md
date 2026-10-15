@@ -1,5 +1,125 @@
 # Development log
 
+## 2026-10-16 - Private activity drafts, member portraits and requested demo friends
+
+### Summary
+
+- Add authenticated one-draft-per-account storage with incomplete field validation, optimistic versions, bounded/rate-limited payloads and GridFS for photos/Excel beyond BSON limits. Clean old/rejected files on normal replacement/delete paths.
+- Enrich owned/joined activities with up to four current approved-member profile avatars, excluding pending users and private companion names. Frontend uses neutral silhouettes instead of repeated sample portraits.
+- Add/run an idempotent targeted demo-friend seeder: five separate full profiles/portraits and accepted friendships for the requested existing account. Preserve credentials/unrelated accounts on re-run.
+
+### Files changed
+
+- `src/modules/drafts/{repository,routes}.js`, `src/modules/auth/repository.js`, `src/app.js`, `src/database/mongo.js`.
+- `src/modules/activities/{repository,validation}.js`, `src/database/seed-user-friends.js`, `package.json`, `tests/drafts.test.js`, `docs/activity-drafts.md`.
+
+### Verification
+
+- Full `npm test`: 93 passed. Final draft suite passed private partial drafts, >16 MB media/state round trip, conflicts, cleanup, seed idempotence and current approved-avatar refresh/privacy.
+- Real configured DB: five profiles, five accepted friendships, five different portrait URLs; all portrait HEAD requests returned 200.
+- FE trip/Maps integrations passed account draft reload/publication cleanup, companion typing, chat/media and member-photo UI; frontend typecheck/lint/doctor and web/native exports passed.
+
+### Remaining work
+
+- Production reconciliation for GridFS files orphaned by process termination; physical-device validation. Draft creation currently supports one explicitly saved unfinished post per account.
+
+## 2026-10-16 - VIETMAP address/POI lookup alongside Mapbox
+
+### Summary
+
+- Prefer server-side VIETMAP Autocomplete v4 (`display_type=1`, optional lat/lng focus) and Place v4 for addresses/POIs. Preserve Mapbox GL JS, Directions and existing API contracts; use Mapbox permanent geocoding only if VIETMAP is not configured.
+- Cache opaque provider references behind one-time UUID selections bound to the account/session. Validate points, map current city/ward components, retain selections on upstream failures and block duplicate in-flight selections.
+- Configure the supplied key in ignored local `.env`. Public config exposes provider identity/availability, never the VIETMAP key. Keep fixed upstream URLs, rate/time limits and sanitized errors; do not silently fall back after VIETMAP denial.
+
+### Files changed
+
+- `src/config/env.js`, `src/modules/maps/{routes,service}.js`, `.env.example`, `tests/vietmap.test.js`, `docs/maps.md`, README.
+- Ignored local `.env`: VIETMAP Services key added; existing values preserved.
+
+### Verification
+
+- `npm test`: 91 tests passed. Maps tests cover hybrid selection, API-key secrecy, account/session binding, exact opaque ref_id, retry after quota/point errors, timeout/rate handling and VIETMAP without Mapbox.
+- Real VIETMAP Autocomplete/Place v4 returned 200. FE opt-in live script passed actual lookup with public-config secrecy and real Mapbox route/SDK rendering.
+- FE hybrid UI/persistence and FE/BE service integration passed; typecheck/lint/doctor and web/native exports passed.
+
+### Remaining work
+
+- Physical-device and deployment verification; monitor VIETMAP/Mapbox quotas independently. Selection cache is process-local and expires after five minutes.
+
+## 2026-10-16 - Mapbox provider migration and live map/API verification
+
+### Summary
+
+- Replace the preceding uncommitted Google integration with Mapbox GL JS 3.33.0/streets-v12 and fixed authenticated Geocoding v6/Directions v5 endpoints. Retain OSM for unconfigured installs, shared iframe/WebView bridge, circle radius, draggable/clickable pins and buffered polyline5 overlays.
+- Persistable address selections use permanent geocoding; bound the selection cache to 500 entries/five minutes and the requesting account/session. Consume details without extra upstream calls. Validate requests/provider data, enforce rate/time limits and return sanitized errors.
+- Configure the supplied public token only in ignored `.env`; accept public tokens for the SDK, do not expose secret tokens, remove old Maps configuration, preserve OAuth. Scope Mapbox CSP to the map document and keep provider logo/attribution.
+
+### Files changed
+
+- `src/config/env.js`, `src/app.js`, `src/modules/maps/{routes,service}.js`, `src/map/mapbox-map.{html,js}`, `.env.example`, `tests/maps.test.js`, `docs/maps.md`, README.
+- Local `.env` updated without changing existing values; ignored, not staged. Previous uncommitted Google map documents replaced.
+
+### Verification
+
+- `npm test`: full suite passed 88 tests. Final `node --test tests/maps.test.js`: 3 passed after malformed upstream/body handling and explicit OSM fallback checks.
+- Supplied token live: style, permanent Geocoding and Directions returned 200. FE opt-in live script passed real SDK/tiles, radius, pin, routes and attribution; no token output.
+- FE Maps UI and trip regressions plus FE/BE service integration passed with temporary MongoDB; activity/chat points survive publication and reads. FE typecheck/lint/doctor and web/native bundle exports passed.
+
+### Remaining work
+
+- Physical-device WebView/GPS, deployed token/domain configuration and production budgets. Search uses persistable addresses, not temporary POI Search Box results. Cache is per process; expired/cross-instance selections require another search.
+
+## 2026-10-16 - Google Maps configuration and authorized Places/Routes proxy
+
+### Summary
+
+- Add public browser-map configuration and authenticated, validated Places API (New)/Routes endpoints. Restrict provider URLs/fields, session/body formats, Vietnam autocomplete, modes, timeouts and per-account rates; sanitize upstream errors and keep server credentials private.
+- Serve Google Maps JavaScript with Advanced Markers/circles/polyline bridge and scoped CSP when configured; retain OSM without a browser key. Keep attribution and frame-origin restrictions.
+- Add blank env example and setup/API documentation. Do not write Google search lists/routes to MongoDB or change user billing/key/OAuth configuration.
+
+### Files changed
+
+- New `src/modules/maps/{service,routes}.js`, `src/map/google-map.{html,js}`, `tests/maps.test.js`, `.env.example`, `docs/maps.md`.
+- `src/app.js`, `src/config/env.js`, README and this log; corresponding FE picker/map/route/chat integration and browser tests.
+
+### Verification
+
+- Full `npm test`: 88 passed. Focused Maps HTTP/provider tests passed after payload hardening; cover auth, body validation, fixed/minimal requests, key privacy, missing configuration, provider denial/timeouts/rate limits and map framing.
+- FE `test:maps:web` passed using real FE/BE/MongoDB with a Google SDK/fetch double. Existing web smoke, trip and integration tests passed with unconfigured Google/OSM fallback.
+- FE typecheck/lint, Expo Doctor 21/21 and web/Android/iOS bundle exports passed.
+- `git diff --check`: passed. Local configuration presence only was inspected; neither key was printed or changed.
+
+### Remaining work
+
+- Both Google Maps key values are currently absent. Live billing/API/referrer/outbound-IP setup and physical-device verification are still required; provider doubles do not validate these.
+- Application rate limits are per instance, not a shared spending cap. Configure provider quotas/alerts, production Terms/Privacy and Google data-retention/attribution requirements before wider deployment.
+
+## 2026-10-15 - Authorized chat attachments, shared library and companion profiles
+
+### Summary
+
+- Accept bounded multipart uploads, identify supported file headers, and persist private Binary documents separately from message metadata. Expire unsent files; require current conversation access for every read and upload; support HTTP byte ranges for playback.
+- Extend idempotent messages with owned conversation attachments, validated location snapshots and safe extracted links. Add a cursor-paged media/file/link/location library and meaningful notifications for content-only messages.
+- Validate private companion names/notes against reserved seats. Add group-only reads, host/version-checked edits and atomic removal of consumed entries when real friends take reserved places. Keep companions out of public activity data and authenticated identities.
+- Read host avatars from current profiles for Match/detail, with a legacy avatar-version fallback. Permit blob media in the SPA CSP for authenticated browser previews.
+
+### Files changed
+
+- `src/modules/chat/{content,routes,repository}.js`, activity routes/validation/repository, `src/common/companions.js`, database indexes and app CSP.
+- `tests/chat-content.test.js`, `docs/chat-content.md` and this log; corresponding FE composer/library/viewer and companion interfaces.
+
+### Verification
+
+- Full `npm test`: 86 passed. New tests cover pending/sent file privacy, body/file limits, ownership, cross-room rejection, idempotency, snapshot validation, library cursors, byte ranges, revocation, private/versioned companions and seat conversion.
+- FE integration and two-account trip browser tests passed against temporary databases; existing web smoke/community flows passed. No live users/files/provider configuration were changed.
+- FE typecheck/lint, Expo Doctor 21/21, native-session tests and web/Android/iOS exports passed.
+- `git diff --check`: passed.
+
+### Remaining work
+
+- MongoDB media limits and non-transactional upload-budget checks are documented in `docs/chat-content.md`. Migrate to private object storage with thumbnail/transcoding/retention/scanning jobs before increasing traffic or capacity.
+- No physical-device camera/GPS/playback QA, voice recording/calls, live location, OS push or durable offline message queue yet. Google provider setup and the separate business website remain deferred.
+
 ## 2026-10-15 - Daily account APIs, notifications, reviews, blocking and reporting
 
 ### Summary

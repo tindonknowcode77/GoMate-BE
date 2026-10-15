@@ -30,6 +30,9 @@ export function readConfig(env = process.env) {
     mailFrom: env.MAIL_FROM || env.SMTP_USER,
     mongodbUri: env.MONGODB_URI,
     googleClientId: env.GOOGLE_CLIENT_ID?.trim() || '',
+    // Only a public token may be exposed to the iframe/WebView.
+    mapboxAccessToken: env.MAPBOX_ACCESS_TOKEN?.trim().startsWith('pk.') ? env.MAPBOX_ACCESS_TOKEN.trim() : '',
+    vietmapApiKey: env.VIETMAP_API_KEY?.trim() || '',
     sessionTtlHours,
     rememberSessionTtlHours,
     trustProxyHops,

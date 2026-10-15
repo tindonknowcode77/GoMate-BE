@@ -11,7 +11,8 @@
     "start": "node --env-file-if-exists=.env src/server.js",
     "test": "node --test",
     "db:migrate": "node --env-file-if-exists=.env src/database/migrate.js",
-    "db:seed-demo": "node --env-file-if-exists=.env src/database/seed-demo.js"
+    "db:seed-demo": "node --env-file-if-exists=.env src/database/seed-demo.js",
+    "db:seed-user-friends": "node --env-file-if-exists=.env src/database/seed-user-friends.js"
   },
   "dependencies": {
     "@nestjs/platform-express": "^12.1.2",

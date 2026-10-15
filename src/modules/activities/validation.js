@@ -1,5 +1,6 @@
 import { HttpError } from '../../common/http-error.js'
 import { planKeys, planningFields } from '../../common/activity-plan.js'
+import { companionFields } from '../../common/companions.js'
 import { preferences } from '../../common/preferences.js'
 
 export const activityCategories = ['Ăn uống', 'Thể thao', 'Du lịch', 'Giải trí', 'Học tập', 'Gaming', 'Âm nhạc', 'Nghệ thuật', 'Thiên nhiên', 'Tình nguyện', 'Công nghệ', 'Networking', 'Cà phê', 'Khám phá ẩm thực', 'Nấu ăn', 'Làm bánh', 'Picnic', 'Cắm trại', 'Trekking', 'Leo núi', 'Chạy bộ', 'Đi bộ', 'Đạp xe', 'Cầu lông', 'Bóng đá', 'Bóng rổ', 'Bóng chuyền', 'Bơi lội', 'Yoga', 'Gym', 'Tennis', 'Pickleball', 'Bóng bàn', 'Board game', 'Xem phim', 'Đọc sách', 'Nhiếp ảnh', 'Vẽ tranh', 'Thủ công', 'Làm gốm', 'Nhảy', 'Karaoke', 'Nhạc sống', 'Tham quan bảo tàng', 'Khám phá thành phố', 'Du lịch biển', 'Ngoại ngữ', 'Trao đổi ngôn ngữ', 'Workshop', 'Lập trình', 'Khởi nghiệp', 'Chăm sóc thú cưng', 'Làm vườn', 'Bảo vệ môi trường', 'Thiền', 'Khác']
@@ -7,10 +8,10 @@ export function activityFields(body, previous) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Invalid activity body')
   const fields = {}
   const text = { address: [0, 200], province: [0, 100], district: [0, 100], ward: [0, 100], costNote: [0, 500], title: [3, 120], description: [1, 3000], location: [2, 200], meetingPoint: [0, 200] }
-  const allowed = [...planKeys, 'reservedSeats', 'initialFriendIds', ...Object.keys(text), 'category', 'startsAt', 'endsAt', 'registrationDeadline', 'financialConfig', 'participantPreferences', 'estimatedCost', 'minParticipants', 'maxParticipants', 'tags', 'requirements', 'plan', 'organizerType', 'coordinates', 'coverBase64', 'photosBase64']
+  const allowed = [...planKeys, 'companions', 'reservedSeats', 'initialFriendIds', ...Object.keys(text), 'category', 'startsAt', 'endsAt', 'registrationDeadline', 'financialConfig', 'participantPreferences', 'estimatedCost', 'minParticipants', 'maxParticipants', 'tags', 'requirements', 'plan', 'organizerType', 'coordinates', 'coverBase64', 'photosBase64']
   for (const [key, value] of Object.entries(body)) {
     if (!allowed.includes(key)) throw new HttpError(400, `Unsupported activity field: ${key}`)
-    if (planKeys.includes(key)) continue
+    if (planKeys.includes(key) || key === 'companions') continue
     if (key === 'initialFriendIds') {
       if (previous || !Array.isArray(value) || value.length > 50 || new Set(value).size !== value.length || value.some(id => typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id))) throw new HttpError(400, 'Invalid initialFriendIds')
       fields.initialFriendIds = value; continue
@@ -75,6 +76,7 @@ export function activityFields(body, previous) {
     }
   }
   if (!Object.keys(body).length) throw new HttpError(400, 'No activity fields provided')
+  if (body.companions !== undefined || fields.reservedSeats !== undefined) fields.companions = companionFields(body.companions !== undefined ? body.companions : (previous?.companions ?? []).slice(0, fields.reservedSeats ?? previous?.reservedSeats ?? 0), fields.reservedSeats ?? previous?.reservedSeats ?? 0)
   const merged = { ...previous, ...fields }
   for (const key of ['title', 'description', 'location', 'category', 'startsAt', 'endsAt', 'estimatedCost', 'maxParticipants']) {
     if (merged[key] === undefined) throw new HttpError(400, `Missing ${key}`)
@@ -90,6 +92,6 @@ export function activityFields(body, previous) {
 }
 
 export function publicActivity(row) {
-  const keys = ['address', 'province', 'district', 'ward', 'costNote', 'reservedSeats', 'itinerary', 'planLink', 'planFile', 'id', 'hostId', 'hostName', 'title', 'description', 'category', 'location', 'organizerType', 'coordinates', 'startsAt', 'endsAt', 'registrationDeadline', 'meetingPoint', 'financialConfig', 'participantPreferences', 'estimatedCost', 'minParticipants', 'maxParticipants', 'memberCount', 'tags', 'requirements', 'plan', 'imageUrl', 'imageUrls', 'status', 'createdAt', 'updatedAt', 'version', 'startedAt', 'completedAt']
+  const keys = ['memberAvatars', 'address', 'province', 'district', 'ward', 'costNote', 'reservedSeats', 'itinerary', 'planLink', 'planFile', 'id', 'hostId', 'hostName', 'title', 'description', 'category', 'location', 'organizerType', 'coordinates', 'startsAt', 'endsAt', 'registrationDeadline', 'meetingPoint', 'financialConfig', 'participantPreferences', 'estimatedCost', 'minParticipants', 'maxParticipants', 'memberCount', 'tags', 'requirements', 'plan', 'imageUrl', 'imageUrls', 'status', 'createdAt', 'updatedAt', 'version', 'startedAt', 'completedAt']
   return Object.fromEntries([...keys, 'scheduleConfirmedAt', 'scheduleConfirmedBy'].filter(key => row[key] !== undefined).map(key => [key, row[key]]))
 }

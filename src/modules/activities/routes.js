@@ -5,6 +5,7 @@ import { activityCategories, activityFields, publicActivity } from './validation
 import { authenticate } from '../../middlewares/authenticate.js'
 import { HttpError } from '../../common/http-error.js'
 import { planKeys, planningFields } from '../../common/activity-plan.js'
+import { companionFields } from '../../common/companions.js'
 import { randomUUID } from 'node:crypto'
 import { canParticipate, genders, religions } from '../../common/preferences.js'
 
@@ -81,7 +82,9 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const row = await find(req.params.id)
     if (row.status !== 'published' && row.hostId !== req.auth.user.id && !row.joinRequests?.some(item => item.userId === req.auth.user.id && item.status === 'approved')) throw new HttpError(404, 'Activity not found')
     const reputation = await authRepository.community?.reputation(row.hostId)
-    res.json({ activity: { ...publicActivity(row), ...(reputation ? { hostRating: reputation.average, hostRatingCount: reputation.count, hostCompletedActivities: reputation.completedActivities } : {}) } })
+    const host = await authRepository.getProfile(row.hostId)
+    const hostAvatarUrl = host?.avatar_url ?? (host?.avatar_version ? `/api/profile/${host.id}/avatar?v=${host.avatar_version}` : null)
+    res.json({ activity: { ...publicActivity(row), ...(row.hostId === req.auth.user.id ? { companions: row.companions ?? [] } : {}), hostAvatarUrl, ...(reputation ? { hostRating: reputation.average, hostRatingCount: reputation.count, hostCompletedActivities: reputation.completedActivities } : {}) } })
   })
   const cleanup = async id => { try { await coverStorage.remove(id) } catch { console.warn('Activity cover cleanup failed') } }
   async function cover(base64, owner) {
@@ -186,6 +189,19 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const entry = event(req, 'note', { text: req.body.text.trim() })
     await saveLifecycle(activity, req, {}, entry)
     res.status(201).json({ update: entry })
+  })
+  router.get('/:id/companions', async (req, res) => {
+    const row = await groupActivity(req)
+    res.json({ companions: companionFields(row.companions ?? [], row.reservedSeats ?? 0), version: row.version })
+  })
+  router.patch('/:id/companions', writes, json, async (req, res) => {
+    const row = await find(req.params.id, req.auth.user.id)
+    if (!req.body || Object.keys(req.body).length !== 2 || !Number.isInteger(req.body.version) || req.body.version !== row.version) throw new HttpError(409, 'Hoạt động đã thay đổi. Tải lại trước khi lưu.')
+    if (row.status !== 'published' || row.startsAt <= new Date()) throw new HttpError(409, 'Chỉ sửa người đi cùng trước khi hoạt động bắt đầu')
+    const companions = companionFields(req.body.companions, row.reservedSeats ?? 0)
+    const updated = await repository.update(row, { companions })
+    if (!updated) throw new HttpError(409, 'Activity changed. Reload and try again.')
+    res.json({ companions, version: updated.version })
   })
   router.get('/:id/members', async (req, res) => {
     const activity = await find(req.params.id)

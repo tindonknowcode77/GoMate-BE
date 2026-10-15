@@ -145,3 +145,11 @@ Kế hoạch chuyến đi, chỗ giữ, bạn bè và chat: [docs/trip-social.md
 Quy tắc đăng bài cá nhân, chốt lịch và dữ liệu hộp thư: [docs/activity-management.md](docs/activity-management.md).
 
 Cài đặt tài khoản, thông báo, đánh giá, chặn và báo cáo: [docs/community.md](docs/community.md).
+
+## Mapbox
+
+Bản đồ Mapbox GL JS dùng chung cho iframe/WebView; BE ưu tiên VIETMAP Autocomplete/Place v4 cho tìm địa điểm, giữ Mapbox Directions ô tô/đi bộ. Đặt thêm `VIETMAP_API_KEY` (Services key) chỉ ở BE; không trả key xuống FE. Không cấu hình VIETMAP thì tìm địa chỉ dùng Mapbox Geocoding v6 permanent. Đặt public `MAPBOX_ACCESS_TOKEN` trong `.env` theo `.env.example`; xem [API và cấu hình](docs/maps.md). Token thật không nằm trong repo. Khi chưa có token, bản đồ OSM vẫn hoạt động; Google Login là thiết lập riêng.
+
+## Bản nháp và bạn bè demo
+
+Xem [API bản nháp, avatar thành viên và script thêm bạn bè](docs/activity-drafts.md). `npm run db:seed-user-friends` thêm 5 hồ sơ demo cho tài khoản đích theo cấu hình local; không chạy tự động khi khởi động server.

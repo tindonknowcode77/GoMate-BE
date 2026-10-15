@@ -1,3 +1,5 @@
+import { createDraftRouter } from './modules/drafts/routes.js'
+import { createMapsRouter } from './modules/maps/routes.js'
 import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
@@ -16,7 +18,7 @@ import { createAvatarStorage } from './modules/profile/cloudinary.js'
 
 const defaultFrontendDir = fileURLToPath(new URL('../../GoMate-FE/dist/', import.meta.url))
 
-export function createApp(config = readConfig(), { authRepository, activityRepository, chatRepository, chatOptions, verifyGoogle, verificationMailer, avatarStorage, coverStorage, frontendDir = defaultFrontendDir } = {}) {
+export function createApp(config = readConfig(), { authRepository, activityRepository, chatRepository, chatOptions, mapsOptions, verifyGoogle, verificationMailer, avatarStorage, coverStorage, frontendDir = defaultFrontendDir } = {}) {
   const app = express()
   app.disable('x-powered-by')
   app.set('trust proxy', config.trustProxyHops)
@@ -28,6 +30,7 @@ export function createApp(config = readConfig(), { authRepository, activityRepos
       'script-src': ["'self'", 'https://accounts.google.com/gsi/client'],
       'frame-src': ["'self'", 'https://accounts.google.com/gsi/'],
       'connect-src': ["'self'", 'https://accounts.google.com/gsi/'],
+      'media-src': ["'self'", 'blob:'],
       'img-src': ["'self'", 'data:', 'blob:', 'https://res.cloudinary.com', 'https://images.unsplash.com', 'https://randomuser.me', 'https://tile.openstreetmap.org'],
       'style-src': ["'self'", "'unsafe-inline'", 'https://accounts.google.com/gsi/style'],
     } },
@@ -38,8 +41,11 @@ export function createApp(config = readConfig(), { authRepository, activityRepos
   if (authRepository) app.use('/api/profile', createProfileRouter(authRepository, config, avatarStorage))
   if (activityRepository && authRepository) app.use('/api/activities', createActivityRouter(activityRepository, authRepository, coverStorage ?? createAvatarStorage(config, undefined, 'activities')))
   if (activityRepository && authRepository) app.use('/api/me', createMyActivityRouter(activityRepository, authRepository))
+  if (authRepository?.drafts) app.use('/api/activity-draft', createDraftRouter(authRepository))
   app.use(express.json({ limit: '16kb' }))
   if (chatRepository && authRepository) app.use('/api/conversations', createChatRouter(chatRepository, authRepository, chatOptions))
+
+  if (authRepository) app.use('/api/maps', createMapsRouter(config, authRepository, mapsOptions))
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', service: 'gomate-be' })
@@ -64,7 +70,13 @@ export function createApp(config = readConfig(), { authRepository, activityRepos
     })
     res.removeHeader('X-Frame-Options')
     res.set('Content-Security-Policy', String(res.get('Content-Security-Policy')).replace(/frame-ancestors [^;]+/, `frame-ancestors 'self' ${origins.join(' ')}`))
-    res.sendFile(fileURLToPath(new URL('./map/map.html', import.meta.url)))
+    if (config.mapboxAccessToken) res.set('Content-Security-Policy', [
+      "default-src 'self'", "base-uri 'self'", "object-src 'none'", "script-src 'self' https://api.mapbox.com/mapbox-gl-js/",
+      "style-src 'self' 'unsafe-inline' https://api.mapbox.com/mapbox-gl-js/", "img-src 'self' data: blob:",
+      "connect-src 'self' https://api.mapbox.com https://events.mapbox.com", "worker-src blob:", `frame-ancestors 'self' ${origins.join(' ')}`,
+    ].join('; '))
+    res.set('Cache-Control', 'no-store')
+    res.sendFile(fileURLToPath(new URL(config.mapboxAccessToken ? './map/mapbox-map.html' : './map/map.html', import.meta.url)))
   })
 
   app.use(express.static(frontendDir, { index: false }))

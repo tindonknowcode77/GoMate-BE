@@ -1,3 +1,5 @@
+import multer from 'multer'
+import { messageContent, validateUpload } from './content.js'
 import express, { Router } from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { authenticate } from '../../middlewares/authenticate.js'
@@ -41,9 +43,36 @@ export function createChatRouter(repository, authRepository, { streamIntervalMs 
     res.json(await repository.history(req.params.id, req.auth.user.id, { before: req.query.before, limit: integer(req.query.limit, 30, 100) }))
   })
   router.post('/:id/messages', writes, async (req, res) => {
-    fields(req.body, ['text', 'clientMessageId'])
-    if (!req.body.text.trim() || req.body.text.length > 4000 || !id(req.body.clientMessageId)) throw new HttpError(400, 'Text must be 1-4000 characters; provide a unique clientMessageId')
-    res.status(200).json({ message: await repository.send(req.params.id, req.auth.user.id, { ...req.body, text: req.body.text.trim() }) })
+    res.status(200).json({ message: await repository.send(req.params.id, req.auth.user.id, messageContent(req.body)) })
+  })
+  const uploadLimit = rateLimit({ windowMs: 60000, limit: 12, standardHeaders: 'draft-8', legacyHeaders: false })
+  const multipart = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 0, parts: 1 } }).single('file')
+  router.post('/:id/attachments', uploadLimit, async (req, _res, next) => { await repository.access(req.params.id, req.auth.user.id); next() }, (req, res, next) => multipart(req, res, error => next(error ? new HttpError(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400, 'Tệp tối đa 10 MB; chọn một tệp mỗi lần tải.') : undefined)), async (req, res) => {
+    const metadata = await validateUpload(req.file)
+    res.status(201).json({ attachment: await repository.upload(req.params.id, req.auth.user.id, req.file.buffer, metadata) })
+  })
+  router.get('/:id/attachments/:fileId', async (req, res) => {
+    if (!cursor(req.params.fileId)) throw new HttpError(400, 'Invalid attachment ID')
+    const file = await repository.attachment(req.params.id, req.auth.user.id, req.params.fileId)
+    res.set({ 'Content-Type': file.mimeType, 'Content-Length': String(file.size), 'Cache-Control': 'private, no-store', 'Content-Disposition': `${file.kind === 'image' || file.kind === 'video' || file.kind === 'audio' ? 'inline' : 'attachment'}; filename="attachment"; filename*=UTF-8''${encodeURIComponent(file.name)}`, 'X-Content-Type-Options': 'nosniff' })
+    const data = Buffer.from(file.data.buffer)
+    res.set('Accept-Ranges', 'bytes')
+    if (req.headers.range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range)
+      let start, end
+      if (match && (match[1] || match[2])) {
+        start = match[1] ? Number(match[1]) : Math.max(0, data.length - Number(match[2]))
+        end = match[1] ? (match[2] ? Math.min(Number(match[2]), data.length - 1) : data.length - 1) : data.length - 1
+      }
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end || start >= data.length) { res.status(416).set('Content-Range', `bytes */${data.length}`).end(); return }
+      res.status(206).set({ 'Content-Range': `bytes ${start}-${end}/${data.length}`, 'Content-Length': String(end - start + 1) }).send(data.subarray(start, end + 1)); return
+    }
+    res.send(data)
+  })
+  router.get('/:id/shared', async (req, res) => {
+    query(req, ['kind', 'before', 'limit'])
+    if (!['media', 'files', 'links', 'locations'].includes(req.query.kind) || (req.query.before !== undefined && !cursor(req.query.before))) throw new HttpError(400, 'Invalid shared content filter')
+    res.json(await repository.shared(req.params.id, req.auth.user.id, { kind: req.query.kind, before: req.query.before, limit: integer(req.query.limit, 30, 50) }))
   })
   router.patch('/:id/read', writes, async (req, res) => {
     fields(req.body, ['messageId'])

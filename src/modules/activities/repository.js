@@ -5,6 +5,16 @@ import { createCommunityRepository } from '../community/repository.js'
 export function createActivityRepository(db) {
   const activities = db.collection('activities')
   const community = createCommunityRepository(db)
+  async function memberAvatars(rows) {
+    if (!rows.length) return rows
+    const memberships = await activities.find({ id: { $in: rows.map(row => row.id) } }, { projection: { id: 1, hostId: 1, joinRequests: 1 } }).toArray()
+    const idsByActivity = new Map(memberships.map(row => [row.id, [row.hostId, ...(row.joinRequests ?? []).filter(item => item.status === 'approved').map(item => item.userId)].slice(0, 4)]))
+    const ids = [...new Set([...idsByActivity.values()].flat())]
+    const people = await db.collection('users').find({ id: { $in: ids } }, { projection: { id: 1, name: 1, avatar_url: 1, avatar_version: 1 } }).toArray()
+    const profiles = new Map(people.map(person => [person.id, person]))
+    return rows.map(row => ({ ...row, memberAvatars: (idsByActivity.get(row.id) ?? []).map(userId => { const person = profiles.get(userId); return { userId, name: person?.name || 'Thành viên', avatarUrl: person?.avatar_url || (person?.avatar_version ? `/api/profile/${userId}/avatar?v=${person.avatar_version}` : null) } }) }))
+  }
+
   return {
     async create(fields, host) {
       const now = new Date()
@@ -38,7 +48,7 @@ export function createActivityRepository(db) {
       const items = (result?.items ?? []).map(row => requests
         ? { ...row.ownRequest, activityId: row.id, activity: publicActivity(row) }
         : publicActivity(row))
-      return { items, total, page, limit, hasMore: page * limit < total }
+      return { items: requests ? items : await memberAvatars(items), total, page, limit, hasMore: page * limit < total }
     },
     // Keep requests and capacity in one document so approval is atomic even on standalone MongoDB.
     async submitJoinRequest(id, user, version) {
@@ -91,7 +101,7 @@ export function createActivityRepository(db) {
         activities.find(query, { projection: { planFileData: 0 } }).sort({ createdAt: -1, id: 1 }).skip((page - 1) * limit).limit(limit).toArray(),
         activities.countDocuments(query),
       ])
-      return { items, total, page, limit, hasMore: page * limit < total }
+      return { items: await memberAvatars(items), total, page, limit, hasMore: page * limit < total }
     },
     async addFriends(previous, people, useReservedSeats) {
       const existing = previous.joinRequests ?? [], fresh = people.filter(person => !existing.some(item => item.userId === person.id && item.status === 'approved'))
@@ -99,7 +109,7 @@ export function createActivityRepository(db) {
       const consumed = useReservedSeats ? Math.min(previous.reservedSeats ?? 0, fresh.length) : 0
       const now = new Date(), requests = fresh.map(user => ({ id: randomUUID(), userId: user.id, name: user.name, status: 'approved', source: 'host-added', createdAt: now, updatedAt: now }))
       return activities.findOneAndUpdate({ id: previous.id, hostId: previous.hostId, status: 'published', startsAt: { $gt: now }, version: previous.version ?? { $exists: false }, $expr: { $lte: [{ $add: ['$memberCount', fresh.length - consumed] }, '$maxParticipants'] } },
-        { $set: { joinRequests: [...existing.filter(item => !fresh.some(person => person.id === item.userId)), ...requests], updatedAt: now }, $inc: { memberCount: fresh.length - consumed, reservedSeats: -consumed, version: 1 } }, { returnDocument: 'after' })
+        { $set: { companions: (previous.companions ?? []).slice(consumed), joinRequests: [...existing.filter(item => !fresh.some(person => person.id === item.userId)), ...requests], updatedAt: now }, $inc: { memberCount: fresh.length - consumed, reservedSeats: -consumed, version: 1 } }, { returnDocument: 'after' })
     },
     async savePlan(previous, fields) {
       return activities.findOneAndUpdate({ id: previous.id, hostId: previous.hostId, status: { $in: ['published', 'in-progress'] }, version: previous.version ?? { $exists: false } }, { $set: { ...fields, updatedAt: new Date() }, $inc: { version: 1 } }, { returnDocument: 'after' })
@@ -189,7 +199,9 @@ export function createActivityRepository(db) {
       const [result] = await db.collection('activities').aggregate(pipeline, { maxTimeMS: 5000 }).toArray()
       const total = result?.total[0]?.count ?? 0
       const reputations = new Map(await Promise.all([...new Set((result?.items ?? []).map(row => row.hostId))].map(async id => [id, await community.reputation(id)])))
-      const items = (result?.items ?? []).map(row => ({ ...row, hostRating: reputations.get(row.hostId)?.average, hostRatingCount: reputations.get(row.hostId)?.count, hostCompletedActivities: reputations.get(row.hostId)?.completedActivities }))
+      const hostProfiles = await db.collection('users').find({ id: { $in: [...new Set((result?.items ?? []).map(row => row.hostId))] } }, { projection: { id: 1, avatar_url: 1, avatar_version: 1 } }).toArray()
+      const avatars = new Map(hostProfiles.map(user => [user.id, user.avatar_url ?? (user.avatar_version ? `/api/profile/${user.id}/avatar?v=${user.avatar_version}` : null)]))
+      const items = (result?.items ?? []).map(row => ({ ...row, hostAvatarUrl: avatars.get(row.hostId) ?? null, hostRating: reputations.get(row.hostId)?.average, hostRatingCount: reputations.get(row.hostId)?.count, hostCompletedActivities: reputations.get(row.hostId)?.completedActivities }))
       return { items, page: options.page, limit: options.limit, total, hasMore: options.page * options.limit < total }
     },
   }
