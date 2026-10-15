@@ -96,6 +96,8 @@ export function createAuthRouter(repository, config, verifyGoogle = createGoogle
     await issueSession(user, res, rememberMe)
   })
 
+  router.get('/google/config', (_req, res) => res.json({ clientId: config.googleClientId || null }))
+
   router.post('/google', rateLimit({ ...limitOptions, limit: 20 }), async (req, res) => {
     const rememberMe = readRememberMe(req.body)
     const idToken = req.body?.idToken

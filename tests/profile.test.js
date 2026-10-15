@@ -60,7 +60,7 @@ test('profiles and avatars persist with owner-only writes', async t => {
     assert.equal(result.status, 200)
     assert.equal(result.body.profile.name, users[0].name)
     assert.equal(result.body.profile.avatarUrl, null)
-    assert.deepEqual(Object.keys(result.body.profile).sort(), ['alcohol', 'avatarUrl', 'bio', 'birthDate', 'coverUrl', 'demo', 'email', 'gender', 'id', 'interests', 'languages', 'location', 'missingFields', 'name', 'occupation', 'profileComplete', 'religion', 'username'])
+    assert.deepEqual(Object.keys(result.body.profile).sort(), ['activityWish', 'age', 'alcohol', 'availableTimes', 'avatarUrl', 'basicProfileComplete', 'bio', 'birthDate', 'companionGoal', 'contribution', 'coverUrl', 'demo', 'education', 'email', 'emailVerified', 'gender', 'id', 'interests', 'languages', 'location', 'missingFields', 'name', 'occupation', 'photos', 'profileComplete', 'religion', 'school', 'username'])
     assert.equal(result.body.profile.profileComplete, false)
     assert.ok(result.body.profile.missingFields.includes('languages'))
     assert.equal(result.headers.get('cache-control'), 'no-store')
@@ -90,10 +90,14 @@ test('profiles and avatars persist with owner-only writes', async t => {
     assert.equal((await repository.findUserByEmail(users[0].email)).name, 'New Name')
   })
   await t.test('completion follows persisted basic fields and sensitive preferences stay optional', async () => {
-    const result = await request('/me', 'PATCH', { name: 'Profile User', bio: 'Hello', location: 'TP.HCM', interests: ['Cà phê'], languages: ['Tiếng Việt'], gender: 'other', religion: 'undisclosed', alcohol: 'no' })
+    const result = await request('/me', 'PATCH', { name: 'Profile User', bio: 'Hello', location: 'TP.HCM', interests: ['Cà phê'], languages: ['Tiếng Việt'], birthDate: '2000-01-01', gender: 'other', religion: 'undisclosed', alcohol: 'no' })
     assert.equal(result.status, 200)
     assert.equal(result.body.profile.profileComplete, true)
     assert.equal(result.body.profile.gender, 'other')
+    const incomplete = await request('/me', 'PATCH', { birthDate: '' })
+    assert.equal(incomplete.body.profile.profileComplete, false)
+    assert.ok(incomplete.body.profile.missingFields.includes('birthDate'))
+    assert.equal((await request('/me', 'PATCH', { birthDate: '2000-01-01' })).body.profile.profileComplete, true)
     assert.equal((await request('/me')).body.profile.languages[0], 'Tiếng Việt')
     assert.equal((await request('/me', 'PATCH', { languages: [] })).body.profile.profileComplete, false)
     for (const body of [{ languages: ['a'.repeat(41)] }, { gender: 'invalid' }, { religion: '$gt' }, { alcohol: 'sometimes' }, { birthDate: '2099-01-01' }, { birthDate: '2000-02-30' }, { profileComplete: true }]) assert.equal((await request('/me', 'PATCH', body)).status, 400)
@@ -150,4 +154,62 @@ test('profiles and avatars persist with owner-only writes', async t => {
     assert.equal((await request('/me')).body.profile.avatarUrl, avatarUrl)
     assert.equal((await fetch(`${base}/api/profile/${users[1].id}/avatar`)).status, 404)
   })
+  await t.test('basic onboarding saves independently from companion profile details', async () => {
+    const basic = await request('/me', 'PATCH', { name: 'GoMate User', birthDate: '2000-02-29', gender: 'undisclosed', location: 'Hà Nội', languages: ['Tiếng Việt'], bio: '', interests: [] })
+    assert.equal(basic.body.profile.basicProfileComplete, true)
+    assert.equal(basic.body.profile.profileComplete, false)
+    assert.equal(basic.body.profile.emailVerified, true)
+    const details = { bio: 'Finding activity buddies', interests: ['Chèo SUP', 'Lập trình'], occupation: 'Developer', school: 'University', education: 'Đại học', companionGoal: 'Thử trải nghiệm mới', availableTimes: ['Tối cuối tuần'], activityWish: 'Camping together', contribution: 'Photography' }
+    const saved = await request('/me', 'PATCH', details)
+    assert.equal(saved.body.profile.profileComplete, true)
+    for (const [key, value] of Object.entries(details)) assert.deepEqual(saved.body.profile[key], value)
+    const publicRow = (await request(`/${users[0].id}`)).body.profile
+    assert.equal(publicRow.activityWish, details.activityWish)
+    for (const key of ['emailVerified', 'birthDate', 'gender', 'religion', 'alcohol']) assert.equal(publicRow[key], undefined)
+    assert.equal((await request('/me', 'PATCH', { activityWish: 'x'.repeat(301) })).status, 400)
+    assert.equal((await request('/me', 'PATCH', { availableTimes: ['$'.repeat(41)] })).status, 400)
+  })
+  await t.test('profile gallery uploads, reorders and deletes only owned photos', async () => {
+    const image = (await sharp({ create: { width: 30, height: 40, channels: 3, background: '#337799' } }).png().toBuffer()).toString('base64')
+    assert.equal((await request('/me/photos', 'POST', { base64: image }, '')).status, 401)
+    assert.equal((await request('/me/photos', 'POST', { base64: 'AAAA' })).status, 400)
+    const first = await request('/me/photos', 'POST', { base64: image })
+    assert.equal(first.status, 201)
+    const second = await request('/me/photos', 'POST', { base64: image })
+    assert.equal(second.body.profile.photos.length, 2)
+    assert.deepEqual(Object.keys(second.body.profile.photos[0]).sort(), ['id', 'url'])
+    const ids = second.body.profile.photos.map(photo => photo.id)
+    assert.equal((await request('/me/photos', 'PATCH', { photoIds: ids }, tokens[1])).status, 400)
+    assert.equal((await request('/me/photos', 'PATCH', { photoIds: [ids[0], ids[0]] })).status, 400)
+    const reordered = await request('/me/photos', 'PATCH', { photoIds: [...ids].reverse() })
+    assert.deepEqual(reordered.body.profile.photos.map(photo => photo.id), [...ids].reverse())
+    const publicRow = (await request(`/${users[0].id}`)).body.profile
+    assert.deepEqual(publicRow.photos, reordered.body.profile.photos)
+    uploadFails = true
+    try { assert.equal((await request('/me/photos', 'POST', { base64: image })).status, 502) } finally { uploadFails = false }
+    assert.equal((await request('/me')).body.profile.photos.length, 2)
+    const before = await repository.getProfile(users[0].id)
+    assert.ok(await repository.replaceProfilePhotos(users[0].id, before, before.profile_photos))
+    assert.equal(await repository.replaceProfilePhotos(users[0].id, before, []), null)
+    assert.equal((await request('/me/photos', 'POST', { base64: Buffer.alloc(10 * 1024 * 1024 + 1).toString('base64') })).status, 413)
+    for (let index = 0; index < 4; index++) assert.equal((await request('/me/photos', 'POST', { base64: image })).status, 201)
+    assert.equal((await request('/me/photos', 'POST', { base64: image })).status, 409)
+    const cleared = await request('/me/photos', 'PATCH', { photoIds: [] })
+    assert.deepEqual(cleared.body.profile.photos, [])
+    for (const photo of before.profile_photos) assert.ok(removed.includes(photo.publicId))
+  })
+  await t.test('reviews show the current user actual scores and an honest empty state', async () => {
+    assert.deepEqual((await request('/me/reviews')).body, { items: [], average: null, count: 0 })
+    await db.collection('activity_ratings').insertMany([
+      { id: 'review-1', targetUserId: users[0].id, score: 4, comment: 'Friendly', createdAt: new Date(), reviewerEmail: 'private@example.com' },
+      { id: 'review-2', targetUserId: users[0].id, score: 5, createdAt: new Date() },
+      { id: 'other-review', targetUserId: users[1].id, score: 1, createdAt: new Date() },
+    ])
+    const result = await request('/me/reviews')
+    assert.equal(result.status, 200); assert.equal(result.body.average, 4.5); assert.equal(result.body.count, 2)
+    assert.equal(result.body.items.length, 2)
+    assert.equal(result.body.items[0].reviewerEmail, undefined)
+    assert.equal((await request('/me', 'PATCH', { rating: 5 })).status, 400)
+  })
+
 })

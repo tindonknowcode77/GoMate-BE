@@ -9,7 +9,9 @@ import { createAuthRouter } from './modules/auth/routes.js'
 import { createProfileRouter } from './modules/profile/routes.js'
 import { createActivityRouter } from './modules/activities/routes.js'
 import { createMyActivityRouter } from './modules/activities/me-routes.js'
+import { createFriendRouter } from './modules/friends/routes.js'
 import { createChatRouter } from './modules/chat/routes.js'
+import { createCommunityRouter } from './modules/community/routes.js'
 import { createAvatarStorage } from './modules/profile/cloudinary.js'
 
 const defaultFrontendDir = fileURLToPath(new URL('../../GoMate-FE/dist/', import.meta.url))
@@ -26,11 +28,13 @@ export function createApp(config = readConfig(), { authRepository, activityRepos
       'script-src': ["'self'", 'https://accounts.google.com/gsi/client'],
       'frame-src': ["'self'", 'https://accounts.google.com/gsi/'],
       'connect-src': ["'self'", 'https://accounts.google.com/gsi/'],
-      'img-src': ["'self'", 'data:', 'blob:', 'https://res.cloudinary.com', 'https://images.unsplash.com', 'https://randomuser.me'],
+      'img-src': ["'self'", 'data:', 'blob:', 'https://res.cloudinary.com', 'https://images.unsplash.com', 'https://randomuser.me', 'https://tile.openstreetmap.org'],
       'style-src': ["'self'", "'unsafe-inline'", 'https://accounts.google.com/gsi/style'],
     } },
   }))
   app.use(cors({ origin: config.corsOrigin }))
+  if (authRepository?.community) app.use('/api/community', createCommunityRouter(authRepository))
+  if (authRepository) app.use('/api/friends', createFriendRouter(authRepository))
   if (authRepository) app.use('/api/profile', createProfileRouter(authRepository, config, avatarStorage))
   if (activityRepository && authRepository) app.use('/api/activities', createActivityRouter(activityRepository, authRepository, coverStorage ?? createAvatarStorage(config, undefined, 'activities')))
   if (activityRepository && authRepository) app.use('/api/me', createMyActivityRouter(activityRepository, authRepository))
@@ -48,6 +52,19 @@ export function createApp(config = readConfig(), { authRepository, activityRepos
   // Unknown API endpoints must never fall through to the React application.
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'Not found' })
+  })
+
+  app.use('/map-assets', express.static(fileURLToPath(new URL('../node_modules/leaflet/dist/', import.meta.url))))
+  app.use('/map-ui', express.static(fileURLToPath(new URL('./map/', import.meta.url))))
+  app.get('/map.html', (_req, res) => {
+    // The Expo dev server can embed the map from a separate API origin.
+    // Keep embedding limited to the same origin and configured frontend origins.
+    const origins = (Array.isArray(config.corsOrigin) ? config.corsOrigin : [config.corsOrigin]).filter(value => {
+      try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && url.origin === value } catch { return false }
+    })
+    res.removeHeader('X-Frame-Options')
+    res.set('Content-Security-Policy', String(res.get('Content-Security-Policy')).replace(/frame-ancestors [^;]+/, `frame-ancestors 'self' ${origins.join(' ')}`))
+    res.sendFile(fileURLToPath(new URL('./map/map.html', import.meta.url)))
   })
 
   app.use(express.static(frontendDir, { index: false }))

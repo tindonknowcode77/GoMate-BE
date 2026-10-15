@@ -98,3 +98,50 @@ Blueprint render.yaml dành cho backend riêng. Đặt MONGODB_URI thành URI At
 Nếu cần FE cùng server, deploy cả hai thư mục cạnh nhau; build từ thư mục cha bằng
 npm run setup && npm run build; start bằng npm --prefix GoMate-BE start.
 Health check: /api/health. URI phải có tên database; cho phép kết nối từ server trong Atlas.
+
+## P0 web contracts (2026-10-15)
+
+- Activity POST/PATCH accepts `photosBase64` (up to 6 JPEG/PNG/WebP images, each
+  up to 10 MiB decoded). The first photo is the cover. Responses expose ordered
+  `imageUrls`; storage identifiers stay private. An empty array clears the gallery.
+  Legacy `coverBase64` remains supported; do not send both fields.
+- Image writes accept up to 81 MiB JSON for six base64 images. Configure any reverse
+  proxy to allow this size. Images are processed sequentially, re-encoded to WebP,
+  and cleaned up on replacement, deletion or partial failure.
+- Financial configuration is optional. The current FE sends only `estimatedCost`
+  and does not require prepayment, a deposit or a payment deadline.
+- PATCH with `registrationDeadline: null` clears the deadline and reopens registration
+  until the activity starts, subject to capacity and status.
+- Profile completion now also requires a birth date and a saved gender choice;
+  `undisclosed` is a valid choice. Public profiles continue to omit these fields.
+
+## GoMate companion profiles (2026-10-15)
+
+`GET /api/profile/me` includes `basicProfileComplete` (name, birth date, gender,
+location, languages), `profileComplete` (also bio/interests) and `emailVerified`.
+Birth dates remain ISO `YYYY-MM-DD` at the API boundary. The UI uses `DD-MM-YYYY`.
+
+Optional PATCH fields: `occupation`, `school`, `education`, `companionGoal`,
+`availableTimes`, `activityWish`, `contribution`. Demographic preferences remain
+private; public profiles expose age in complete years, never the exact birth date.
+
+- `POST /api/profile/me/photos` accepts one `{ base64 }` JPEG/PNG/WebP (10 MiB,
+  up to 20 megapixels) per request, up to six photos per owner.
+- `PATCH /api/profile/me/photos` accepts `{ photoIds: [...] }` to reorder the
+  owner's existing images and delete omitted images. A version guard rejects
+  concurrent stale writes and uploaded images are cleaned up after failed writes.
+- Profile responses expose photo `{ id, url }` only; Cloudinary identifiers stay
+  private. These endpoints use the existing avatar storage configuration.
+- `GET /api/profile/me/reviews` reads `activity_ratings` matching `targetUserId`
+  and numeric scores 1–5. Returns `{ items, average, count }`, with up to 50 recent
+  public review rows and an aggregate across all matching scores. No client field
+  can overwrite rating summaries. The current rating submission UI is still a
+  separate prototype; this endpoint does not create reviews.
+
+Match cá nhân/doanh nghiệp, gợi ý, yêu thích, bộ lọc đã lưu và ảnh bìa: [docs/match.md](docs/match.md).
+
+Kế hoạch chuyến đi, chỗ giữ, bạn bè và chat: [docs/trip-social.md](docs/trip-social.md).
+
+Quy tắc đăng bài cá nhân, chốt lịch và dữ liệu hộp thư: [docs/activity-management.md](docs/activity-management.md).
+
+Cài đặt tài khoản, thông báo, đánh giá, chặn và báo cáo: [docs/community.md](docs/community.md).

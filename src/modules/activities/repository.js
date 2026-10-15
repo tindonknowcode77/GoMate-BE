@@ -1,18 +1,23 @@
 import { randomUUID } from 'node:crypto'
 import { publicActivity } from './validation.js'
+import { createCommunityRepository } from '../community/repository.js'
 
 export function createActivityRepository(db) {
   const activities = db.collection('activities')
+  const community = createCommunityRepository(db)
   return {
     async create(fields, host) {
       const now = new Date()
-      const row = { id: randomUUID(), ...fields, hostId: host.id, hostName: host.name,
-        memberCount: 1, status: 'published', tags: fields.tags ?? [], requirements: fields.requirements ?? [], plan: fields.plan ?? [],
+      const { initialMembers = [], initialFriendIds: _initialFriendIds, ...stored } = fields
+      const joinRequests = initialMembers.map(user => ({ id: randomUUID(), userId: user.id, name: user.name, status: 'approved', source: 'host-added', createdAt: now, updatedAt: now }))
+      const row = { id: randomUUID(), organizerType: 'personal', ...stored, ...(joinRequests.length ? { joinRequests } : {}), hostId: host.id, hostName: host.name,
+        memberCount: 1 + (fields.reservedSeats ?? 0) + initialMembers.length, status: 'published', tags: fields.tags ?? [], requirements: fields.requirements ?? [], plan: fields.plan ?? [],
         version: 1, createdAt: now, updatedAt: now }
       await activities.insertOne(row)
       return row
     },
-    async get(id) { return activities.findOne({ id, status: { $ne: 'deleted' } }) },
+    async get(id) { return activities.findOne({ id, status: { $ne: 'deleted' } }, { projection: { planFileData: 0 } }) },
+    async getWithPlanFile(id) { return activities.findOne({ id, status: { $ne: 'deleted' } }) },
     async lifecycle(previous, hostId, fields, event) {
       return activities.findOneAndUpdate({ id: previous.id, hostId,
         status: previous.status, version: previous.version ?? { $exists: false },
@@ -25,7 +30,7 @@ export function createActivityRepository(db) {
         { $match: { status: { $ne: 'deleted' }, hostId: { $ne: userId }, joinRequests: { $elemMatch: member } } },
         { $set: { ownRequest: { $arrayElemAt: [{ $filter: { input: '$joinRequests', as: 'request',
           cond: { $eq: ['$$request.userId', userId] } } }, 0] } } },
-        { $unset: ['joinRequests', '_id', 'imagePublicId'] },
+        { $unset: ['joinRequests', '_id', 'imagePublicId', 'planFileData'] },
         { $sort: requests ? { 'ownRequest.createdAt': -1, id: 1 } : { startsAt: 1, id: 1 } },
         { $facet: { items: [{ $skip: (page - 1) * limit }, { $limit: limit }], total: [{ $count: 'count' }] } },
       ], { maxTimeMS: 5000 }).toArray()
@@ -41,7 +46,7 @@ export function createActivityRepository(db) {
       const request = { id: randomUUID(), userId: user.id, name: user.name, status: 'pending', createdAt: now, updatedAt: now }
       const row = await activities.findOneAndUpdate({ id, status: 'published', startsAt: { $gt: now }, hostId: { $ne: user.id },
         ...(version !== undefined ? { version } : {}),
-        $or: [{ registrationDeadline: { $exists: false } }, { registrationDeadline: { $gt: now } }],
+        $or: [{ registrationDeadline: null }, { registrationDeadline: { $gt: now } }],
         joinRequests: { $not: { $elemMatch: { userId: user.id } } },
         $expr: { $and: [{ $lt: ['$memberCount', '$maxParticipants'] }, { $lt: [{ $size: { $ifNull: ['$joinRequests', []] } }, 5000] }] },
       }, { $push: { joinRequests: request }, $set: { updatedAt: now }, $inc: { version: 1 } }, { returnDocument: 'after' })
@@ -49,7 +54,7 @@ export function createActivityRepository(db) {
       // Reuse the user's existing entry after cancellation/rejection; never create duplicate membership.
       const retry = await activities.findOneAndUpdate({ id, status: 'published', startsAt: { $gt: now }, hostId: { $ne: user.id },
         ...(version !== undefined ? { version } : {}),
-        $or: [{ registrationDeadline: { $exists: false } }, { registrationDeadline: { $gt: now } }],
+        $or: [{ registrationDeadline: null }, { registrationDeadline: { $gt: now } }],
         joinRequests: { $elemMatch: { userId: user.id, status: { $in: ['cancelled', 'rejected', 'left', 'removed'] } } },
         $expr: { $lt: ['$memberCount', '$maxParticipants'] },
       }, { $set: { 'joinRequests.$': request, updatedAt: now }, $inc: { version: 1 } }, { returnDocument: 'after' })
@@ -83,25 +88,43 @@ export function createActivityRepository(db) {
     async owned(hostId, page, limit) {
       const query = { hostId, status: { $ne: 'deleted' } }
       const [items, total] = await Promise.all([
-        activities.find(query).sort({ createdAt: -1, id: 1 }).skip((page - 1) * limit).limit(limit).toArray(),
+        activities.find(query, { projection: { planFileData: 0 } }).sort({ createdAt: -1, id: 1 }).skip((page - 1) * limit).limit(limit).toArray(),
         activities.countDocuments(query),
       ])
       return { items, total, page, limit, hasMore: page * limit < total }
     },
+    async addFriends(previous, people, useReservedSeats) {
+      const existing = previous.joinRequests ?? [], fresh = people.filter(person => !existing.some(item => item.userId === person.id && item.status === 'approved'))
+      if (!fresh.length) return previous
+      const consumed = useReservedSeats ? Math.min(previous.reservedSeats ?? 0, fresh.length) : 0
+      const now = new Date(), requests = fresh.map(user => ({ id: randomUUID(), userId: user.id, name: user.name, status: 'approved', source: 'host-added', createdAt: now, updatedAt: now }))
+      return activities.findOneAndUpdate({ id: previous.id, hostId: previous.hostId, status: 'published', startsAt: { $gt: now }, version: previous.version ?? { $exists: false }, $expr: { $lte: [{ $add: ['$memberCount', fresh.length - consumed] }, '$maxParticipants'] } },
+        { $set: { joinRequests: [...existing.filter(item => !fresh.some(person => person.id === item.userId)), ...requests], updatedAt: now }, $inc: { memberCount: fresh.length - consumed, reservedSeats: -consumed, version: 1 } }, { returnDocument: 'after' })
+    },
+    async savePlan(previous, fields) {
+      return activities.findOneAndUpdate({ id: previous.id, hostId: previous.hostId, status: { $in: ['published', 'in-progress'] }, version: previous.version ?? { $exists: false } }, { $set: { ...fields, updatedAt: new Date() }, $inc: { version: 1 } }, { returnDocument: 'after' })
+    },
     async update(previous, fields) {
       return activities.findOneAndUpdate({ id: previous.id, hostId: previous.hostId,
         version: previous.version ?? { $exists: false }, status: 'published',
-        memberCount: { $lte: fields.maxParticipants ?? previous.maxParticipants },
-      }, { $set: { ...fields, updatedAt: new Date() }, $inc: { version: 1 } }, { returnDocument: 'after' })
+        $expr: { $lte: [{ $add: ['$memberCount', (fields.reservedSeats ?? previous.reservedSeats ?? 0) - (previous.reservedSeats ?? 0)] }, fields.maxParticipants ?? previous.maxParticipants] },
+      }, { $set: { ...fields, updatedAt: new Date() }, $inc: { version: 1, memberCount: (fields.reservedSeats ?? previous.reservedSeats ?? 0) - (previous.reservedSeats ?? 0) } }, { returnDocument: 'after' })
     },
     async remove(previous) {
       return activities.findOneAndUpdate({ id: previous.id, hostId: previous.hostId,
         version: previous.version ?? { $exists: false }, status: { $ne: 'deleted' },
-      }, { $set: { status: 'deleted', deletedAt: new Date(), updatedAt: new Date() }, $inc: { version: 1 } }, { returnDocument: 'after' })
+      }, { $set: { status: 'deleted', deletedAt: new Date(), updatedAt: new Date() }, $unset: { planFileData: '' }, $inc: { version: 1 } }, { returnDocument: 'after' })
     },
-    async search(options, userId) {
-      const match = { status: 'published', startsAt: { $gt: new Date() }, hostId: { $ne: userId },
+    async favorites(ids, page, limit) {
+      const query = { id: { $in: ids }, status: { $ne: 'deleted' } }
+      const [rows, total] = await Promise.all([activities.find(query, { projection: { planFileData: 0 } }).sort({ startsAt: 1, id: 1 }).skip((page - 1) * limit).limit(limit).toArray(), activities.countDocuments(query)])
+      return { items: rows.map(publicActivity), total, page, limit, hasMore: page * limit < total }
+    },
+    async search(options, userId, profile = {}) {
+      const excluded = await community.blockedIds(userId)
+      const match = { status: 'published', startsAt: { $gt: new Date() }, hostId: { $nin: [userId, ...excluded] },
         $expr: { $lt: ['$memberCount', '$maxParticipants'] } }
+      if (options.organizerType) match.organizerType = options.organizerType === 'personal' ? { $ne: 'business' } : 'business'
       if (options.q) {
         const literal = options.q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
         match.$or = ['title', 'description', 'location', 'tags'].map(key => ({ [key]: { $regex: literal, $options: 'i' } }))
@@ -127,6 +150,8 @@ export function createActivityRepository(db) {
         const list = { $ifNull: [`$participantPreferences.${field}`, []] }
         checks.push({ $or: [{ $eq: [{ $size: list }, 0] }, { $in: [options[key], list] }] })
       }
+      if (options.minAge) checks.push({ $or: [{ $eq: [{ $ifNull: ['$participantPreferences.maxAge', 0] }, 0] }, { $gte: ['$participantPreferences.maxAge', options.minAge] }] })
+      if (options.maxAge) checks.push({ $lte: [{ $ifNull: ['$participantPreferences.minAge', 0] }, options.maxAge] })
       if (options.alcohol) checks.push({ $in: [{ $ifNull: ['$participantPreferences.alcohol', 'any'] }, ['any', options.alcohol]] })
       if (options.dressCode) checks.push({ [options.dressCode === 'yes' ? '$ne' : '$eq']: [{ $ifNull: ['$participantPreferences.dressCode', ''] }, ''] })
       if (options.days.length) checks.push({ $in: [{ $isoDayOfWeek: date }, options.days] })
@@ -137,17 +162,35 @@ export function createActivityRepository(db) {
         key: 'coordinates', distanceField: 'distanceMeters', spherical: true, query: match,
         ...(options.distanceKm !== undefined ? { maxDistance: options.distanceKm * 1000 } : {}),
       } }] : [{ $match: match }]
-      pipeline.push({ $sort: geo ? { distanceMeters: 1, startsAt: 1, id: 1 } : { startsAt: 1, id: 1 } },
+      pipeline.push({ $unset: 'planFileData' })
+      if (options.sort === 'recommended') {
+        const interests = (profile?.interests ?? []).slice(0, 12)
+        const signals = profile?.match_signals ?? {}
+        pipeline.push({ $set: { matchScore: { $add: [
+          { $multiply: [4, { $size: { $setIntersection: [{ $ifNull: ['$tags', []] }, { $literal: interests }] } }] },
+          { $cond: [{ $in: ['$category', { $literal: interests }] }, 5, 0] },
+          ...interests.map(interest => ({ $cond: [{ $regexMatch: {
+            input: { $concat: ['$title', ' ', '$description'] },
+            regex: interest.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), options: 'i',
+          } }, 2, 0] })),
+          { $switch: { branches: [['__none__', 0], ...Object.entries(signals)].filter(([key]) => typeof key === 'string').map(([key, value]) => ({ case: { $eq: ['$category', key] }, then: Math.max(-10, Math.min(10, Number(value) || 0)) })), default: 0 } },
+        ] } } })
+      }
+      const sort = { ...(options.sort === 'recommended' ? { matchScore: -1 } : {}),
+        ...(geo && options.sort !== 'soonest' ? { distanceMeters: 1 } : {}), startsAt: 1, id: 1 }
+      pipeline.push({ $sort: sort },
         { $facet: {
           items: [{ $skip: (options.page - 1) * options.limit }, { $limit: options.limit },
-            { $project: { _id: 0, id: 1, title: 1, hostId: 1, hostName: 1, location: 1, startsAt: 1,
-              memberCount: 1, minParticipants: 1, maxParticipants: 1, participantPreferences: 1, endsAt: 1, registrationDeadline: 1, meetingPoint: 1, financialConfig: 1, category: 1, tags: 1, description: 1, estimatedCost: 1,
-              requirements: 1, plan: 1, imageUrl: 1, distanceKm: geo ? { $divide: ['$distanceMeters', 1000] } : { $literal: null },
+            { $project: { _id: 0, id: 1, title: 1, hostId: 1, hostName: 1, location: 1, organizerType: { $ifNull: ['$organizerType', 'personal'] }, coordinates: 1, startsAt: 1,
+              address: 1, province: 1, district: 1, ward: 1, costNote: 1, reservedSeats: 1, itinerary: 1, planLink: 1, planFile: 1, memberCount: 1, minParticipants: 1, maxParticipants: 1, participantPreferences: 1, endsAt: 1, registrationDeadline: 1, meetingPoint: 1, financialConfig: 1, category: 1, tags: 1, description: 1, estimatedCost: 1,
+              requirements: 1, plan: 1, imageUrl: 1, imageUrls: 1, distanceKm: geo ? { $divide: ['$distanceMeters', 1000] } : { $literal: null },
             } }], total: [{ $count: 'count' }],
         } })
       const [result] = await db.collection('activities').aggregate(pipeline, { maxTimeMS: 5000 }).toArray()
       const total = result?.total[0]?.count ?? 0
-      return { items: result?.items ?? [], page: options.page, limit: options.limit, total, hasMore: options.page * options.limit < total }
+      const reputations = new Map(await Promise.all([...new Set((result?.items ?? []).map(row => row.hostId))].map(async id => [id, await community.reputation(id)])))
+      const items = (result?.items ?? []).map(row => ({ ...row, hostRating: reputations.get(row.hostId)?.average, hostRatingCount: reputations.get(row.hostId)?.count, hostCompletedActivities: reputations.get(row.hostId)?.completedActivities }))
+      return { items, page: options.page, limit: options.limit, total, hasMore: options.page * options.limit < total }
     },
   }
 }

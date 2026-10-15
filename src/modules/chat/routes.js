@@ -34,6 +34,7 @@ export function createChatRouter(repository, authRepository, { streamIntervalMs 
     query(req, ['page', 'limit'])
     res.json(await repository.list(req.auth.user.id, integer(req.query.page, 1, 500), integer(req.query.limit, 20, 50)))
   })
+  router.get('/:id', async (req, res) => { query(req, []); res.json({ conversation: await repository.snapshot(req.params.id, req.auth.user.id) }) })
   router.get('/:id/messages', async (req, res) => {
     query(req, ['before', 'limit'])
     if (req.query.before !== undefined && !cursor(req.query.before)) throw new HttpError(400, 'Invalid cursor')

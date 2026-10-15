@@ -1,10 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { verifyPassword } from './password.js'
+import { createCommunityRepository } from '../community/repository.js'
+import { HttpError } from '../../common/http-error.js'
 
 export function createAuthRepository(db) {
   const users = db.collection('users')
   const sessions = db.collection('auth_sessions')
+  const community = createCommunityRepository(db)
   return {
+    community,
     async createUser({ email, name, passwordHash }) {
       const user = { id: randomUUID(), email, name, password_hash: passwordHash, email_verified: false, created_at: new Date() }
       await users.insertOne(user)
@@ -105,6 +109,73 @@ export function createAuthRepository(db) {
         $set: { ...rest, ...(username ? { username } : {}), updated_at: new Date() },
         ...(username === '' ? { $unset: { username: '' } } : {}),
       }, { returnDocument: 'after', projection: { password_hash: 0, verification: 0, password_reset: 0, avatar: 0 } })
+    },
+    async replaceProfilePhotos(id, previous, photos) {
+      return users.findOneAndUpdate({ id, profile_photo_version: previous.profile_photo_version ?? { $exists: false } },
+        { $set: { profile_photos: photos, updated_at: new Date() }, $inc: { profile_photo_version: 1 } }, { returnDocument: 'after' })
+    },
+    async profileReviews(userId) {
+      const match = { targetUserId: userId, score: { $gte: 1, $lte: 5 } }
+      const [items, summary] = await Promise.all([
+        db.collection('activity_ratings').find(match, { projection: { _id: 0, id: 1, score: 1, comment: 1, activityTitle: 1, createdAt: 1 } }).sort({ createdAt: -1 }).limit(50).toArray(),
+        db.collection('activity_ratings').aggregate([{ $match: match }, { $group: { _id: null, average: { $avg: '$score' }, count: { $sum: 1 } } }]).toArray(),
+      ])
+      return { items, average: summary[0]?.average ?? null, count: summary[0]?.count ?? 0 }
+    },
+    async searchPeople(userId, q) {
+      const excluded = await community.blockedIds(userId)
+      const literal = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const people = await users.find({ id: { $nin: [userId, ...excluded] }, 'settings.discoverable': { $ne: false }, $or: [{ name: { $regex: literal, $options: 'i' } }, { username: { $regex: literal.replace(/^@/, ''), $options: 'i' } }] }, { projection: { _id: 0, id: 1, name: 1, username: 1, location: 1, avatar_url: 1 } }).sort({ name: 1, id: 1 }).limit(20).toArray()
+      const relations = await db.collection('friendships').find({ participantIds: userId, $or: [{ requesterId: { $in: people.map(item => item.id) } }, { recipientId: { $in: people.map(item => item.id) } }] }).toArray()
+      return people.map(person => { const relation = relations.find(item => item.participantIds.includes(person.id)); return { id: person.id, name: person.name, username: person.username ?? '', location: person.location ?? '', avatarUrl: person.avatar_url ?? null, friendshipId: relation?.id, friendshipStatus: relation?.status, incoming: relation?.recipientId === userId } })
+    },
+    async friendship(userId, targetId) {
+      const row = await db.collection('friendships').findOne({ key: JSON.stringify([userId, targetId].sort()) })
+      return row ? { id: row.id, status: row.status, incoming: row.recipientId === userId } : { status: 'none' }
+    },
+    async friendRequest(userId, targetId) {
+      if (await community.blocked(userId, targetId) || !(await community.settings(targetId)).allowFriendRequests) throw new HttpError(403, 'Tài khoản này không nhận lời mời kết bạn')
+      const participantIds = [userId, targetId].sort(), key = JSON.stringify(participantIds), now = new Date()
+      const fresh = { id: randomUUID(), key, participantIds, requesterId: userId, recipientId: targetId, status: 'pending', createdAt: now, updatedAt: now }
+      let row
+      try { row = await db.collection('friendships').findOneAndUpdate({ key }, { $setOnInsert: fresh }, { upsert: true, returnDocument: 'after' }) }
+      catch (error) { if (error.code !== 11000) throw error; row = await db.collection('friendships').findOne({ key }) }
+      if (row.status === 'declined') row = await db.collection('friendships').findOneAndUpdate({ key, status: 'declined' }, { $set: { requesterId: userId, recipientId: targetId, status: 'pending', updatedAt: now } }, { returnDocument: 'after' }) ?? await db.collection('friendships').findOne({ key })
+      if (row.status === 'pending' && row.requesterId === userId) await community.notify(targetId, { key: `friend:${row.id}:${row.updatedAt.toISOString()}`, type: 'friend-request', title: 'Lời mời kết bạn', text: 'Bạn có lời mời kết bạn mới.', actorId: userId })
+      return { id: row.id, status: row.status, incoming: row.recipientId === userId }
+    },
+    async decideFriend(userId, requestId, status) {
+      const row = await db.collection('friendships').findOneAndUpdate({ id: requestId, recipientId: userId, status: 'pending' }, { $set: { status, updatedAt: new Date() } }, { returnDocument: 'after' })
+      if (row && status === 'accepted') await community.notify(row.requesterId, { key: `friend-accepted:${row.id}`, type: 'friend-accepted', title: 'Đã kết bạn', text: 'Lời mời kết bạn của bạn đã được chấp nhận.', actorId: userId })
+      return row
+    },
+    async listFriends(userId, page, limit, pending = false) {
+      const query = { participantIds: userId, status: pending ? 'pending' : 'accepted' }
+      const [rows, total] = await Promise.all([db.collection('friendships').find(query).sort({ updatedAt: -1, id: 1 }).skip((page - 1) * limit).limit(limit).toArray(), db.collection('friendships').countDocuments(query)])
+      const people = await users.find({ id: { $in: rows.map(row => row.participantIds.find(id => id !== userId)) } }, { projection: { _id: 0, id: 1, name: 1, username: 1, location: 1, avatar_url: 1 } }).toArray()
+      return { items: rows.flatMap(row => { const user = people.find(person => row.participantIds.includes(person.id)); return user ? [{ id: user.id, name: user.name, username: user.username ?? '', location: user.location ?? '', avatarUrl: user.avatar_url ?? null, friendshipId: row.id, friendshipStatus: row.status, incoming: row.recipientId === userId }] : [] }), total, page, limit, hasMore: page * limit < total }
+    },
+    async removeFriend(userId, targetId) { await db.collection('friendships').deleteOne({ key: JSON.stringify([userId, targetId].sort()) }) },
+    async resolveFriends(userId, ids) {
+      if (!ids.length) return []
+      const relations = await db.collection('friendships').find({ key: { $in: ids.map(id => JSON.stringify([userId, id].sort())) }, status: 'accepted' }).toArray()
+      if (relations.length !== ids.length) return null
+      const people = await users.find({ id: { $in: ids } }, { projection: { _id: 0, password_hash: 0, verification: 0, password_reset: 0, avatar: 0 } }).toArray()
+      return people.length === ids.length ? people : null
+    },
+    async saveCover(id, previous, image) {
+      return users.findOneAndUpdate({ id, cover_version: previous.cover_version ?? { $exists: false } },
+        { $set: { cover_url: image?.url ?? null, cover_public_id: image?.publicId ?? null, updated_at: new Date() }, $inc: { cover_version: 1 } }, { returnDocument: 'after' })
+    },
+    async saveMatchFilters(id, filters) {
+      await users.updateOne({ id }, { $set: { match_filters: filters } })
+    },
+    async setFavorite(id, activityId, saved) {
+      return users.updateOne({ id, ...(saved ? { $or: [{ favorite_activity_ids: activityId }, { $expr: { $lt: [{ $size: { $ifNull: ['$favorite_activity_ids', []] } }, 500] } }] } : {}) },
+        saved ? { $addToSet: { favorite_activity_ids: activityId } } : { $pull: { favorite_activity_ids: activityId } })
+    },
+    async recordMatchSignal(id, category, weight) {
+      await users.updateOne({ id }, [{ $set: { [`match_signals.${category}`]: { $max: [-10, { $min: [10, { $add: [{ $ifNull: [`$match_signals.${category}`, 0] }, weight] }] }] } } }])
     },
     async saveAvatar(id, image) {
       return users.findOneAndUpdate({ id }, {

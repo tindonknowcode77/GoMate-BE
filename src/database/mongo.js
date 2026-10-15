@@ -6,6 +6,17 @@ export function createClient(config) {
 }
 
 export async function initializeDatabase(db) {
+  await db.collection('notifications').createIndex({ userId: 1, key: 1 }, { unique: true })
+  await db.collection('notifications').createIndex({ userId: 1, createdAt: -1, id: -1 })
+  await db.collection('user_blocks').createIndex({ ownerId: 1, targetId: 1 }, { unique: true })
+  await db.collection('user_blocks').createIndex({ targetId: 1 })
+  await db.collection('reports').createIndex({ key: 1 }, { unique: true })
+  await db.collection('rating_submissions').createIndex({ activityId: 1, userId: 1 }, { unique: true })
+  await db.collection('activity_ratings').createIndex({ activityId: 1, authorId: 1, targetUserId: 1 }, { unique: true, partialFilterExpression: { authorId: { $type: 'string' } } })
+  await db.collection('activity_ratings').createIndex({ targetUserId: 1, createdAt: -1 })
+  await db.collection('friendships').createIndex({ key: 1 }, { unique: true })
+  await db.collection('friendships').createIndex({ id: 1 }, { unique: true })
+  await db.collection('friendships').createIndex({ participantIds: 1, status: 1, updatedAt: -1 })
   await db.collection('conversations').createIndex({ id: 1 }, { unique: true })
   await db.collection('conversations').createIndex({ key: 1 }, { unique: true })
   await db.collection('conversations').createIndex({ participantIds: 1, createdAt: -1 })

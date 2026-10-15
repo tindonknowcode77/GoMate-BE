@@ -1,5 +1,133 @@
 # Development log
 
+## 2026-10-15 - Daily account APIs, notifications, reviews, blocking and reporting
+
+### Summary
+
+- Add authenticated account-scoped settings, paged notification/read-state, block list, report/history, rating form/submission and admin moderation endpoints.
+- Wire real friend/activity/chat events to deduplicated notification records; align chat read markers with message notifications and preserve primary writes if notification storage fails.
+- Enforce direct-message preferences on both creation and sending, bilateral blocks on direct access/search/invitations/discovery/join and actual attendance/target identity for completed activity ratings.
+- Add unique/idempotency indexes, safe public projections, real reputation/count queries and version-independent retryable moderation decisions. Client registration/settings cannot grant admin privileges.
+
+### Files changed
+
+- New `src/modules/community/{repository,routes}.js`, `tests/community.test.js`, `docs/community.md`.
+- `src/{app.js,database/mongo.js}`, activity/auth/chat/profile repositories/routes, README and this log.
+
+### Verification
+
+- Full `npm test`: 81 passed. Final focused activity/community/trip tests: 18 passed after event hooks.
+- FE integration, two-account community/trip browser tests and full web smoke passed against temporary databases, without production messages/accounts.
+- FE typecheck/lint/Expo Doctor (21/21), native session regression and all-platform bundles passed.
+- `git diff --check`: passed.
+
+### Remaining work
+
+- OS push/device registration and scheduled notification jobs are not provisioned. Notifications are secondary writes, not a durable outbox; failed notification storage is logged without undoing the primary action.
+- Moderation is an admin-only API; live admin provisioning/operator UI and staffing are separate. No live role was changed.
+- Business website, identity verification and payments remain separate; Google provider setup stays deferred as requested.
+
+## 2026-10-15 - Consumer publishing policy, schedule confirmation and inbox summaries
+
+### Summary
+
+- Reject business activity creation/conversion through consumer endpoints; preserve business discovery records.
+- Expand accepted categories to match the 56 FE options.
+- Add host-only versioned/idempotent schedule confirmation with audit history; clear it when time or meeting location changes.
+- Return actual avatar, group host/count/state and confirmation metadata; order inbox by newest message before pagination.
+
+### Files changed
+
+- `src/modules/activities/routes.js`, `validation.js`, `src/modules/chat/repository.js`.
+- `tests/match-preferences.test.js`, `tests/trip-social.test.js`, `docs/activity-management.md`, README and this log.
+
+### Verification
+
+- `npm test`: 75 tests passed with isolated MongoDB, including business denial, confirmation permission/version/reset checks, early chat and newest-message ordering.
+- FE service integration, full browser smoke and two-session trip/chat UI tests passed against BE. No production records are used by these tests.
+- `git diff --check`: passed.
+
+### Remaining work
+
+- Separate business website publishing service is outside the consumer endpoint; consumer web clients also cannot publish business activities.
+
+## 2026-10-15 - Trip planning, reserved seats, age preferences and social chat
+
+### Summary
+
+- Add structured itinerary, safe HTTPS plan links, bounded original Excel attachments
+  with authorized downloads, host-only versioned editing and private byte projections.
+- Add optional structured address/cost fields, offline companion reservations,
+  accepted-friend initial membership and atomic host additions/seat conversion.
+- Add age preference validation/enforcement and age-range discovery; retain legacy
+  preference/text-plan compatibility. Revalidate plans when activity dates change.
+- Add friend pair indexes, public name/Nickname search, idempotent requests,
+  recipient-only decisions and own-relationship removal. Extend authorized chat
+  summaries/deep-link reads and derive sender names on BE.
+
+### Files changed
+
+- `src/common/{activity-plan,preferences,match-filters}.js`
+- `src/modules/activities/{routes,repository,validation}.js`
+- `src/modules/auth/repository.js`, `src/modules/friends/routes.js`
+- `src/modules/chat/{routes,repository}.js`, `src/database/mongo.js`, `src/app.js`
+- `tests/trip-social.test.js`, `docs/trip-social.md`, `README.md`
+
+### Verification
+
+- `npm test`: Passed, 74 tests.
+- Focused trip/social and chat tests: Passed, 7 tests before the full suite.
+- FE integration and existing web smoke: Passed against real API/MongoDB.
+- New two-account browser flow: Passed friendship acceptance, full creation,
+  shared chat persistence, capacity/seat conversion, host-only plans and Excel download.
+- Syntax checks and `git diff --check`: Passed.
+
+### Remaining work
+
+- Excel is retained/downloaded as a bounded attachment, not parsed into itinerary rows.
+- Native device and third-party document application review is not performed.
+- Product/data decisions are recorded in the FE `docs/DECISIONS.md`.
+
+## 2026-10-15 - Match discovery preferences, favorites, covers and maps
+
+### Summary
+
+- Add declared personal/business activity types with legacy personal defaults,
+  explicit recommendation/nearest/soonest sorting, and bounded preference-based
+  ranking before pagination. Keep existing geospatial distance queries and require
+  location for nearest/radius; retain estimated-cost filters without deposit filters.
+- Save account-specific filters, category feedback and up to 500 favorite IDs.
+  Validate saved values/ranges and exclude precise GPS from persisted filters.
+  Derive feedback categories from actual activity records; omit deleted favorites.
+- Add version-guarded cover upload/removal with image validation and cleanup,
+  and expose only the public Google web client ID for FE sign-in configuration.
+- Serve Leaflet locally with an OSM tile map and frontend-origin frame policy;
+  no credentials are embedded in map URLs or sent to the tile provider.
+
+### Files changed
+
+- `src/modules/activities/{validation,routes,repository,me-routes}.js`
+- `src/modules/auth/{repository,routes}.js`, `src/modules/profile/routes.js`
+- `src/common/match-filters.js`, `src/map/*`, `src/app.js`
+- `package.json`, `package-lock.json`, `tests/match-preferences.test.js`
+- `docs/match.md`, `README.md`
+
+### Verification
+
+- `npm test`: Passed, 68 tests.
+- `node --test tests/match-preferences.test.js`: Passed, 7 tests; rerun after final
+  filter/nearest validation and map-CSP updates. Uses isolated MongoDB and image storage.
+- FE integration: Passed against real BE services.
+- Browser smoke passed Match/GPS/map/media, favorites join/cancel, restored-radius
+  location prompts and simulated Google callback flows without runtime errors.
+- `git diff --check`: Passed.
+
+### Remaining work
+
+- Google provider configuration is deferred; no real provider account was used.
+- Native device/GPS review and production tile-provider capacity are not validated.
+- Architecture/product choices are recorded in the FE `docs/DECISIONS.md`.
+
 ## 2026-10-13 - Remote demo images, complete member accounts and real group rosters
 
 - Added curated external Unsplash activity photos and Random User avatars/Unsplash
