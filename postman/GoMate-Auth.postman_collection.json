@@ -2677,6 +2677,32 @@
               }
             }
           }
+        },
+        {
+          "name": "Set User Role (Admin)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/users/{{portalUserId}}/role",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"staff\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
         }
       ]
     }

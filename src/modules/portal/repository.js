@@ -58,7 +58,22 @@ export function createPortalRepository(db) {
       return row
     },
     feed: offset => page(posts, { status: 'approved' }, offset, { _id: 0, reviewedBy: 0, reviewNote: 0 }),
-    users: offset => page(users, {}, offset, { _id: 0, id: 1, name: 1, email: 1, role: 1, subscription: 1, created_at: 1 }),
+    async users(offset) {
+      const result = await page(users, {}, offset, { _id: 0, id: 1, name: 1, email: 1, role: 1, email_verified: 1, subscription: 1, created_at: 1 })
+      const approved = await applications.find({ ownerId: { $in: result.items.map(user => user.id) }, status: 'approved' }, { projection: { ownerId: 1 } }).toArray()
+      const businesses = new Set(approved.map(item => item.ownerId))
+      return { ...result, items: result.items.map(user => ({ ...user, effectiveRole: ['admin', 'staff'].includes(user.role) ? user.role : businesses.has(user.id) ? 'business' : 'user' })) }
+    },
+    async setRole(id, role, actorId) {
+      if (!['user', 'staff', 'admin'].includes(role)) throw new HttpError(400, 'Invalid role')
+      if (id === actorId) throw new HttpError(409, 'You cannot change your own role')
+      const row = await users.findOneAndUpdate({ id }, {
+        $set: { role, updated_at: new Date(), roleUpdatedBy: actorId, roleUpdatedAt: new Date() },
+        $inc: { credential_version: 1 },
+      }, { returnDocument: 'after', projection: { _id: 0, id: 1, role: 1 } })
+      if (!row) throw new HttpError(404, 'User not found')
+      return row
+    },
     async subscription(id, value, actorId) {
       const row = await users.findOneAndUpdate({ id }, { $set: { subscription: { ...value, updatedBy: actorId, updatedAt: new Date() } } }, { returnDocument: 'after', projection: { _id: 0, id: 1, subscription: 1 } })
       if (!row) throw new HttpError(404, 'User not found')

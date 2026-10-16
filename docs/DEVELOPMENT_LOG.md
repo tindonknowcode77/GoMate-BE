@@ -1,5 +1,39 @@
 # Development log
 
+## 2026-10-16 - Allow immediate Admin role assignment
+
+### Summary
+- Removed target email verification prerequisite from role API and role editor at the user's request. Self-role protection and session revocation remain. Assignment does not mark email as verified or change login verification.
+
+### Files changed
+- BE portal/repository.js, tests/portal.test.js, docs/PORTAL_API.md; FE ConnectedPortal.jsx and docs/DECISIONS.md.
+
+### Verification
+- Backend portal tests: 7/7 passed, including assignment to an unverified account without changing email_verified.
+
+### Remaining work
+- None.
+
+
+## 2026-10-16 - Admin user role management
+
+### Summary
+- Added Admin-only PATCH /api/portal/users/:id/role for user, staff and admin. Requires verified email, blocks self changes, records actor/time and increments credential version atomically to revoke previous sessions.
+- Added role editor and save feedback to Admin user cards, separate from subscription changes. Business access still derives from approved applications and is explained in the UI.
+
+### Files changed
+- BE portal routes/repository, portal tests, Postman collection and PORTAL_API.md.
+- FE ConnectedPortal.jsx and portal.web.cjs.
+
+### Verification
+- Backend portal tests: 7/7 passed using temporary MongoDB, including authorization, validation, self protection, session revocation and business effective roles.
+- Browser portal workflow: passed, including UI role assignment and old session rejection.
+- FE typecheck, final lint and web build passed; Expo Doctor 21/21 passed.
+
+### Remaining work
+- None within role assignment scope. Business approval remains a separate workflow.
+
+
 ## 2026-10-16 - Fix Atlas DNS startup failure
 
 ### Summary

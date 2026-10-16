@@ -62,3 +62,7 @@ node --test tests/portal.test.js
 The tests use an isolated MongoDB memory-server database. For a locally installed mongod, set `MONGOMS_SYSTEM_BINARY` to its executable and `MONGOMS_VERSION` to its installed version. Run `node tests/portal.web.cjs` in `GoMate-FE` after exporting with `/api`; the browser test creates isolated accounts and exercises application approval, subscriptions, posts, moderation, tickets and mobile layout.
 
 The portal also reuses the configured Google sign-in button from the application. Google login requires the existing provider configuration; the browser tests exercise email/password login. Apple sign-in and native push notifications are outside this portal implementation. OAuth provider setup is not provisioned by these changes.
+
+## Admin role assignment
+
+PATCH `/api/portal/users/:id/role`, body `{ "role": "staff" }`. Allowed roles: user, staff, admin. Admin authorization required; target email verification is not required. Role assignment does not verify the email. Self changes return 409; missing users return 404. Successful updates invalidate previous sessions through credential_version and record roleUpdatedBy/roleUpdatedAt. Business remains derived from an approved application; selecting user does not revoke an approved business application. GET /users includes email_verified and effectiveRole.

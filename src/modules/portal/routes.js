@@ -58,6 +58,10 @@ export function createPortalRouter(auth) {
     res.json(await repo.decidePost(req.params.id, choice(req.body.status, ['approved', 'rejected']), text(req.body.reviewNote, 1000, true), req.auth.user.id))
   })
   router.get('/users', allow('admin'), async (req, res) => res.json(await repo.users(offset(req))))
+  router.patch('/users/:id/role', allow('admin'), writes, json, async (req, res) => {
+    fields(req.body, ['role'])
+    res.json(await repo.setRole(req.params.id, choice(req.body.role, ['user', 'staff', 'admin']), req.auth.user.id))
+  })
   router.patch('/users/:id/subscription', allow('admin'), writes, json, async (req, res) => {
     fields(req.body, ['plan', 'status'])
     res.json(await repo.subscription(req.params.id, { plan: choice(req.body.plan, ['free', 'plus']), status: choice(req.body.status, ['active', 'paused', 'cancelled']) }, req.auth.user.id))
