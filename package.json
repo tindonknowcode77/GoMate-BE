@@ -12,7 +12,8 @@
     "test": "node --test",
     "db:migrate": "node --env-file-if-exists=.env src/database/migrate.js",
     "db:seed-demo": "node --env-file-if-exists=.env src/database/seed-demo.js",
-    "db:seed-user-friends": "node --env-file-if-exists=.env src/database/seed-user-friends.js"
+    "db:seed-user-friends": "node --env-file-if-exists=.env src/database/seed-user-friends.js",
+    "portal:role": "node --env-file-if-exists=.env src/database/set-portal-role.js"
   },
   "dependencies": {
     "@nestjs/platform-express": "^12.1.2",

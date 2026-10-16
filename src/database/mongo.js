@@ -1,11 +1,19 @@
 import { MongoClient } from 'mongodb'
+import { setServers } from 'node:dns'
 
 export function createClient(config) {
   if (!config.mongodbUri) throw new Error('MONGODB_URI is required. Set it in GoMate-BE/.env.')
+  if (config.mongodbDnsServers?.length) setServers(config.mongodbDnsServers)
   return new MongoClient(config.mongodbUri, { maxPoolSize: 5, serverSelectionTimeoutMS: 10000 })
 }
 
 export async function initializeDatabase(db) {
+  await db.collection('business_applications').createIndex({ ownerId: 1 }, { unique: true })
+  for (const name of ['business_applications', 'business_posts', 'support_tickets']) {
+    await db.collection(name).createIndex({ id: 1 }, { unique: true })
+    await db.collection(name).createIndex({ ownerId: 1, createdAt: -1 })
+    await db.collection(name).createIndex({ status: 1, createdAt: -1 })
+  }
   await db.collection('activity_drafts').createIndex({ ownerId: 1 }, { unique: true })
   await db.collection('chat_attachments').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
   await db.collection('chat_attachments').createIndex({ conversationId: 1, ownerId: 1 })

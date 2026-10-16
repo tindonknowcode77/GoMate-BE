@@ -1,18 +1,21 @@
 import { createApp } from './app.js'
 import { readConfig } from './config/env.js'
 import { createClient, initializeDatabase } from './database/mongo.js'
+import { databaseStartupError } from './database/startup-error.js'
 import { createAuthRepository } from './modules/auth/repository.js'
 import { createActivityRepository } from './modules/activities/repository.js'
 import { createChatRepository } from './modules/chat/repository.js'
 
 const config = readConfig()
 let client
+let databasePhase = 'connection'
 try {
   client = createClient(config)
   await client.connect()
+  databasePhase = 'initialization'
   await initializeDatabase(client.db())
-} catch {
-  console.error('MongoDB connection or initialization failed. Check MONGODB_URI in GoMate-BE/.env and database access.')
+} catch (error) {
+  console.error(databaseStartupError(error, databasePhase))
   await client?.close()
   process.exit(1)
 }

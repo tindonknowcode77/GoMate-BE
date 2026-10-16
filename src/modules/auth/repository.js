@@ -1,3 +1,4 @@
+import { createPortalRepository } from '../portal/repository.js'
 import { createDraftRepository } from '../drafts/repository.js'
 import { randomUUID } from 'node:crypto'
 import { verifyPassword } from './password.js'
@@ -10,6 +11,7 @@ export function createAuthRepository(db) {
   const community = createCommunityRepository(db)
   return {
     community,
+    portal: createPortalRepository(db),
     drafts: createDraftRepository(db),
     async createUser({ email, name, passwordHash }) {
       const user = { id: randomUUID(), email, name, password_hash: passwordHash, email_verified: false, created_at: new Date() }

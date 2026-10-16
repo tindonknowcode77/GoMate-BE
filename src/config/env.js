@@ -1,4 +1,8 @@
+import { isIP } from 'node:net'
+
 export function readConfig(env = process.env) {
+  const mongodbDnsServers = (env.MONGODB_DNS_SERVERS || '').split(',').map(value => value.trim()).filter(Boolean)
+  if (mongodbDnsServers.length > 3 || mongodbDnsServers.some(value => !isIP(value))) throw new Error('MONGODB_DNS_SERVERS must contain up to 3 comma-separated DNS server IP addresses')
   const port = Number(env.PORT ?? 3000)
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error('PORT must be an integer between 1 and 65535')
@@ -29,6 +33,7 @@ export function readConfig(env = process.env) {
     smtpPass: env.SMTP_PASS,
     mailFrom: env.MAIL_FROM || env.SMTP_USER,
     mongodbUri: env.MONGODB_URI,
+    mongodbDnsServers,
     googleClientId: env.GOOGLE_CLIENT_ID?.trim() || '',
     // Only a public token may be exposed to the iframe/WebView.
     mapboxAccessToken: env.MAPBOX_ACCESS_TOKEN?.trim().startsWith('pk.') ? env.MAPBOX_ACCESS_TOKEN.trim() : '',

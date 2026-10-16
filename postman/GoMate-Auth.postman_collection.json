@@ -199,6 +199,36 @@
       "value": "",
       "type": "string",
       "description": "Current password for authenticated change."
+    },
+    {
+      "key": "portalApplicationId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "portalPostId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "portalUserId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "portalReportId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "portalTicketId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "portalDocumentBase64",
+      "value": "",
+      "type": "string"
     }
   ],
   "item": [
@@ -2316,6 +2346,337 @@
             }
           ],
           "response": []
+        }
+      ]
+    },
+    {
+      "name": "Portal - Business, Staff & Admin",
+      "description": "Use individual requests with the appropriate signed-in account. Reuse Login above to set accessToken. Public registration never grants staff/admin. See docs/PORTAL_API.md. Fill IDs manually from successful responses. Billing changes entitlements only; no money is charged.",
+      "item": [
+        {
+          "name": "My Portal",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/me"
+          }
+        },
+        {
+          "name": "Apply as Business",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/applications",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"company\": \"Example Business\",\n  \"category\": \"Events\",\n  \"website\": \"https://example.com\",\n  \"document\": {\n    \"name\": \"proof.pdf\",\n    \"mime\": \"application/pdf\",\n    \"base64\": \"{{portalDocumentBase64}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Applications (Admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/applications?page=1"
+          }
+        },
+        {
+          "name": "Download Document (Admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/applications/{{portalApplicationId}}/document"
+          }
+        },
+        {
+          "name": "Approve Application (Admin)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/applications/{{portalApplicationId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"approved\",\n  \"reviewNote\": \"Verified\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List Posts",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/posts?page=1"
+          }
+        },
+        {
+          "name": "Submit Business Post",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/posts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Community update\",\n  \"copy\": \"A real announcement\",\n  \"premium\": false,\n  \"badge\": \"\",\n  \"discount\": \"\",\n  \"border\": \"Soft\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Approve Post (Staff/Admin)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/posts/{{portalPostId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"approved\",\n  \"reviewNote\": \"Reviewed\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Published Feed",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/feed?page=1"
+          }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/metrics"
+          }
+        },
+        {
+          "name": "Users (Admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/users?page=1"
+          }
+        },
+        {
+          "name": "Set Subscription (Admin)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/users/{{portalUserId}}/subscription",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"plan\": \"plus\",\n  \"status\": \"active\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Reports (Staff/Admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/reports?page=1"
+          }
+        },
+        {
+          "name": "Resolve Report (Staff/Admin)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/reports/{{portalReportId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"resolved\",\n  \"hideActivity\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "My Support Tickets",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/tickets?page=1"
+          }
+        },
+        {
+          "name": "Create Ticket",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/tickets",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"subject\": \"Plan request\",\n  \"message\": \"Please review my plan.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Reply to Ticket",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/portal/tickets/{{portalTicketId}}/replies",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"Thank you for contacting support.\",\n  \"status\": \"open\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
         }
       ]
     }

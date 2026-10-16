@@ -1,3 +1,4 @@
+import { createPortalRouter } from './modules/portal/routes.js'
 import { createDraftRouter } from './modules/drafts/routes.js'
 import { createMapsRouter } from './modules/maps/routes.js'
 import express from 'express'
@@ -42,6 +43,7 @@ export function createApp(config = readConfig(), { authRepository, activityRepos
   if (activityRepository && authRepository) app.use('/api/activities', createActivityRouter(activityRepository, authRepository, coverStorage ?? createAvatarStorage(config, undefined, 'activities')))
   if (activityRepository && authRepository) app.use('/api/me', createMyActivityRouter(activityRepository, authRepository))
   if (authRepository?.drafts) app.use('/api/activity-draft', createDraftRouter(authRepository))
+  if (authRepository?.portal) app.use('/api/portal', createPortalRouter(authRepository))
   app.use(express.json({ limit: '16kb' }))
   if (chatRepository && authRepository) app.use('/api/conversations', createChatRouter(chatRepository, authRepository, chatOptions))
 

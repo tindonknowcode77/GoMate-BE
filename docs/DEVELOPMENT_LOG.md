@@ -1,5 +1,52 @@
 # Development log
 
+## 2026-10-16 - Fix Atlas DNS startup failure
+
+### Summary
+
+- Diagnosed ECONNREFUSED during querySrv/queryTxt: Node's default resolver pointed to an unavailable loopback DNS service. After user authorization, DNS lookup and MongoDB ping succeeded using the Windows-configured resolvers.
+- Added optional MONGODB_DNS_SERVERS with IP validation and applied it to the Node process before creating the MongoDB client. Set the local ignored .env override to the authorized Windows DNS addresses; system DNS and database credentials were not changed.
+- Replaced the generic startup error with sanitized diagnostics distinguishing DNS, credentials, permissions and index initialization. No raw connection string or driver message is logged.
+
+### Files changed
+
+- src/config/env.js, src/database/mongo.js, src/database/startup-error.js, src/server.js, .env.example, tests/database-startup-error.test.js; local ignored .env.
+
+### Verification
+
+- node --test tests/database-startup-error.test.js tests/app.test.js: 7 tests passed.
+- Real configured database: connection, ping and initializeDatabase all passed with the new configuration. No records or indexes were deleted.
+
+### Remaining work
+
+- Restart the backend process to load the updated environment. The DNS override affects DNS queries in this Node process only; leave it empty on hosts whose default resolver works.
+
+## 2026-10-16 - Persist and authorize the Business, Staff and Admin portal
+
+### Summary
+
+- Add authenticated /api/portal endpoints and MongoDB collections/indexes for business applications/documents, moderated announcements and support tickets. Reuse community report handling and shared auth sessions.
+- Enforce business ownership, private admin-only document downloads, atomic pending-only review decisions, bounded input and write limits. Only admins assign subscription entitlements; premium publishing requires an active Plus plan.
+- Add an operator-only role assignment CLI that requires a verified account and revokes existing sessions. No default privileged account is created.
+- Extend the existing Postman collection with 17 portal requests and document local startup, roles and contracts.
+
+### Files changed
+
+- src/modules/portal/*, src/database/mongo.js, src/database/set-portal-role.js, src/modules/auth/repository.js, src/app.js.
+- tests/portal.test.js, package.json, postman/GoMate-Auth.postman_collection.json, docs/PORTAL_API.md.
+
+### Verification
+
+- Portal integration tests: 6 passed using isolated MongoDB 8.3.1.
+- Initial full suite found a missing local leaflet package; dependency synchronization fixed it, and all 7 tests in the affected suite passed.
+- node --test --test-concurrency=2: passed, 99/99 tests with system mongod 8.3.1 in isolated temporary databases.
+- Portal browser integration: passed; Postman JSON parses and includes 17 portal requests. git diff --check passed.
+
+### Remaining work
+
+- Production setup uses existing MongoDB/email configuration and explicit provisioning of a verified administrator. Billing is entitlement-only; no charges or invoices.
+- Documents are private MongoDB records with a 10 MB file limit. Report listing reuses the existing 200-record moderation queue. Business posts are announcements separate from activity scheduling.
+
 ## 2026-10-16 - Private activity drafts, member portraits and requested demo friends
 
 ### Summary
