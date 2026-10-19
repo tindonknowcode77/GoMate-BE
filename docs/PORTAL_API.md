@@ -19,7 +19,7 @@ For the first administrator, register a real account and verify its email, then 
 npm.cmd run portal:role -- your-verified-email@example.com admin
 ```
 
-Replace the email with the intended operator account. This command also supports `staff` and `user`; it revokes existing sessions. No administrator is seeded automatically and no demo password is accepted by the portal.
+Replace the email with the intended operator account. This command also supports `staff` and `user`; it revokes existing sessions. No administrator is seeded automatically. Demo accounts exist only after explicitly running `npm run db:seed-workshop`; they use ordinary password login and can be customized with WORKSHOP_DEMO_PASSWORD on first creation. The seed command is disabled under production NODE_ENV.
 
 ## Routes
 
@@ -29,9 +29,9 @@ All routes below start with `/api/portal` and require `Authorization: Bearer <to
 | --- | --- | --- |
 | GET | `/me` | Current identity, effective role, subscription, own application |
 | POST | `/applications` | Verified user; submit/resubmit a rejected business application |
-| GET | `/applications` | Admin; application list, without document contents |
-| GET | `/applications/:id/document` | Admin; private attachment download |
-| PATCH | `/applications/:id` | Admin; pending → approved/rejected, optional reviewNote |
+| GET | `/applications` | Staff/Admin; application list, without document contents |
+| GET | `/applications/:id/document` | Staff/Admin; private attachment download |
+| PATCH | `/applications/:id` | Staff/Admin; pending → approved/rejected, optional reviewNote |
 | GET | `/posts` | Business: own posts; Staff/Admin: moderation list |
 | POST | `/posts` | Approved business; creates a pending post |
 | PATCH | `/posts/:id` | Staff/Admin; pending → approved/rejected |
@@ -47,7 +47,11 @@ All routes below start with `/api/portal` and require `Authorization: Bearer <to
 
 Applications accept `company`, `category`, optional `website`, and `document: {name, mime, base64}`. Documents are PDF/PNG/JPEG, up to 10 MB, with file-signature validation. They are stored privately in MongoDB and excluded from list responses. Downloads are attachments, never inline HTML. A rejected application can be resubmitted; concurrent or repeated decisions return 409.
 
-Posts accept `title`, `copy`, `premium`, `badge`, `discount`, and `border` (Soft/Glow/Solid). Premium creation requires an active Plus plan on the server. Posts are business announcements, separate from personal activity membership/scheduling APIs. Approved posts are visible in the portal's published feed; the existing mobile activity feed is unchanged.
+Posts accept `title`, `copy`, `premium`, `badge`, `discount`, and `border` (Soft/Glow/Solid). Premium creation requires an active Plus plan on the server. Event posts additionally accept `discountPercent` (integer 0–100), `offer` (up to 200 characters), `offerTerms` (up to 500), and `event` with category, location, optional province/address/meetingPoint, startsAt/endsAt, optional registrationDeadline, estimatedCost, maxParticipants and optional itinerary/plan/planLink. The title and description derive from title/copy; clients cannot inject organizer identity, membership, verified status, guests or host IDs.
+
+On staff approval, an event is published into `activities` using its stable `activityId`, server-owned business identity/verified flag, offer metadata and an official confirmed schedule. Pending/rejected posts never enter discovery. Schedule validation runs again at review time; expired appointments must be recreated. Upsert publication prevents duplicate activities on retry. Legacy posts without event details remain portal-only announcements; do not invent schedules for them.
+
+Verified events use the ordinary join-request → organizer approval → group-chat → attendance → review flow. Consumer create/update cannot impersonate a business. Business events reject anonymous companion edits and host-added friends; the published event metadata is moderated, while the organizer can maintain the shared itinerary. Prices/discounts do not charge the user.
 
 Subscriptions are administrative entitlements, **not payments**: no charge, invoice, payment provider, renewal job or revenue claim is made. Owners can request changes via support; only Admin changes entitlements. Existing approved posts keep their historical decoration if a plan is later paused.
 
@@ -56,10 +60,10 @@ Support threads are persisted, ownership checked, and limited to 100 messages pe
 ## Verification
 
 ```powershell
-node --test tests/portal.test.js
+node --test tests/portal.test.js tests/business-events.test.js
 ```
 
-The tests use an isolated MongoDB memory-server database. For a locally installed mongod, set `MONGOMS_SYSTEM_BINARY` to its executable and `MONGOMS_VERSION` to its installed version. Run `node tests/portal.web.cjs` in `GoMate-FE` after exporting with `/api`; the browser test creates isolated accounts and exercises application approval, subscriptions, posts, moderation, tickets and mobile layout.
+The tests use an isolated MongoDB memory-server database. For a locally installed mongod, set `MONGOMS_SYSTEM_BINARY` to its executable and `MONGOMS_VERSION` to its installed version. Run `npm run test:business:web` in `GoMate-FE` after exporting with `/api`; the browser test uses independent sessions to verify applications, approval/publication, discovery, offers, joins, chat and mobile layout. See `GoMate-FE/docs/DEMO_GUIDE.md` for manual Chrome/Edge demo steps.
 
 The portal also reuses the configured Google sign-in button from the application. Google login requires the existing provider configuration; the browser tests exercise email/password login. Apple sign-in and native push notifications are outside this portal implementation. OAuth provider setup is not provisioned by these changes.
 

@@ -193,7 +193,7 @@ export function createActivityRepository(db) {
           items: [{ $skip: (options.page - 1) * options.limit }, { $limit: options.limit },
             { $project: { _id: 0, id: 1, title: 1, hostId: 1, hostName: 1, location: 1, organizerType: { $ifNull: ['$organizerType', 'personal'] }, coordinates: 1, startsAt: 1,
               address: 1, province: 1, district: 1, ward: 1, costNote: 1, reservedSeats: 1, itinerary: 1, planLink: 1, planFile: 1, memberCount: 1, minParticipants: 1, maxParticipants: 1, participantPreferences: 1, endsAt: 1, registrationDeadline: 1, meetingPoint: 1, financialConfig: 1, category: 1, tags: 1, description: 1, estimatedCost: 1,
-              requirements: 1, plan: 1, imageUrl: 1, imageUrls: 1, distanceKm: geo ? { $divide: ['$distanceMeters', 1000] } : { $literal: null },
+              requirements: 1, plan: 1, imageUrl: 1, imageUrls: 1, business: 1, distanceKm: geo ? { $divide: ['$distanceMeters', 1000] } : { $literal: null },
             } }], total: [{ $count: 'count' }],
         } })
       const [result] = await db.collection('activities').aggregate(pipeline, { maxTimeMS: 5000 }).toArray()

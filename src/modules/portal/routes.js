@@ -2,6 +2,7 @@ import express, { Router } from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { authenticate } from '../../middlewares/authenticate.js'
 import { HttpError } from '../../common/http-error.js'
+import { activityFields } from '../activities/validation.js'
 
 function fields(body, keys) {
   if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !keys.includes(key))) throw new HttpError(400, 'Invalid request fields')
@@ -38,20 +39,28 @@ export function createPortalRouter(auth) {
     if (website) { let url; try { url = new URL(website) } catch { throw new HttpError(400, 'Invalid website URL') }; if (!['https:', 'http:'].includes(url.protocol)) throw new HttpError(400, 'Invalid website URL') }
     res.status(201).json(await repo.apply(req.auth.user.id, { company: text(req.body.company, 150), category: text(req.body.category, 100), website, document: document(req.body.document) }))
   })
-  router.get('/applications', allow('admin'), async (req, res) => res.json(await repo.applications(offset(req))))
-  router.get('/applications/:id/document', allow('admin'), async (req, res) => {
+  router.get('/applications', allow('staff', 'admin'), async (req, res) => res.json(await repo.applications(offset(req))))
+  router.get('/applications/:id/document', allow('staff', 'admin'), async (req, res) => {
     const file = await repo.document(req.params.id)
     res.set({ 'Content-Type': file.mime, 'Content-Disposition': `attachment; filename="document.${file.mime === 'application/pdf' ? 'pdf' : file.mime === 'image/png' ? 'png' : 'jpg'}"`, 'X-Content-Type-Options': 'nosniff' }).send(Buffer.from(file.base64, 'base64'))
   })
-  router.patch('/applications/:id', allow('admin'), writes, json, async (req, res) => {
+  router.patch('/applications/:id', allow('staff', 'admin'), writes, json, async (req, res) => {
     fields(req.body, ['status', 'reviewNote'])
     res.json(await repo.decideApplication(req.params.id, choice(req.body.status, ['approved', 'rejected']), text(req.body.reviewNote, 1000, true), req.auth.user.id))
   })
   router.get('/posts', allow('business', 'staff', 'admin'), async (req, res) => res.json(await repo.posts(req.portalRole === 'business' ? req.auth.user.id : null, offset(req))))
   router.post('/posts', allow('business'), writes, json, async (req, res) => {
-    fields(req.body, ['title', 'copy', 'badge', 'discount', 'border', 'premium'])
+    fields(req.body, ['title', 'copy', 'badge', 'discount', 'border', 'premium', 'event', 'discountPercent', 'offer', 'offerTerms'])
     if (typeof req.body.premium !== 'boolean') throw new HttpError(400, 'Invalid premium flag')
-    res.status(201).json(await repo.createPost(req.auth.user.id, { title: text(req.body.title, 120), copy: text(req.body.copy, 3000), badge: text(req.body.badge, 60, true), discount: text(req.body.discount, 60, true), border: choice(req.body.border, ['Glow', 'Soft', 'Solid']), premium: req.body.premium }))
+    const title = text(req.body.title, 120), copy = text(req.body.copy, 3000)
+    const discountPercent = req.body.discountPercent ?? 0
+    if (!Number.isInteger(discountPercent) || discountPercent < 0 || discountPercent > 100) throw new HttpError(400, 'Discount must be an integer from 0 to 100')
+    let event
+    if (req.body.event !== undefined) {
+      fields(req.body.event, ['category', 'location', 'province', 'address', 'meetingPoint', 'startsAt', 'endsAt', 'registrationDeadline', 'estimatedCost', 'maxParticipants', 'itinerary', 'plan', 'planLink'])
+      event = activityFields({ ...req.body.event, title, description: copy })
+    }
+    res.status(201).json(await repo.createPost(req.auth.user.id, { title, copy, badge: text(req.body.badge, 60, true), discount: text(req.body.discount, 60, true), border: choice(req.body.border, ['Glow', 'Soft', 'Solid']), premium: req.body.premium, ...(event ? { event } : {}), discountPercent, offer: text(req.body.offer, 200, true), offerTerms: text(req.body.offerTerms, 500, true) }))
   })
   router.patch('/posts/:id', allow('staff', 'admin'), writes, json, async (req, res) => {
     fields(req.body, ['status', 'reviewNote'])

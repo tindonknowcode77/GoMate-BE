@@ -1,5 +1,28 @@
 # Development log
 
+## 2026-10-19 - Publish verified business events into the app and support multi-browser demos
+
+### Summary
+
+- Allow Staff/Admin to review business applications. Extend posts with validated event data, discount percentage and offer/terms; revalidate schedules at approval and publish one linked activity with server-derived business identity and an official schedule.
+- Expose safe business offer metadata in discovery/details and retain ordinary request/approval/chat/attendance/rating authorization. Reject host-added friends and anonymous companion changes for business events; consumer publishing still cannot impersonate businesses.
+- Add an explicit production-guarded workshop demo seed with five ordinary-login accounts, a personal sample and a staff-approved business sample. Preserve existing non-demo accounts and demo memberships on reruns.
+
+### Files changed
+
+- `src/modules/{portal,activities}/{routes,repository}.js`, activity validation/presentation, `src/database/{workshop-demo,seed-workshop-demo}.js`, `package.json`.
+- `tests/{business-events,portal}.test.js`, `docs/PORTAL_API.md`, `README.md`; paired frontend portal/demo/UI is on GoMate-FE `fe-ui2`.
+
+### Verification
+
+- `npm test`: 103/103 passed. Business test covers repeat seed IDs, publication visibility, verified metadata, spoof prevention, membership restrictions, joining/chat and completed attendance/rating.
+- Paired FE business browser integration passed the complete application/moderation/publication/discovery/join/chat flow across independent sessions. Existing web smoke, lifecycle, trip/media/Excel, community, maps and service integration suites passed.
+- Reinstalled dependencies from lockfile to restore missing Leaflet assets; full map smoke now passes. Repeated seed against local configured MongoDB preserved sample IDs. Restarted API; actual Chrome/Edge demo logins and discovery passed. `git diff --check`: Passed.
+
+### Remaining work
+
+- Offers/prices do not process payments. Legacy announcements without event details remain portal-only. Workshop demo seeding must not be run against production data.
+
 ## 2026-10-16 - Allow immediate Admin role assignment
 
 ### Summary

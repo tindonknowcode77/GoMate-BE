@@ -196,6 +196,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   })
   router.patch('/:id/companions', writes, json, async (req, res) => {
     const row = await find(req.params.id, req.auth.user.id)
+    if (row.organizerType === 'business') throw new HttpError(403, 'Sự kiện doanh nghiệp chỉ nhận thành viên có tài khoản đăng ký.')
     if (!req.body || Object.keys(req.body).length !== 2 || !Number.isInteger(req.body.version) || req.body.version !== row.version) throw new HttpError(409, 'Hoạt động đã thay đổi. Tải lại trước khi lưu.')
     if (row.status !== 'published' || row.startsAt <= new Date()) throw new HttpError(409, 'Chỉ sửa người đi cùng trước khi hoạt động bắt đầu')
     const companions = companionFields(req.body.companions, row.reservedSeats ?? 0)
@@ -230,6 +231,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const { friendIds, useReservedSeats = true } = req.body ?? {}
     if (!req.body || Object.keys(req.body).some(key => !['friendIds', 'useReservedSeats'].includes(key)) || !Array.isArray(friendIds) || !friendIds.length || friendIds.length > 50 || new Set(friendIds).size !== friendIds.length || friendIds.some(id => typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) || typeof useReservedSeats !== 'boolean') throw new HttpError(400, 'Chọn tối đa 50 bạn bè')
     const previous = await find(req.params.id, req.auth.user.id)
+    if (previous.organizerType === 'business') throw new HttpError(403, 'Người tham gia sự kiện doanh nghiệp cần tự đăng ký để được xác nhận.')
     if (previous.status !== 'published' || previous.startsAt <= new Date()) throw new HttpError(409, 'Chỉ thêm bạn vào hoạt động chưa bắt đầu')
     const people = await authRepository.resolveFriends(req.auth.user.id, friendIds)
     if (!people) throw new HttpError(403, 'Chỉ thêm được bạn bè đã chấp nhận kết bạn')

@@ -1,5 +1,7 @@
 # GoMate Backend
 
+Demo host/người tham gia/doanh nghiệp/staff: chạy `npm run db:seed-workshop`, rồi mở `/demo` ở frontend. Xem `GoMate-FE/docs/DEMO_GUIDE.md`; cần nhánh `fe-ui2` ở cả FE và BE cho luồng sự kiện doanh nghiệp mới.
+
 Node.js 22.12+ / 24+, Express 5 và MongoDB (driver chính thức).
 
 Demo 20 hoạt động TP.HCM: `npm.cmd run db:seed-demo`; tài khoản và hướng dẫn ở

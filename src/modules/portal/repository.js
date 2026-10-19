@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { HttpError } from '../../common/http-error.js'
+import { activityFields } from '../activities/validation.js'
 
 const publicRow = { _id: 0, document: 0 }
 export function createPortalRepository(db) {
@@ -47,14 +48,39 @@ export function createPortalRepository(db) {
       const user = await users.findOne({ id: ownerId })
       if (data.premium && !(user?.subscription?.plan === 'plus' && user.subscription.status === 'active')) throw new HttpError(403, 'An active Plus plan is required for premium styling')
       const application = await applications.findOne({ ownerId, status: 'approved' })
-      const row = { ...data, id: randomUUID(), ownerId, businessName: application?.company || user.name, status: 'pending', createdAt: new Date() }
+      if (!application) throw new HttpError(403, 'A verified business is required')
+      const row = { ...data, id: randomUUID(), ...(data.event ? { activityId: randomUUID() } : {}), ownerId, businessName: application.company, status: 'pending', createdAt: new Date() }
       await posts.insertOne(row)
       const { _id, ...result } = row
       return result
     },
     async decidePost(id, status, reviewNote, actorId) {
-      const row = await posts.findOneAndUpdate({ id, status: 'pending' }, { $set: { status, reviewNote, reviewedBy: actorId, reviewedAt: new Date() } }, { returnDocument: 'after', projection: publicRow })
+      const previous = await posts.findOne({ id })
+      if (!previous) throw new HttpError(404, 'Post not found')
+      const publishing = status === 'approved' && previous.event
+      // Revalidate the appointment at review time; an expired event must not enter discovery.
+      if (publishing) activityFields({ ...previous.event, startsAt: new Date(previous.event.startsAt).toISOString(), endsAt: new Date(previous.event.endsAt).toISOString(), ...(previous.event.registrationDeadline ? { registrationDeadline: new Date(previous.event.registrationDeadline).toISOString() } : {}) })
+      const application = publishing && await applications.findOne({ ownerId: previous.ownerId, status: 'approved' })
+      if (publishing && !application) throw new HttpError(403, 'Business verification is required')
+      const row = await posts.findOneAndUpdate({ id, status: 'pending' }, { $set: { status: publishing ? 'publishing' : status, reviewNote, reviewedBy: actorId, reviewedAt: new Date() } }, { returnDocument: 'after', projection: publicRow })
       if (!row) throw new HttpError(409, 'Post was already reviewed or not found')
+      if (publishing) {
+        try {
+          const now = new Date()
+          await db.collection('activities').updateOne({ id: row.activityId }, { $setOnInsert: {
+            ...row.event, id: row.activityId, organizerType: 'business', hostId: row.ownerId, hostName: application.company,
+            business: { name: application.company, verified: true, discountPercent: row.discountPercent || 0, offer: row.offer || row.discount || '', terms: row.offerTerms || '' },
+            status: 'published', memberCount: 1, reservedSeats: 0, version: 1, tags: ['Doanh nghiệp'], requirements: [],
+            scheduleConfirmedAt: now, scheduleConfirmedBy: actorId, createdAt: now, updatedAt: now,
+          } }, { upsert: true })
+          await posts.updateOne({ id, status: 'publishing' }, { $set: { status: 'approved' } })
+          row.status = 'approved'
+        } catch (error) {
+          // The stable activity ID makes retry safe even if publication was interrupted.
+          await posts.updateOne({ id, status: 'publishing' }, { $set: { status: 'pending' } })
+          throw error
+        }
+      }
       return row
     },
     feed: offset => page(posts, { status: 'approved' }, offset, { _id: 0, reviewedBy: 0, reviewNote: 0 }),
