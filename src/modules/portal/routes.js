@@ -103,5 +103,3 @@ export function createPortalRouter(auth) {
   })
   return router
 }
-
-}
