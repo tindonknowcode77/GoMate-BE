@@ -1,5 +1,44 @@
 # Development log
 
+## 2026-10-20 - Return published post totals for staff
+
+### Summary
+
+- Include approvedPosts in staff/admin metrics using the real approved business-post count. Existing application, report and ticket endpoints serve the staff workspace without mock fallbacks.
+
+### Files changed
+
+- src/modules/portal/repository.js; tests/portal.test.js.
+
+### Verification
+
+- node --test tests/portal.test.js: 7 tests passed, including staff published/pending post, pending application and open ticket counts.
+- Frontend tests/staff.web.cjs: Passed against isolated database and real API.
+
+### Remaining work
+
+- None.
+
+## 2026-10-20 - Expose authoritative partner event categories
+
+### Summary
+
+- Add authenticated GET /api/portal/options using activityCategories from backend validation so the partner form does not maintain a hardcoded subset.
+
+### Files changed
+
+- src/modules/portal/routes.js; tests/business-events.test.js; docs/PORTAL_API.md.
+
+### Verification
+
+- node --test tests/business-events.test.js tests/portal.test.js: 8 tests passed.
+- node --test tests/business-events.test.js: Passed after adding the options response assertion.
+- Frontend business browser integration: Passed with real backend and isolated MongoDB, including event creation, moderation and persistent support tickets.
+
+### Remaining work
+
+- None.
+
 ## 2026-10-19 - Publish verified business events into the app and support multi-browser demos
 
 ### Summary

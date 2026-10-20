@@ -34,10 +34,18 @@ export function createPortalRouter(auth) {
   router.get('/me', async (req, res) => res.json({ ...await repo.me(req.auth.user.id), role: req.portalRole }))
   router.get('/feed', async (req, res) => res.json(await repo.feed(offset(req))))
   router.post('/applications', allow('user'), writes, express.json({ limit: '14mb' }), async (req, res) => {
-    fields(req.body, ['company', 'website', 'category', 'document'])
+    fields(req.body, ['company', 'website', 'category', 'taxId', 'address', 'contact', 'document'])
     const website = text(req.body.website, 500, true)
     if (website) { let url; try { url = new URL(website) } catch { throw new HttpError(400, 'Invalid website URL') }; if (!['https:', 'http:'].includes(url.protocol)) throw new HttpError(400, 'Invalid website URL') }
-    res.status(201).json(await repo.apply(req.auth.user.id, { company: text(req.body.company, 150), category: text(req.body.category, 100), website, document: document(req.body.document) }))
+    res.status(201).json(await repo.apply(req.auth.user.id, {
+      company: text(req.body.company, 150),
+      category: text(req.body.category, 100),
+      website,
+      ...(req.body.taxId !== undefined ? { taxId: text(req.body.taxId, 80, true) } : {}),
+      ...(req.body.address !== undefined ? { address: text(req.body.address, 300, true) } : {}),
+      ...(req.body.contact !== undefined ? { contact: text(req.body.contact, 120, true) } : {}),
+      document: document(req.body.document),
+    }))
   })
   router.get('/applications', allow('staff', 'admin'), async (req, res) => res.json(await repo.applications(offset(req))))
   router.get('/applications/:id/document', allow('staff', 'admin'), async (req, res) => {
@@ -66,7 +74,10 @@ export function createPortalRouter(auth) {
     fields(req.body, ['status', 'reviewNote'])
     res.json(await repo.decidePost(req.params.id, choice(req.body.status, ['approved', 'rejected']), text(req.body.reviewNote, 1000, true), req.auth.user.id))
   })
-  router.get('/users', allow('admin'), async (req, res) => res.json(await repo.users(offset(req))))
+  router.get('/users', allow('admin'), async (req, res) => {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 120) : ''
+    res.json(await repo.users(offset(req), q))
+  })
   router.patch('/users/:id/role', allow('admin'), writes, json, async (req, res) => {
     fields(req.body, ['role'])
     res.json(await repo.setRole(req.params.id, choice(req.body.role, ['user', 'staff', 'admin']), req.auth.user.id))
@@ -91,4 +102,6 @@ export function createPortalRouter(auth) {
     res.json(await repo.reply(req.params.id, staff ? null : req.auth.user.id, req.auth.user.id, text(req.body.message, 3000), staff ? choice(req.body.status, ['open', 'closed']) : 'open'))
   })
   return router
+}
+
 }

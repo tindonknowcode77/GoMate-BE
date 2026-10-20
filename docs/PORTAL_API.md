@@ -70,3 +70,6 @@ The portal also reuses the configured Google sign-in button from the application
 ## Admin role assignment
 
 PATCH `/api/portal/users/:id/role`, body `{ "role": "staff" }`. Allowed roles: user, staff, admin. Admin authorization required; target email verification is not required. Role assignment does not verify the email. Self changes return 409; missing users return 404. Successful updates invalidate previous sessions through credential_version and record roleUpdatedBy/roleUpdatedAt. Business remains derived from an approved application; selecting user does not revoke an approved business application. GET /users includes email_verified and effectiveRole.
+# Partner event form options (2026-10-20)
+
+`GET /api/portal/options` requires authentication and returns `{ activityCategories: string[] }`, using the same category list as activity validation. Partner forms should load these values instead of maintaining their own subset.

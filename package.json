@@ -13,6 +13,7 @@
     "db:migrate": "node --env-file-if-exists=.env src/database/migrate.js",
     "db:seed-demo": "node --env-file-if-exists=.env src/database/seed-demo.js",
     "db:seed-workshop": "node --env-file-if-exists=.env src/database/seed-workshop-demo.js",
+    "db:seed-admin": "node --env-file-if-exists=.env src/database/seed-admin.js",
     "db:seed-user-friends": "node --env-file-if-exists=.env src/database/seed-user-friends.js",
     "portal:role": "node --env-file-if-exists=.env src/database/set-portal-role.js"
   },

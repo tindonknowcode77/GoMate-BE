@@ -28,6 +28,7 @@ test('verified business events publish through staff, reach discovery and preser
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api${path}`, { method, headers: { Authorization: 'Bearer ' + tokens[key], 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
     return { status: response.status, body: response.status === 204 ? null : await response.json() }
   }
+  const options = await req('/portal/options'); assert.equal(options.status, 200); assert.ok(options.body.activityCategories.includes('Workshop'));
   const post = { title: 'Business Publication Contract', copy: 'A verified event with a real approved schedule', premium: false, border: 'Solid', badge: 'Verified', discount: 'Giảm 25%', discountPercent: 25, offer: 'Tặng đồ uống', offerTerms: 'Một lần cho mỗi người', event: { category: 'Workshop', location: 'TP. Hồ Chí Minh', startsAt: '2099-01-01T02:00:00Z', endsAt: '2099-01-01T04:00:00Z', estimatedCost: 75000, maxParticipants: 5, plan: ['Welcome', 'Workshop', 'Summary'] } }
   assert.equal((await req('/portal/posts', 'POST', post, 'newbusiness')).status, 403)
   assert.equal((await req('/portal/posts', 'POST', { ...post, discountPercent: 101 })).status, 400)

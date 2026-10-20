@@ -84,8 +84,10 @@ export function createPortalRepository(db) {
       return row
     },
     feed: offset => page(posts, { status: 'approved' }, offset, { _id: 0, reviewedBy: 0, reviewNote: 0 }),
-    async users(offset) {
-      const result = await page(users, {}, offset, { _id: 0, id: 1, name: 1, email: 1, role: 1, email_verified: 1, subscription: 1, created_at: 1 })
+    async users(offset, q = '') {
+      const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const filter = escaped ? { $or: [{ name: { $regex: escaped, $options: 'i' } }, { email: { $regex: escaped, $options: 'i' } }] } : {}
+      const result = await page(users, filter, offset, { _id: 0, id: 1, name: 1, email: 1, role: 1, email_verified: 1, subscription: 1, created_at: 1 })
       const approved = await applications.find({ ownerId: { $in: result.items.map(user => user.id) }, status: 'approved' }, { projection: { ownerId: 1 } }).toArray()
       const businesses = new Set(approved.map(item => item.ownerId))
       return { ...result, items: result.items.map(user => ({ ...user, effectiveRole: ['admin', 'staff'].includes(user.role) ? user.role : businesses.has(user.id) ? 'business' : 'user' })) }
@@ -122,7 +124,16 @@ export function createPortalRepository(db) {
     },
     async metrics(role, id) {
       if (role === 'business') return { posts: await posts.countDocuments({ ownerId: id }), pendingPosts: await posts.countDocuments({ ownerId: id, status: 'pending' }), approvedPosts: await posts.countDocuments({ ownerId: id, status: 'approved' }) }
-      return { users: await users.countDocuments(), pendingBusinesses: await applications.countDocuments({ status: 'pending' }), pendingPosts: await posts.countDocuments({ status: 'pending' }), openTickets: await tickets.countDocuments({ status: 'open' }), openReports: await db.collection('reports').countDocuments({ status: 'pending' }) }
+      return {
+        users: await users.countDocuments(),
+        pendingBusinesses: await applications.countDocuments({ status: 'pending' }),
+        verifiedBusinesses: await applications.countDocuments({ status: 'approved' }),
+        posts: await posts.countDocuments(),
+        pendingPosts: await posts.countDocuments({ status: 'pending' }),
+        approvedPosts: await posts.countDocuments({ status: 'approved' }),
+        openTickets: await tickets.countDocuments({ status: 'open' }),
+        openReports: await db.collection('reports').countDocuments({ status: 'pending' }),
+      }
     },
   }
 }

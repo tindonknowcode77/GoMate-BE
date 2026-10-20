@@ -72,6 +72,11 @@ test('portal persists business, moderation, support and subscription flows with 
   })
   await t.test('metrics and user export contain real aggregates without password or token fields', async () => {
     assert.equal((await request('/metrics')).body.approvedPosts, 1)
+    const staffMetrics = (await request('/metrics', 'GET', undefined, 2)).body
+    assert.equal(staffMetrics.approvedPosts, 1)
+    assert.equal(staffMetrics.pendingPosts, 0)
+    assert.equal(staffMetrics.pendingBusinesses, await db.collection('business_applications').countDocuments({ status: 'pending' }))
+    assert.equal(staffMetrics.openTickets, 1)
     assert.equal((await request('/metrics', 'GET', undefined, 3)).body.users, 4)
     const result = await request('/users', 'GET', undefined, 3); assert.equal(result.body.total, 4); assert.equal(JSON.stringify(result.body).includes('password_hash'), false)
     assert.equal((await request('/users?page=0', 'GET', undefined, 3)).status, 400)
