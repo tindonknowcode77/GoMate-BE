@@ -29,6 +29,7 @@ export function createCommunityRepository(db) {
   }
   return {
     blocked, blockedIds, settings,
+    notifyScheduled: notify,
     async notify(...args) { try { await notify(...args) } catch { console.warn('Notification storage failed; primary action was preserved') } },
     async saveSettings(id, values) { await users.updateOne({ id }, { $set: Object.fromEntries(Object.entries(values).map(([key, value]) => [`settings.${key}`, value])) }); return settings(id) },
     async notifications(id, page, limit) {

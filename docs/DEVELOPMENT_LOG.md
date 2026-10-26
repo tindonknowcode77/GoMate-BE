@@ -1,5 +1,29 @@
 # Development log
 
+## 2026-10-26 - Automatic activity completion, reminders and 10 MiB avatars
+
+### Summary
+
+- Reconcile published/in-progress activity schedules at server startup and every 30 seconds; complete overdue activities atomically with an audit event while preserving attendance.
+- Notify hosts and approved members within 30 minutes of the start and after automatic completion. Respect notification settings, deduplicate by activity/schedule, and retry failed completion notices.
+- Raise avatar multipart and decoded-base64 limits from 2 to 10 MiB, with a 14 MiB JSON body limit. Keep format/pixel validation and storage cleanup protections.
+- Simplify profile validation copy while retaining existing limits.
+
+### Files changed
+
+- `src/modules/activities/scheduler.js`, `src/server.js`, `src/modules/community/repository.js`
+- `src/modules/profile/routes.js`, `tests/profile.test.js`, `tests/activity-scheduler.test.js`
+- `docs/profile.md`, `docs/activity-lifecycle.md`, `docs/DEVELOPMENT_LOG.md`
+
+### Verification
+
+- Focused profile, Match, lifecycle and scheduler checks: 20/20 passed, including exact 10 MiB uploads and oversized rejections.
+- Full `npm test`: 103/104 passed. The existing `business-events.test.js:31` expects `/api/portal/options` (200), but that route is absent from backend HEAD (404). Portal source was not changed for this task.
+
+### Remaining work
+
+- Resolve the existing portal-options contract/test mismatch separately. Restart the backend if it is not running with file watching to enable the scheduler and new upload limits.
+
 ## 2026-10-20 - Return published post totals for staff
 
 ### Summary

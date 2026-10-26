@@ -43,6 +43,14 @@ Tất cả endpoint cần Bearer token. Prefix `/api/activities/:id`.
   người không thuộc roster; 409: sai trạng thái/xung đột/giới hạn log; 429: quá
   giới hạn ghi chung 40 lần/15 phút/IP. Không cần migration dữ liệu.
 
+## Automatic schedule processing
+
+- `src/server.js` runs the activity scheduler at startup and every 30 seconds.
+- Published or in-progress activities whose `endsAt` has passed become completed atomically. Completion retains the actual scheduled end time, increments the version, and appends a lifecycle event.
+- Existing attendance remains unchanged. Automatic completion does not mark anyone present or bypass rating eligibility.
+- Host and approved members receive an in-app reminder in the 30 minutes before `startsAt`, plus an automatic-completion notice. Notification settings apply; pending/rejected members do not receive these notices.
+- Stable activity/schedule notification keys prevent duplicates across ticks and server restarts. Failed completion notices are retried; large overdue backlogs are processed in batches of 100 per tick.
+
 ## Postman
 
 Import collection → **09 - Activity Lifecycle**. Chuẩn bị bằng Join Requests Setup

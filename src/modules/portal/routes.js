@@ -19,7 +19,7 @@ function document(value) {
   if (typeof value.base64 !== 'string' || value.base64.length > 13981016 || value.base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.base64)) throw new HttpError(400, 'Invalid document')
   const bytes = Buffer.from(value.base64, 'base64')
   if (!bytes.length || bytes.length > 10 * 1024 * 1024 || bytes.toString('base64') !== value.base64) throw new HttpError(400, 'Document must be valid base64 and at most 10 MB')
-  const valid = mime === 'application/pdf' ? bytes.subarray(0, 5).toString() === '%PDF-' : mime === 'image/png' ? bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
+  const valid = mime === 'application/pdf' ? bytes.subarray(0, 5).toString() === '%PDF-' : mime === 'image/png' ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
   if (!valid) throw new HttpError(400, 'Document type does not match its contents')
   return { name, mime, base64: value.base64 }
 }

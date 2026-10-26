@@ -35,8 +35,8 @@ Thông tin nâng cao tự nguyện, không tính vào độ hoàn thiện:
   3–30 ký tự `[a-z0-9_]`. Chuỗi rỗng xóa username. Trùng trả 409.
 - Sở thích: tối đa 12 chuỗi, mỗi chuỗi 1–40 ký tự, tự loại trùng.
 - Chỉ cập nhật trường được truyền; từ chối trường lạ, email, id và quyền.
-- Ảnh: JPEG/PNG/WebP tĩnh, tối đa 2 MiB và 20 megapixels. JSON upload giới hạn
-  3 MiB; giới hạn JSON của API thông thường vẫn 16 KiB. Upload yêu cầu xác thực
+- Ảnh: JPEG/PNG/WebP tĩnh, tối đa 10 MiB và 20 megapixels. JSON upload giới hạn
+  14 MiB để chứa base64; giới hạn JSON của API thông thường vẫn 16 KiB. Upload yêu cầu xác thực
   trước khi đọc body và giới hạn 20 lần/IP/15 phút.
 - Sharp giải mã, xoay theo EXIF, thu nhỏ tối đa 512×512 và xuất WebP, không giữ
   metadata gốc. SVG, ảnh động, dữ liệu hỏng hoặc quá giới hạn bị từ chối.

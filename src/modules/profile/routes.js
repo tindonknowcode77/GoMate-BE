@@ -56,7 +56,9 @@ function fields(body) {
       if (typeof value !== 'string') throw new HttpError(400, `${key} must be a string`)
       const normalized = key === 'username' ? value.trim().replace(/^@/, '').toLowerCase() : value.trim()
       const [min, max] = limits[key]
-      if (normalized.length < min || normalized.length > max) throw new HttpError(400, `${key} must be ${min}–${max} characters`)
+      const labels = { name: 'họ tên', username: 'nickname', bio: 'giới thiệu', location: 'khu vực', occupation: 'nghề nghiệp', education: 'học vấn', school: 'trường học', companionGoal: 'mục tiêu đồng hành', activityWish: 'hoạt động mong muốn', contribution: 'điều bạn có thể đóng góp' }
+      if (normalized.length < min) throw new HttpError(400, `Vui lòng nhập ${labels[key]}.`)
+      if (normalized.length > max) throw new HttpError(400, `${labels[key]} quá dài. Vui lòng viết ngắn gọn hơn.`)
       if (key === 'username' && normalized && !/^[a-z0-9_]{3,30}$/.test(normalized)) throw new HttpError(400, 'username must be 3–30 letters, numbers or underscores')
       result[key] = normalized
     } else throw new HttpError(400, `Unsupported profile field: ${key}`)
@@ -68,14 +70,14 @@ function fields(body) {
 export function createProfileRouter(repository, config, storage = createAvatarStorage(config)) {
   const router = Router()
   const multipart = multer({ storage: multer.memoryStorage(), limits: {
-    fileSize: 2 * 1024 * 1024, files: 1, fields: 0, parts: 1,
+    fileSize: 10 * 1024 * 1024, files: 1, fields: 0, parts: 1,
   } }).single('avatar')
   const parseImage = (req, res, next) => {
-    if (!req.is('multipart/form-data')) return express.json({ limit: '3mb' })(req, res, next)
+    if (!req.is('multipart/form-data')) return express.json({ limit: '14mb' })(req, res, next)
     multipart(req, res, error => {
       if (!error) return next()
       next(new HttpError(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400,
-        error.code === 'LIMIT_FILE_SIZE' ? 'Avatar must not exceed 2 MB' : 'Send one image file in the avatar field'))
+        error.code === 'LIMIT_FILE_SIZE' ? 'Mỗi ảnh tối đa 10 MB.' : 'Chọn một ảnh đại diện.'))
     })
   }
   const cleanup = async publicId => {
@@ -180,7 +182,7 @@ export function createProfileRouter(repository, config, storage = createAvatarSt
       const value = req.body?.base64
       if (!req.file && (typeof value !== 'string' || !value.length || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value))) throw new HttpError(400, 'Select an avatar file or provide a base64 image')
       const input = req.file?.buffer ?? Buffer.from(value, 'base64')
-      if (input.length > 2 * 1024 * 1024) throw new HttpError(413, 'Avatar must not exceed 2 MB')
+      if (input.length > 10 * 1024 * 1024) throw new HttpError(413, 'Mỗi ảnh tối đa 10 MB.')
       let image
       try {
         const source = sharp(input, { limitInputPixels: 20000000 })

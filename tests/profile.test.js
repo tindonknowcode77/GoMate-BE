@@ -138,7 +138,12 @@ test('profiles and avatars persist with owner-only writes', async t => {
     assert.equal(response.status, 200)
     avatarUrl = (await response.json()).profile.avatarUrl
     assert.equal((await sendFile('wrongField', input)).status, 400)
-    assert.equal((await sendFile('avatar', Buffer.alloc(2 * 1024 * 1024 + 1))).status, 413)
+    const tenMb = Buffer.concat([input, Buffer.alloc(10 * 1024 * 1024 - input.length)])
+    assert.equal((await sendFile('avatar', tenMb)).status, 200)
+    const uploaded = await request('/me/avatar', 'PUT', { base64: tenMb.toString('base64') })
+    assert.equal(uploaded.status, 200)
+    avatarUrl = uploaded.body.profile.avatarUrl
+    assert.equal((await sendFile('avatar', Buffer.alloc(10 * 1024 * 1024 + 1))).status, 413)
     uploadFails = true
     response = await sendFile('avatar', input)
     assert.equal(response.status, 502)
@@ -149,8 +154,8 @@ test('profiles and avatars persist with owner-only writes', async t => {
     for (const base64 of ['bad', 'AAAA', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>').toString('base64')]) {
       assert.equal((await request('/me/avatar', 'PUT', { base64 })).status, 400)
     }
-    assert.equal((await request('/me/avatar', 'PUT', { base64: Buffer.alloc(2 * 1024 * 1024 + 1).toString('base64') })).status, 413)
-    assert.equal((await request('/me/avatar', 'PUT', { base64: 'A'.repeat(3 * 1024 * 1024 + 4) })).status, 413)
+    assert.equal((await request('/me/avatar', 'PUT', { base64: Buffer.alloc(10 * 1024 * 1024 + 1).toString('base64') })).status, 413)
+    assert.equal((await request('/me/avatar', 'PUT', { base64: 'A'.repeat(14 * 1024 * 1024 + 4) })).status, 413)
     assert.equal((await request('/me')).body.profile.avatarUrl, avatarUrl)
     assert.equal((await fetch(`${base}/api/profile/${users[1].id}/avatar`)).status, 404)
   })
