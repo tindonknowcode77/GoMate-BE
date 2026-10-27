@@ -48,7 +48,7 @@ test('trip plans, companion capacity, friends and early chat enforce identity an
   let activity, conversation
   await t.test('creation validates seats, age, actual friends and plan times', async () => {
     assert.equal((await req('/activities', 'POST', { ...draft, organizerType: 'business' })).status, 403)
-    assert.equal((await req('/activities', 'POST', { ...draft, maxParticipants: 3 })).status, 409)
+    assert.equal((await req('/activities', 'POST', { ...draft, maxParticipants: 2 })).status, 409)
     assert.equal((await req('/activities', 'POST', { ...draft, initialFriendIds: [users[3].id] })).status, 403)
     assert.equal((await req('/activities', 'POST', { ...draft, initialFriendIds: [users[4].id] })).status, 400)
     assert.equal((await req('/activities', 'POST', { ...draft, itinerary: [{ ...draft.itinerary[0], date: '2099-01-03' }] })).status, 400)
@@ -56,7 +56,11 @@ test('trip plans, companion capacity, friends and early chat enforce identity an
     assert.equal((await req('/activities', 'POST', { ...draft, planAttachment: { name: 'bad.xlsx', base64: Buffer.from('<script>bad</script>').toString('base64') } })).status, 400)
     const created = await req('/activities', 'POST', draft)
     assert.equal(created.status, 201); activity = created.body.activity
-    assert.equal(activity.memberCount, 4); assert.equal(activity.reservedSeats, 2); assert.equal(activity.itinerary[0].id, 'step-1')
+    assert.equal(activity.memberCount, 3); assert.equal(activity.reservedSeats, 2);
+    const invitation = (await req('/activities/invitations', 'GET', undefined, 1)).body.items[0]
+    assert.equal((await req('/activities/' + activity.id + '/members', 'GET', undefined, 1)).status, 403)
+    await req('/activities/' + activity.id + '/invitations/' + invitation.id, 'PATCH', { status: 'accepted' }, 1)
+    activity = (await req('/activities/' + activity.id)).body.activity; assert.equal(activity.itinerary[0].id, 'step-1')
     assert.equal(activity.planFile.name, 'trip.xls'); assert.equal(activity.planFileData, undefined); assert.equal(activity.initialFriendIds, undefined)
     assert.equal((await req('/activities/' + activity.id + '/members', 'GET', undefined, 1)).body.total, 2)
     assert.equal((await req('/activities/' + activity.id + '/join-requests', 'POST', {}, 4)).status, 403)
@@ -68,6 +72,10 @@ test('trip plans, companion capacity, friends and early chat enforce identity an
     assert.equal((await req(path, 'POST', { version: activity.version }, 1)).status, 403)
     assert.equal((await req(path, 'POST', { version: activity.version - 1 })).status, 409)
     assert.equal((await req(path, 'POST', { version: activity.version, status: 'completed' })).status, 400)
+    assert.equal((await req(path, 'POST', { version: activity.version })).status, 409)
+    const outsider = (await req('/activities/' + activity.id + '/join-requests', 'POST', {}, 3)).body.request
+    await req('/activities/' + activity.id + '/join-requests/' + outsider.id, 'PATCH', { status: 'approved' })
+    activity = (await req('/activities/' + activity.id)).body.activity
     const confirmed = await req(path, 'POST', { version: activity.version })
     assert.equal(confirmed.status, 200); activity = confirmed.body.activity
     assert.ok(activity.scheduleConfirmedAt); assert.equal(activity.scheduleConfirmedBy, users[0].id)
@@ -96,22 +104,25 @@ test('trip plans, companion capacity, friends and early chat enforce identity an
     assert.equal((await req('/conversations/' + conversation.id + '/messages', 'GET', undefined, 2)).status, 403)
     assert.equal((await req('/activities/' + activity.id + '/members/friends', 'POST', { friendIds: [users[2].id] }, 1)).status, 403)
     const added = await req('/activities/' + activity.id + '/members/friends', 'POST', { friendIds: [users[2].id], useReservedSeats: true })
-    assert.equal(added.status, 200); activity = added.body.activity; assert.equal(activity.memberCount, 4); assert.equal(activity.reservedSeats, 1)
+    assert.equal(added.status, 200);
+    const invitation = (await req('/activities/invitations', 'GET', undefined, 2)).body.items[0]
+    await req('/activities/' + activity.id + '/invitations/' + invitation.id, 'PATCH', { status: 'accepted' }, 2)
+    activity = (await req('/activities/' + activity.id)).body.activity; assert.equal(activity.memberCount, 5); assert.equal(activity.reservedSeats, 1)
     const repeat = await req('/activities/' + activity.id + '/members/friends', 'POST', { friendIds: [users[2].id] })
-    assert.equal(repeat.body.activity.memberCount, 4); assert.equal(repeat.body.activity.reservedSeats, 1)
+    assert.equal(repeat.body.activity.memberCount, 5); assert.equal(repeat.body.activity.reservedSeats, 1)
     const sent = await req('/conversations/' + conversation.id + '/messages', 'POST', { text: 'Lên kế hoạch trước chuyến đi', clientMessageId: 'trip-message' }, 2)
     assert.equal(sent.status, 200)
     assert.equal((await req('/conversations/' + conversation.id + '/messages', 'GET', undefined, 1)).body.items[0].text, 'Lên kế hoạch trước chuyến đi')
-    assert.equal((await req('/conversations/' + conversation.id + '/messages', 'GET', undefined, 3)).status, 403)
+    assert.equal((await req('/conversations/' + conversation.id + '/messages', 'GET', undefined, 4)).status, 403)
     const otherChat = await req('/conversations', 'POST', { type: 'direct', userId: users[1].id })
     await req('/conversations/' + conversation.id + '/messages', 'POST', { text: 'Tin mới nhất trong nhóm', clientMessageId: 'latest-group-message' })
     const inbox = await req('/conversations')
     assert.equal(inbox.body.items[0].id, conversation.id)
     assert.ok(inbox.body.items.some(item => item.id === otherChat.body.conversation.id))
-    const reduced = await req('/activities/' + activity.id, 'PATCH', { reservedSeats: 0, maxParticipants: 3 })
-    assert.equal(reduced.status, 200); activity = reduced.body.activity; assert.equal(activity.memberCount, 3)
+    const reduced = await req('/activities/' + activity.id, 'PATCH', { reservedSeats: 0, maxParticipants: 4 })
+    assert.equal(reduced.status, 200); activity = reduced.body.activity; assert.equal(activity.memberCount, 4)
     await becomeFriends(3)
-    assert.equal((await req('/activities/' + activity.id + '/members/friends', 'POST', { friendIds: [users[3].id], useReservedSeats: false })).status, 409)
+    assert.equal((await req('/activities/' + activity.id + '/members/friends', 'POST', { friendIds: [users[3].id], useReservedSeats: false })).status, 200)
   })
   await t.test('host-only plan editing uses versions, preserves Excel and revokes chat on member removal', async () => {
     const path = '/activities/' + activity.id + '/plan'
@@ -125,9 +136,12 @@ test('trip plans, companion capacity, friends and early chat enforce identity an
     assert.equal((await req('/activities/' + activity.id + '/plan-file')).status, 404)
     assert.equal((await req('/activities/' + activity.id + '/members/' + users[2].id, 'DELETE')).status, 204)
     assert.equal((await req('/conversations/' + conversation.id + '/messages', 'GET', undefined, 2)).status, 403)
+    activity = (await req('/activities/' + activity.id)).body.activity
+    await req('/activities/' + activity.id + '/confirm-schedule', 'POST', { version: activity.version })
     assert.equal((await req('/activities/' + activity.id + '/start', 'POST', {})).status, 200)
     activity = (await req('/activities/' + activity.id)).body.activity
     assert.equal((await req(path, 'PATCH', { version: activity.version, planLink: '' })).status, 200)
+    for (const index of [0, 1, 3]) await req('/activities/' + activity.id + '/attendance/' + users[index].id, 'PATCH', { status: 'present' })
     assert.equal((await req('/activities/' + activity.id + '/complete', 'POST', {})).status, 200)
     activity = (await req('/activities/' + activity.id)).body.activity
     assert.equal((await req(path, 'PATCH', { version: activity.version, planLink: '' })).status, 409)

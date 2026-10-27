@@ -59,6 +59,7 @@ test('account settings, real notifications, ratings, reporting and bilateral blo
     await req('/community/settings', 'PATCH', { notifyMessages: false }, 1)
     await req(`/conversations/${group.id}/messages`, 'POST', { text: 'No notification', clientMessageId: 'two-message' })
     assert.equal((await req('/community/notifications', 'GET', undefined, 1)).body.items.filter(item => item.type === 'message').length, 1)
+    await req(`/activities/${activity.id}/confirm-schedule`, 'POST', { version: (await req(`/activities/${activity.id}`)).body.activity.version })
     await req(`/activities/${activity.id}/start`, 'POST', {})
     for (const user of users.slice(0, 2)) await req(`/activities/${activity.id}/attendance/${user.id}`, 'PATCH', { status: 'present' })
     await req(`/activities/${activity.id}/complete`, 'POST', {})

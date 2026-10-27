@@ -1,5 +1,7 @@
 # GoMate Backend
 
+Luồng khám phá, lời mời cần đồng ý, điều kiện chốt/bắt đầu/kết thúc và kết bạn sau chuyến đi: [Activity participation contract](docs/activity-participation.md).
+
 Demo host/người tham gia/doanh nghiệp/staff: chạy `npm run db:seed-workshop`, rồi mở `/demo` ở frontend. Xem `GoMate-FE/docs/DEMO_GUIDE.md`; cần nhánh `fe-ui2` ở cả FE và BE cho luồng sự kiện doanh nghiệp mới.
 
 Node.js 22.12+ / 24+, Express 5 và MongoDB (driver chính thức).
@@ -79,7 +81,7 @@ SESSION_TTL_HOURS mặc định 24. TRUST_PROXY_HOPS mặc định 0, đặt 1 v
 REMEMBER_SESSION_TTL_HOURS mặc định 720 (30 ngày), áp dụng khi login/Google gửi
 `rememberMe: true`. Xem [khôi phục phiên và xử lý hết hạn](docs/persistent-login.md).
 CORS_ORIGIN nhận danh sách origin cách nhau bằng dấu phẩy. Mặc định hỗ trợ
-Expo `http://localhost:8081`, `http://127.0.0.1:8081` và origin cũ `http://localhost:5173`.
+Expo ở cổng 8081 và 8082 trên `localhost`/`127.0.0.1`, cùng origin cũ `http://localhost:5173`. Nếu đặt `CORS_ORIGIN` trong `.env`, cần khai báo đủ origin đang dùng và khởi động lại BE sau khi đổi.
 FE cùng server gọi /api. Với thiết bị thật, đặt HOST=0.0.0.0 và FE dùng IP LAN máy tính.
 Xem .env.example và [API xác thực](docs/auth.md).
 Đăng ký cần SMTP để gửi mã: xem [xác minh email](docs/email-verification.md).

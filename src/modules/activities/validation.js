@@ -2,6 +2,7 @@ import { HttpError } from '../../common/http-error.js'
 import { planKeys, planningFields } from '../../common/activity-plan.js'
 import { companionFields } from '../../common/companions.js'
 import { preferences } from '../../common/preferences.js'
+import { activityReadiness } from '../../common/activity-readiness.js'
 
 export const activityCategories = ['Ăn uống', 'Thể thao', 'Du lịch', 'Giải trí', 'Học tập', 'Gaming', 'Âm nhạc', 'Nghệ thuật', 'Thiên nhiên', 'Tình nguyện', 'Công nghệ', 'Networking', 'Cà phê', 'Khám phá ẩm thực', 'Nấu ăn', 'Làm bánh', 'Picnic', 'Cắm trại', 'Trekking', 'Leo núi', 'Chạy bộ', 'Đi bộ', 'Đạp xe', 'Cầu lông', 'Bóng đá', 'Bóng rổ', 'Bóng chuyền', 'Bơi lội', 'Yoga', 'Gym', 'Tennis', 'Pickleball', 'Bóng bàn', 'Board game', 'Xem phim', 'Đọc sách', 'Nhiếp ảnh', 'Vẽ tranh', 'Thủ công', 'Làm gốm', 'Nhảy', 'Karaoke', 'Nhạc sống', 'Tham quan bảo tàng', 'Khám phá thành phố', 'Du lịch biển', 'Ngoại ngữ', 'Trao đổi ngôn ngữ', 'Workshop', 'Lập trình', 'Khởi nghiệp', 'Chăm sóc thú cưng', 'Làm vườn', 'Bảo vệ môi trường', 'Thiền', 'Khác']
 export function activityFields(body, previous) {
@@ -84,14 +85,15 @@ export function activityFields(body, previous) {
   if (merged.startsAt <= new Date() || merged.endsAt <= merged.startsAt) throw new HttpError(400, 'Activity must start in the future and end after it starts')
   if (merged.registrationDeadline && (merged.registrationDeadline <= new Date() || merged.registrationDeadline > merged.startsAt)) throw new HttpError(400, 'Registration deadline must be in the future and no later than activity start')
   if (merged.financialConfig && (merged.financialConfig.paymentDeadline <= new Date() || merged.financialConfig.paymentDeadline > merged.startsAt)) throw new HttpError(400, 'Payment deadline must be in the future and no later than activity start')
-  const occupied = previous ? previous.memberCount + ((fields.reservedSeats ?? previous.reservedSeats ?? 0) - (previous.reservedSeats ?? 0)) : 1 + (fields.reservedSeats ?? 0) + (fields.initialFriendIds?.length ?? 0)
+  const occupied = previous ? previous.memberCount + ((fields.reservedSeats ?? previous.reservedSeats ?? 0) - (previous.reservedSeats ?? 0)) : 1 + (fields.reservedSeats ?? 0)
   if (merged.maxParticipants < occupied) throw new HttpError(409, 'Capacity cannot be below the current member count')
   if ((merged.minParticipants ?? 2) > merged.maxParticipants) throw new HttpError(400, 'Số thành viên tối thiểu không được lớn hơn tối đa')
+  if (merged.maxParticipants - (merged.reservedSeats ?? 0) < (merged.minParticipants ?? 2)) throw new HttpError(409, 'Cần chừa đủ chỗ cho số tài khoản tối thiểu; người đi cùng ngoài GoMate không tính vào điều kiện bắt đầu.')
   Object.assign(fields, planningFields(previous?.itinerary?.length && (fields.startsAt || fields.endsAt) && body.itinerary === undefined ? { ...body, itinerary: previous.itinerary } : body, merged))
   return fields
 }
 
 export function publicActivity(row) {
   const keys = ['memberAvatars', 'address', 'province', 'district', 'ward', 'costNote', 'reservedSeats', 'itinerary', 'planLink', 'planFile', 'id', 'hostId', 'hostName', 'title', 'description', 'category', 'location', 'organizerType', 'coordinates', 'startsAt', 'endsAt', 'registrationDeadline', 'meetingPoint', 'financialConfig', 'participantPreferences', 'estimatedCost', 'minParticipants', 'maxParticipants', 'memberCount', 'tags', 'requirements', 'plan', 'imageUrl', 'imageUrls', 'status', 'createdAt', 'updatedAt', 'version', 'startedAt', 'completedAt']
-  return Object.fromEntries([...keys, 'business', 'scheduleConfirmedAt', 'scheduleConfirmedBy'].filter(key => row[key] !== undefined).map(key => [key, row[key]]))
+  return { ...Object.fromEntries([...keys, 'business', 'scheduleConfirmedAt', 'scheduleConfirmedBy'].filter(key => row[key] !== undefined).map(key => [key, row[key]])), readiness: activityReadiness(row) }
 }

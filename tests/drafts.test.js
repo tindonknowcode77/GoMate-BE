@@ -50,6 +50,7 @@ test('friend seeding is additive, complete and idempotent for the requested acco
   assert.equal((await db.collection('users').findOne({ id: 'owner' })).password_hash, 'unchanged')
   const activities = createActivityRepository(db)
   const activity = await activities.create({ title: 'Member portraits', initialMembers: [users[0]], reservedSeats: 1, maxParticipants: 6, startsAt: new Date('2099-01-01') }, { id: 'owner', name: 'Owner' })
+  await activities.decideInvitation(activity, activity.invitations[0], 'accepted')
   await db.collection('activities').updateOne({ id: activity.id }, { $push: { joinRequests: { id: 'pending', userId: users[1].id, status: 'pending' } } })
   const owned = await activities.owned('owner', 1, 20)
   assert.equal(owned.items[0].memberAvatars.length, 2)

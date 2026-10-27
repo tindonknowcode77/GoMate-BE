@@ -2,7 +2,7 @@ import express, { Router } from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { authenticate } from '../../middlewares/authenticate.js'
 import { HttpError } from '../../common/http-error.js'
-import { activityFields } from '../activities/validation.js'
+import { activityCategories, activityFields } from '../activities/validation.js'
 
 function fields(body, keys) {
   if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !keys.includes(key))) throw new HttpError(400, 'Invalid request fields')
@@ -26,6 +26,7 @@ function document(value) {
 export function createPortalRouter(auth) {
   const router = Router(), repo = auth.portal
   router.use(authenticate(auth))
+  router.get('/options', (_req, res) => res.json({ activityCategories }))
   router.use(async (req, _res, next) => { req.portalRole = await repo.access(req.auth.user.id); next() })
   const allow = (...roles) => (req, _res, next) => { if (!roles.includes(req.portalRole)) throw new HttpError(403, 'Insufficient portal permissions'); next() }
   const writes = rateLimit({ windowMs: 60000, limit: 30, keyGenerator: req => req.auth.user.id, standardHeaders: 'draft-8', legacyHeaders: false })

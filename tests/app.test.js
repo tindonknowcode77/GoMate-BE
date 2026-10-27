@@ -75,7 +75,7 @@ test('configuration rejects invalid ports', () => {
 })
 
 test('CORS allows configured Expo origins and supports comma-separated origins', async t => {
-  const config = readConfig({ CORS_ORIGIN: 'http://localhost:8081, http://127.0.0.1:8081' })
+  const config = readConfig({ CORS_ORIGIN: 'http://localhost:8081, http://127.0.0.1:8081, http://localhost:8082, http://127.0.0.1:8082' })
   const server = createApp(config).listen(0, '127.0.0.1')
   await once(server, 'listening'); t.after(() => new Promise(resolve => server.close(resolve)))
   const base = `http://127.0.0.1:${server.address().port}/api/health`
@@ -85,6 +85,10 @@ test('CORS allows configured Expo origins and supports comma-separated origins',
   }
   const blocked = await fetch(base, { headers: { Origin: 'https://untrusted.example' } })
   assert.equal(blocked.headers.get('access-control-allow-origin'), null)
+  const preflight = await fetch(base, { method: 'OPTIONS', headers: { Origin: 'http://localhost:8082', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type,authorization' } })
+  assert.equal(preflight.status, 204)
+  assert.equal(preflight.headers.get('access-control-allow-origin'), 'http://localhost:8082')
+  assert.ok(readConfig({}).corsOrigin.includes('http://localhost:8082'))
 })
 
 test('production binds publicly and respects the platform port', () => {

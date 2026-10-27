@@ -14,16 +14,17 @@ export function createActivityScheduler(db, community) {
   async function process(now) {
     const overdue = await activities.find({ status: { $in: ['published', 'in-progress'] }, endsAt: { $lte: now } }).limit(100).toArray()
     for (const row of overdue) {
-      const entry = { id: randomUUID(), type: 'completed', text: 'Hoạt động tự kết thúc vì đã hết thời gian.', createdAt: now }
+      const expired = row.status === 'published'
+      const entry = { id: randomUUID(), type: expired ? 'expired' : 'completed', text: expired ? 'Hoạt động hết hạn mà chưa bắt đầu.' : 'Hoạt động tự kết thúc vì đã hết thời gian.', createdAt: now }
       await activities.updateOne({ id: row.id, status: row.status, version: row.version ?? { $exists: false }, endsAt: row.endsAt }, {
-        $set: { status: 'completed', completedAt: row.endsAt, autoCompletedAt: now, updatedAt: now },
+        $set: { status: expired ? 'expired' : 'completed', ...(expired ? { expiredAt: row.endsAt } : { completedAt: row.endsAt }), autoCompletedAt: now, updatedAt: now },
         $push: { updates: entry }, $inc: { version: 1 },
       })
     }
-    const completed = await activities.find({ status: 'completed', autoCompletedAt: { $exists: true }, autoCompletionNotified: { $ne: true } }).limit(100).toArray()
+    const completed = await activities.find({ status: { $in: ['completed', 'expired'] }, autoCompletedAt: { $exists: true }, autoCompletionNotified: { $ne: true } }).limit(100).toArray()
     for (const row of completed) {
-      await notifyMembers(row, 'completed', 'Hoạt động đã kết thúc', `${row.title} đã tự kết thúc theo lịch. Bạn có thể xem tổng kết trong nhóm.`)
-      await activities.updateOne({ id: row.id, status: 'completed' }, { $set: { autoCompletionNotified: true } })
+      await notifyMembers(row, 'completed', row.status === 'expired' ? 'Hoạt động đã hết hạn' : 'Hoạt động đã kết thúc', row.status === 'expired' ? `${row.title} đã hết hạn mà chưa bắt đầu; không mở đánh giá.` : `${row.title} đã tự kết thúc theo lịch. Bạn có thể xem tổng kết trong nhóm.`)
+      await activities.updateOne({ id: row.id, status: row.status }, { $set: { autoCompletionNotified: true } })
     }
     const upcoming = await activities.find({ status: 'published', startsAt: { $gt: now, $lte: new Date(+now + 30 * 60000) } }).toArray()
     for (const row of upcoming) await notifyMembers(row, 'reminder', 'Nhắc lịch hoạt động', `${row.title} sẽ bắt đầu trong 30 phút tới. Hãy kiểm tra thời gian và điểm hẹn trong nhóm.`)

@@ -1,4 +1,5 @@
 import express, { Router } from 'express'
+import { activityReadiness } from '../../common/activity-readiness.js'
 import sharp from 'sharp'
 import { rateLimit } from 'express-rate-limit'
 import { activityCategories, activityFields, publicActivity } from './validation.js'
@@ -66,6 +67,11 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   router.get('/', async (req, res) => {
     res.json(await repository.search(searchOptions(req.query), req.auth.user.id, await authRepository.getProfile(req.auth.user.id)))
   })
+  router.get('/invitations', async (req, res) => {
+    if (Object.keys(req.query).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Only page and limit are supported')
+    const { page, limit } = searchOptions(req.query)
+    res.json(await repository.invitations(req.auth.user.id, page, limit))
+  })
   router.get('/mine', async (req, res) => {
     if (Object.keys(req.query).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Only page and limit are supported')
     const { page, limit } = searchOptions(req.query)
@@ -111,7 +117,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     } catch (error) { await Promise.all(images.map(image => cleanup(image.publicId))); throw error }
   }
   const cleanGallery = async row => { await Promise.all([...new Set(row.imagePublicIds ?? (row.imagePublicId ? [row.imagePublicId] : []))].map(cleanup)) }
-  const writes = rateLimit({ windowMs: 15 * 60 * 1000, limit: 40, standardHeaders: 'draft-8', legacyHeaders: false })
+  const writes = rateLimit({ windowMs: 15 * 60 * 1000, limit: 40, keyGenerator: req => req.auth.user.id, standardHeaders: 'draft-8', legacyHeaders: false })
   const json = express.json({ limit: '16kb' })
   const event = (req, type, details = {}) => ({ id: randomUUID(), type, actorId: req.auth.user.id, createdAt: new Date(), ...details })
   const notifyMembers = async (row, req, key, title) => Promise.all((row.joinRequests ?? []).filter(item => item.status === 'approved').map(member => authRepository.community?.notify(member.userId, { key, type: 'activity', title, text: row.title, activityId: row.id, actorId: req.auth.user.id })))
@@ -132,6 +138,8 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const activity = await find(req.params.id, req.auth.user.id)
     if (activity.status !== 'published' || activity.startsAt <= new Date()) throw new HttpError(409, 'Chỉ chốt lịch cho hoạt động sắp diễn ra')
     if (req.body.version !== activity.version) throw new HttpError(409, 'Hoạt động đã thay đổi. Tải lại trước khi chốt lịch.')
+    const readiness = activityReadiness(activity)
+    if (!readiness.ready) throw new HttpError(409, readiness.reason)
     if (activity.scheduleConfirmedAt) { res.json({ activity: publicActivity(activity) }); return }
     if ((activity.updates?.length ?? 0) >= 2000) throw new HttpError(409, 'Activity update limit reached')
     const entry = event(req, 'schedule-confirmed')
@@ -144,6 +152,14 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
       const activity = await find(req.params.id, req.auth.user.id)
       const starting = action === 'start'
       if (activity.status !== (starting ? 'published' : 'in-progress')) throw new HttpError(409, 'Invalid activity transition')
+      if (starting) {
+        const readiness = activityReadiness(activity)
+        if (!readiness.ready) throw new HttpError(409, readiness.reason)
+        if (!activity.scheduleConfirmedAt) throw new HttpError(409, 'Cần chốt lịch trước khi bắt đầu hoạt động.')
+        if (activity.endsAt && activity.endsAt <= new Date()) throw new HttpError(409, 'Hoạt động đã hết thời gian.')
+      } else if (!activity.attendance?.length || activity.attendance.some(member => member.status === 'unmarked')) {
+        throw new HttpError(409, 'Cần điểm danh tất cả thành viên trước khi kết thúc hoạt động.')
+      }
       const entry = event(req, starting ? 'started' : 'completed')
       const fields = starting ? { status: 'in-progress', startedAt: entry.createdAt,
         attendance: [{ userId: activity.hostId, name: activity.hostName },
@@ -238,7 +254,32 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     if (people.some(person => !canParticipate(previous.participantPreferences, person))) throw new HttpError(400, 'Một người bạn chưa đáp ứng tùy chọn nhóm')
     const row = await repository.addFriends(previous, people, useReservedSeats)
     if (!row) throw new HttpError(409, 'Không đủ chỗ hoặc nhóm đã thay đổi. Tải lại và thử lại.')
-    await Promise.all(people.map(person => authRepository.community?.notify(person.id, { key: `added:${row.id}:${row.joinRequests?.find(item => item.userId === person.id)?.id}`, type: 'activity', title: 'Bạn được thêm vào hoạt động', text: row.title, activityId: row.id, actorId: req.auth.user.id })))
+    await notifyInvitations(row, req)
+    res.json({ activity: publicActivity(row) })
+  })
+  async function notifyInvitations(row, req) {
+    await Promise.all((row.invitations ?? []).filter(item => item.status === 'pending').map(item => authRepository.community?.notify(item.userId, {
+      key: 'invitation:' + item.id, type: 'activity-invitation', title: 'Lời mời tham gia hoạt động', text: req.auth.user.name + ' mời bạn tham gia ' + row.title, activityId: row.id, actorId: req.auth.user.id,
+    })))
+  }
+  router.get('/:id/invitations', async (req, res) => {
+    const row = await find(req.params.id, req.auth.user.id)
+    res.json({ items: row.invitations ?? [] })
+  })
+  router.patch('/:id/invitations/:invitationId', writes, json, async (req, res) => {
+    if (!req.body || Object.keys(req.body).length !== 1 || !['accepted', 'declined'].includes(req.body.status)) throw new HttpError(400, 'Chọn đồng ý hoặc từ chối lời mời.')
+    const previous = await find(req.params.id)
+    const invitation = previous.invitations?.find(item => item.id === req.params.invitationId && item.userId === req.auth.user.id)
+    if (!invitation) throw new HttpError(404, 'Không tìm thấy lời mời của bạn.')
+    if (invitation.status === req.body.status) { res.json({ activity: publicActivity(previous) }); return }
+    if (invitation.status !== 'pending') throw new HttpError(409, 'Lời mời đã được xử lý.')
+    if (req.body.status === 'accepted') {
+      if (!await authRepository.resolveFriends(previous.hostId, [req.auth.user.id]) || await authRepository.community?.blocked(previous.hostId, req.auth.user.id)) throw new HttpError(403, 'Không thể nhận lời mời từ tài khoản này.')
+      if (!canParticipate(previous.participantPreferences, await authRepository.getProfile(req.auth.user.id))) throw new HttpError(403, 'Hồ sơ chưa đáp ứng điều kiện hoạt động.')
+    }
+    const row = await repository.decideInvitation(previous, invitation, req.body.status)
+    if (!row) throw new HttpError(409, 'Lời mời không còn khả dụng, nhóm đã đủ chỗ hoặc có thay đổi. Nhóm phải chừa ít nhất một chỗ cho thành viên bên ngoài. Hãy tải lại hoặc nhờ host tăng sức chứa.')
+    await authRepository.community?.notify(row.hostId, { key: 'invitation-decision:' + invitation.id, type: 'activity', title: req.body.status === 'accepted' ? 'Bạn bè đã đồng ý tham gia' : 'Bạn bè đã từ chối lời mời', text: req.auth.user.name + ' · ' + row.title, activityId: row.id, actorId: req.auth.user.id })
     res.json({ activity: publicActivity(row) })
   })
   router.delete('/:id/members/me', writes, (req, res) => removeMember(req, res, false))
@@ -308,7 +349,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const images = await gallery(req.body, req.auth.user.id)
     try {
       const row = await repository.create({ ...fields, initialMembers, ...(images ?? {}) }, req.auth.user)
-      await notifyMembers(row, req, `created:${row.id}`, 'Bạn được thêm vào hoạt động')
+      await notifyInvitations(row, req)
       res.status(201).json({ activity: publicActivity(row) })
     } catch (error) { if (images) await cleanGallery(images); throw error }
   })
@@ -317,7 +358,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     if (previous.organizerType === 'business' || req.body?.organizerType === 'business') throw new HttpError(403, 'Quản lý bài đăng doanh nghiệp trên nền tảng website dành cho doanh nghiệp.')
     if (previous.status !== 'published' || previous.startsAt <= new Date()) throw new HttpError(409, 'Started activities cannot be edited')
     const fields = activityFields(req.body, previous)
-    const scheduleKeys = ['startsAt', 'endsAt', 'location', 'meetingPoint', 'address', 'province', 'district', 'ward', 'coordinates']
+    const scheduleKeys = ['minParticipants', 'maxParticipants', 'reservedSeats', 'participantPreferences', 'startsAt', 'endsAt', 'location', 'meetingPoint', 'address', 'province', 'district', 'ward', 'coordinates']
     if (scheduleKeys.some(key => Object.hasOwn(fields, key) && JSON.stringify(fields[key]) !== JSON.stringify(previous[key]))) {
       fields.scheduleConfirmedAt = null
       fields.scheduleConfirmedBy = null

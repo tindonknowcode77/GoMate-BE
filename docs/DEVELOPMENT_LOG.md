@@ -1,5 +1,54 @@
 # Development log
 
+## 2026-10-26 - Allow the Expo web fallback port through backend CORS
+
+### Summary
+
+- Add explicit localhost/127.0.0.1 origins for port 8082 to backend defaults, the example environment and local CORS configuration. Preserve the existing allowlist; untrusted origins remain blocked.
+- Restart the local backend so the browser on 8082 uses the updated configuration.
+
+### Files changed
+
+- BE: src/config/env.js, .env.example, local .env (untracked), tests/app.test.js, README.md.
+- FE/BE development logs.
+
+### Verification
+
+- BE node --test tests/app.test.js: Passed, 5 tests, including 8082 CORS/preflight and rejection of an untrusted origin.
+- Running BE GET /api/auth/google/config with Origin http://localhost:8082: HTTP 200 and matching Access-Control-Allow-Origin.
+- Running BE OPTIONS /api/auth/login: HTTP 204 and matching allowed origin.
+- FE checks not repeated: no FE implementation or dependencies changed.
+
+### Remaining work
+
+- None for the reported CORS failure; reload the browser page.
+
+## 2026-10-26 - Bind invitation consent, discovery and activity lifecycle across accounts
+
+### Summary
+
+- Replace automatic friend membership with private invitations, notifications and recipient-only decisions. Acceptance checks friendship/blocking, profile eligibility, deadline, capacity and version before creating membership/chat access; convert reserved seats only after consent.
+- Confirm/start require the configured minimum of confirmed accounts and at least one approved public joiner, excluding host-invited/legacy host-added users from that outside-member gate. Require schedule confirmation before start and all attendance marked before manual completion. Keep account capacity and one public place available.
+- Exclude closed registration from discovery without losing constraints in keyword search; retain self/blocked/full exclusions. Scope write quotas by account. Expire never-started activities instead of recording false completion.
+- Restore the missing `/portal/options` category contract found by the full suite. Add independent-account and concurrent-capacity regression coverage; align existing tests with recipient consent and schedule requirements.
+
+### Files changed
+
+- Added `src/common/activity-readiness.js`, `tests/user-journey.test.js`, `docs/activity-participation.md`.
+- Updated activities `repository.js`, `routes.js`, `validation.js`, `scheduler.js`, and portal `routes.js`.
+- Updated lifecycle, scheduler, trip/social, chat-content, community and draft contract tests. Linked the participation contract from README.
+
+### Verification
+
+- `node --test`: Passed, 110 tests using cached MongoDB 8.2.6 and isolated databases. The new journey covers five identities, invitation authorization/consent, no premature chat access, notifications, public discovery, readiness, attendance/reviews, friendship and acceptance/start races.
+- Matching FE trip/social and lifecycle browser suites: Passed against real temporary API/database instances. TypeScript/lint, 2 input unit tests and web export: Passed.
+- FE Expo Doctor: 17/18 passed; three pre-existing Expo patch-version mismatches remain.
+- FE/BE diffs reviewed and whitespace checks passed; no application database mutations were used for verification.
+
+### Remaining work
+
+- Deploy/restart matching FE and BE together. Native-device verification and Expo patch alignment remain outstanding. Existing host-added membership is preserved; legacy groups may need capacity/companion adjustments under the new start requirements.
+
 ## 2026-10-26 - Automatic activity completion, reminders and 10 MiB avatars
 
 ### Summary

@@ -19,9 +19,9 @@ export function createActivityRepository(db) {
     async create(fields, host) {
       const now = new Date()
       const { initialMembers = [], initialFriendIds: _initialFriendIds, ...stored } = fields
-      const joinRequests = initialMembers.map(user => ({ id: randomUUID(), userId: user.id, name: user.name, status: 'approved', source: 'host-added', createdAt: now, updatedAt: now }))
-      const row = { id: randomUUID(), organizerType: 'personal', ...stored, ...(joinRequests.length ? { joinRequests } : {}), hostId: host.id, hostName: host.name,
-        memberCount: 1 + (fields.reservedSeats ?? 0) + initialMembers.length, status: 'published', tags: fields.tags ?? [], requirements: fields.requirements ?? [], plan: fields.plan ?? [],
+      const invitations = initialMembers.map(user => ({ id: randomUUID(), userId: user.id, name: user.name, status: 'pending', useReservedSeats: false, createdAt: now, updatedAt: now }))
+      const row = { id: randomUUID(), organizerType: 'personal', ...stored, invitations, hostId: host.id, hostName: host.name,
+        memberCount: 1 + (fields.reservedSeats ?? 0), status: 'published', tags: fields.tags ?? [], requirements: fields.requirements ?? [], plan: fields.plan ?? [],
         version: 1, createdAt: now, updatedAt: now }
       await activities.insertOne(row)
       return row
@@ -91,7 +91,7 @@ export function createActivityRepository(db) {
         memberCount: { $gt: 1 },
         joinRequests: { $elemMatch: { userId, status: 'approved' } },
       }, { $set: { 'joinRequests.$.status': hostAction ? 'removed' : 'left',
-        'joinRequests.$.updatedAt': now, updatedAt: now },
+        'joinRequests.$.updatedAt': now, updatedAt: now, scheduleConfirmedAt: null, scheduleConfirmedBy: null },
         $inc: { memberCount: -1, version: 1 },
       }, { returnDocument: 'after' })
     },
@@ -103,13 +103,33 @@ export function createActivityRepository(db) {
       ])
       return { items: await memberAvatars(items), total, page, limit, hasMore: page * limit < total }
     },
+    async invitations(userId, page, limit) {
+      const query = { status: 'published', startsAt: { $gt: new Date() }, invitations: { $elemMatch: { userId, status: 'pending' } } }
+      const [rows, total] = await Promise.all([activities.find(query).sort({ createdAt: -1, id: 1 }).skip((page - 1) * limit).limit(limit).toArray(), activities.countDocuments(query)])
+      return { items: rows.map(row => ({ ...row.invitations.find(item => item.userId === userId && item.status === 'pending'), activityId: row.id, activity: publicActivity(row) })), total, page, limit, hasMore: page * limit < total }
+    },
     async addFriends(previous, people, useReservedSeats) {
-      const existing = previous.joinRequests ?? [], fresh = people.filter(person => !existing.some(item => item.userId === person.id && item.status === 'approved'))
+      const existing = previous.invitations ?? [], members = previous.joinRequests ?? []
+      const fresh = people.filter(person => !members.some(item => item.userId === person.id && ['approved', 'pending'].includes(item.status)) && !existing.some(item => item.userId === person.id && ['pending', 'accepted'].includes(item.status)))
       if (!fresh.length) return previous
-      const consumed = useReservedSeats ? Math.min(previous.reservedSeats ?? 0, fresh.length) : 0
-      const now = new Date(), requests = fresh.map(user => ({ id: randomUUID(), userId: user.id, name: user.name, status: 'approved', source: 'host-added', createdAt: now, updatedAt: now }))
-      return activities.findOneAndUpdate({ id: previous.id, hostId: previous.hostId, status: 'published', startsAt: { $gt: now }, version: previous.version ?? { $exists: false }, $expr: { $lte: [{ $add: ['$memberCount', fresh.length - consumed] }, '$maxParticipants'] } },
-        { $set: { companions: (previous.companions ?? []).slice(consumed), joinRequests: [...existing.filter(item => !fresh.some(person => person.id === item.userId)), ...requests], updatedAt: now }, $inc: { memberCount: fresh.length - consumed, reservedSeats: -consumed, version: 1 } }, { returnDocument: 'after' })
+      const now = new Date(), invitations = fresh.map(user => ({ id: randomUUID(), userId: user.id, name: user.name, status: 'pending', useReservedSeats, createdAt: now, updatedAt: now }))
+      if (existing.length + invitations.length > 5000) return null
+      return activities.findOneAndUpdate({ id: previous.id, hostId: previous.hostId, status: 'published', startsAt: { $gt: now }, version: previous.version ?? { $exists: false } },
+        { $set: { invitations: [...existing.filter(item => !fresh.some(person => person.id === item.userId)), ...invitations], updatedAt: now }, $inc: { version: 1 } }, { returnDocument: 'after' })
+    },
+    async decideInvitation(previous, invitation, status) {
+      const now = new Date(), accepting = status === 'accepted'
+      const consumed = accepting && invitation.useReservedSeats ? Math.min(previous.reservedSeats ?? 0, 1) : 0
+      const hasExternal = (previous.joinRequests ?? []).some(item => item.status === 'approved' && !['host-added', 'host-invited'].includes(item.source))
+      if (accepting && !hasExternal && previous.memberCount + 1 - consumed >= previous.maxParticipants) return null
+      if (accepting && (previous.joinRequests ?? []).some(item => item.userId === invitation.userId && ['approved', 'pending'].includes(item.status))) return null
+      const request = { id: randomUUID(), userId: invitation.userId, name: invitation.name, status: 'approved', source: 'host-invited', createdAt: now, updatedAt: now }
+      return activities.findOneAndUpdate({ id: previous.id, status: 'published', startsAt: { $gt: now }, version: previous.version,
+        invitations: { $elemMatch: { id: invitation.id, userId: invitation.userId, status: 'pending' } },
+        ...(accepting ? { $or: [{ registrationDeadline: null }, { registrationDeadline: { $gt: now } }], $expr: { $lte: [{ $add: ['$memberCount', 1 - consumed] }, '$maxParticipants'] } } : {}),
+      }, { $set: { invitations: previous.invitations.map(item => item.id === invitation.id ? { ...item, status, updatedAt: now } : item), updatedAt: now,
+          ...(accepting ? { joinRequests: [...(previous.joinRequests ?? []).filter(item => item.userId !== invitation.userId), request], companions: (previous.companions ?? []).slice(consumed), scheduleConfirmedAt: null, scheduleConfirmedBy: null } : {}),
+        }, $inc: { version: 1, ...(accepting ? { memberCount: 1 - consumed, reservedSeats: -consumed } : {}) } }, { returnDocument: 'after' })
     },
     async savePlan(previous, fields) {
       return activities.findOneAndUpdate({ id: previous.id, hostId: previous.hostId, status: { $in: ['published', 'in-progress'] }, version: previous.version ?? { $exists: false } }, { $set: { ...fields, updatedAt: new Date() }, $inc: { version: 1 } }, { returnDocument: 'after' })
@@ -133,11 +153,12 @@ export function createActivityRepository(db) {
     async search(options, userId, profile = {}) {
       const excluded = await community.blockedIds(userId)
       const match = { status: 'published', startsAt: { $gt: new Date() }, hostId: { $nin: [userId, ...excluded] },
-        $expr: { $lt: ['$memberCount', '$maxParticipants'] } }
+        $expr: { $lt: ['$memberCount', '$maxParticipants'] },
+        $or: [{ registrationDeadline: null }, { registrationDeadline: { $gt: new Date() } }] }
       if (options.organizerType) match.organizerType = options.organizerType === 'personal' ? { $ne: 'business' } : 'business'
       if (options.q) {
         const literal = options.q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-        match.$or = ['title', 'description', 'location', 'tags'].map(key => ({ [key]: { $regex: literal, $options: 'i' } }))
+        match.$and = [{ $or: ['title', 'description', 'location', 'tags'].map(key => ({ [key]: { $regex: literal, $options: 'i' } })) }]
       }
       if (options.categories.length) match.category = { $in: options.categories }
       if (options.minCost !== undefined || options.maxCost !== undefined) match.estimatedCost = {

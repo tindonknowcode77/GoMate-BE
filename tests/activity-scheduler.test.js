@@ -26,8 +26,8 @@ test('scheduled completion and reminders are durable, idempotent and member-scop
   await first.tick(now)
   for (const id of ['overdue', 'running']) {
     const row = await activities.findOne({ id })
-    assert.equal(row.status, 'completed'); assert.equal(row.version, 2); assert.equal(row.updates.length, 1)
-    assert.equal(+row.completedAt, +base.endsAt)
+    assert.equal(row.status, id === 'overdue' ? 'expired' : 'completed'); assert.equal(row.version, 2); assert.equal(row.updates.length, 1)
+    assert.equal(+(row.completedAt || row.expiredAt), +base.endsAt)
     assert.equal(await db.collection('notifications').countDocuments({ activityId: id }), 2)
   }
   assert.deepEqual((await activities.findOne({ id: 'running' })).attendance, [{ userId: 'member', status: 'unmarked' }])
@@ -42,7 +42,7 @@ test('scheduled completion and reminders are durable, idempotent and member-scop
   await activities.insertOne({ ...base, id: 'retry', status: 'published' })
   const failing = createActivityScheduler(db, { notifyScheduled: async () => { throw new Error('Temporary notification failure') } })
   await assert.rejects(failing.tick(now), /Temporary notification failure/)
-  assert.equal((await activities.findOne({ id: 'retry' })).status, 'completed')
+  assert.equal((await activities.findOne({ id: 'retry' })).status, 'expired')
   assert.notEqual((await activities.findOne({ id: 'retry' })).autoCompletionNotified, true)
   await createActivityScheduler(db, community).tick(now)
   assert.equal(await db.collection('notifications').countDocuments({ activityId: 'retry' }), 2)
