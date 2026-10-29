@@ -86,11 +86,12 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   }
   router.get('/:id', async (req, res) => {
     const row = await find(req.params.id)
-    if (row.status !== 'published' && row.hostId !== req.auth.user.id && !row.joinRequests?.some(item => item.userId === req.auth.user.id && item.status === 'approved')) throw new HttpError(404, 'Activity not found')
+    const isBusinessManager = await repository.isAssignedStaff(req.auth.user.id, row.id)
+    if (row.status !== 'published' && row.hostId !== req.auth.user.id && !isBusinessManager && !row.joinRequests?.some(item => item.userId === req.auth.user.id && item.status === 'approved')) throw new HttpError(404, 'Activity not found')
     const reputation = await authRepository.community?.reputation(row.hostId)
     const host = await authRepository.getProfile(row.hostId)
     const hostAvatarUrl = host?.avatar_url ?? (host?.avatar_version ? `/api/profile/${host.id}/avatar?v=${host.avatar_version}` : null)
-    res.json({ activity: { ...publicActivity(row), ...(row.hostId === req.auth.user.id ? { companions: row.companions ?? [] } : {}), hostAvatarUrl, ...(reputation ? { hostRating: reputation.average, hostRatingCount: reputation.count, hostCompletedActivities: reputation.completedActivities } : {}) } })
+    res.json({ activity: { ...publicActivity(row), isBusinessManager, ...(row.hostId === req.auth.user.id ? { companions: row.companions ?? [] } : {}), hostAvatarUrl, ...(reputation ? { hostRating: reputation.average, hostRatingCount: reputation.count, hostCompletedActivities: reputation.completedActivities } : {}) } })
   })
   const cleanup = async id => { try { await coverStorage.remove(id) } catch { console.warn('Activity cover cleanup failed') } }
   async function cover(base64, owner) {
@@ -172,7 +173,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   }
   async function groupActivity(req) {
     const activity = await find(req.params.id)
-    if (activity.hostId !== req.auth.user.id && !activity.joinRequests?.some(item => item.userId === req.auth.user.id && item.status === 'approved')) throw new HttpError(403, 'Only host and approved members can view this data')
+    if (activity.hostId !== req.auth.user.id && !activity.joinRequests?.some(item => item.userId === req.auth.user.id && item.status === 'approved') && !await repository.isAssignedStaff(req.auth.user.id, activity.id)) throw new HttpError(403, 'Only host, assigned staff and approved members can view this data')
     return activity
   }
   for (const kind of ['attendance', 'updates']) {
@@ -223,7 +224,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   router.get('/:id/members', async (req, res) => {
     const activity = await find(req.params.id)
     const approved = (activity.joinRequests ?? []).filter(item => item.status === 'approved')
-    if (activity.hostId !== req.auth.user.id && !approved.some(item => item.userId === req.auth.user.id)) throw new HttpError(403, 'Only host and approved members can view members')
+    if (activity.hostId !== req.auth.user.id && !approved.some(item => item.userId === req.auth.user.id) && !await repository.isAssignedStaff(req.auth.user.id, activity.id)) throw new HttpError(403, 'Only host, assigned staff and approved members can view members')
     if (Object.keys(req.query).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Only page and limit are supported')
     const { page, limit } = searchOptions(req.query)
     approved.sort((a, b) => a.updatedAt - b.updatedAt || a.userId.localeCompare(b.userId))
@@ -325,7 +326,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   router.get('/:id/plan-file', async (req, res) => {
     const row = await repository.getWithPlanFile(req.params.id)
     if (!row) throw new HttpError(404, 'Activity not found')
-    if (row.status !== 'published' && row.hostId !== req.auth.user.id && !row.joinRequests?.some(item => item.userId === req.auth.user.id && item.status === 'approved')) throw new HttpError(403, 'Activity access denied')
+    if (row.status !== 'published' && row.hostId !== req.auth.user.id && !row.joinRequests?.some(item => item.userId === req.auth.user.id && item.status === 'approved') && !await repository.isAssignedStaff(req.auth.user.id, row.id)) throw new HttpError(403, 'Activity access denied')
     if (!row.planFile || !row.planFileData) throw new HttpError(404, 'Không có tệp kế hoạch')
     if (req.query.version && req.query.version !== row.planFile.id) throw new HttpError(409, 'Tệp đã được thay thế. Tải lại kế hoạch.')
     res.attachment(row.planFile.name).type('application/octet-stream').send(Buffer.isBuffer(row.planFileData) ? row.planFileData : Buffer.from(row.planFileData.buffer))

@@ -1,5 +1,7 @@
 # GoMate Backend
 
+Business registration, campaign approval and scoped employee operations: [Business web API](docs/business-workflow.md).
+
 Luồng khám phá, lời mời cần đồng ý, điều kiện chốt/bắt đầu/kết thúc và kết bạn sau chuyến đi: [Activity participation contract](docs/activity-participation.md).
 
 Demo host/người tham gia/doanh nghiệp/staff: chạy `npm run db:seed-workshop`, rồi mở `/demo` ở frontend. Xem `GoMate-FE/docs/DEMO_GUIDE.md`; cần nhánh `fe-ui2` ở cả FE và BE cho luồng sự kiện doanh nghiệp mới.

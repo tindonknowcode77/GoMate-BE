@@ -25,6 +25,9 @@ test('verified business events publish through staff, reach discovery and preser
   }
   const server = createApp(readConfig({}), { authRepository: auth, activityRepository: activities, chatRepository: chat }).listen(0, '127.0.0.1'); await once(server, 'listening'); t.after(() => new Promise(resolve => server.close(resolve)))
   const req = async (path, method = 'GET', body, key = 'business') => {
+    if (method === 'PATCH' && body?.status && /\/(applications|posts)\/[^/]+$/.test(path) && !('version' in body)) {
+      const parts = path.split('/'); const row = await db.collection(parts.at(-2) === 'applications' ? 'business_applications' : 'business_posts').findOne({id:parts.at(-1)}); body = {...body,version:row?.version ?? 1};
+    }
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api${path}`, { method, headers: { Authorization: 'Bearer ' + tokens[key], 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
     return { status: response.status, body: response.status === 204 ? null : await response.json() }
   }
@@ -42,7 +45,7 @@ test('verified business events publish through staff, reach discovery and preser
   const found = await req('/activities?q=Business%20Publication&organizerType=business', 'GET', undefined, 'member')
   assert.equal(found.body.total, 1)
   const activity = found.body.items[0]; assert.equal(activity.id, created.body.activityId); assert.equal(activity.business.verified, true); assert.equal(activity.business.discountPercent, 25); assert.equal(activity.hostName, 'GoMate Studio · Demo')
-  assert.ok((await req('/activities/' + activity.id)).body.activity.scheduleConfirmedAt)
+  assert.equal((await req('/activities/' + activity.id)).body.activity.scheduleConfirmedAt, null)
   assert.equal((await req('/activities/' + activity.id, 'PATCH', { title: 'Bypass review' })).status, 403)
   assert.equal((await req(`/activities/${activity.id}/members/friends`, 'POST', { friendIds: [people.member.id], useReservedSeats: false })).status, 403)
   assert.equal((await req(`/activities/${activity.id}/companions`, 'PATCH', { version: activity.version, companions: [] })).status, 403)
@@ -50,6 +53,8 @@ test('verified business events publish through staff, reach discovery and preser
   assert.equal((await req(`/activities/${activity.id}/join-requests/${joined.body.request.id}`, 'PATCH', { status: 'approved' }, 'staff')).status, 403)
   assert.equal((await req(`/activities/${activity.id}/join-requests/${joined.body.request.id}`, 'PATCH', { status: 'approved' })).status, 200)
   assert.equal((await req('/conversations', 'POST', { type: 'group', activityId: activity.id }, 'member')).status, 200)
+  assert.equal((await req(`/activities/${activity.id}/start`, 'POST', {})).status, 409)
+  assert.equal((await req(`/activities/${activity.id}/confirm-schedule`, 'POST', {version: (await req('/activities/'+activity.id)).body.activity.version})).status, 200)
   assert.equal((await req(`/activities/${activity.id}/start`, 'POST', {})).status, 200)
   for (const key of ['member', 'business']) assert.equal((await req(`/activities/${activity.id}/attendance/${people[key].id}`, 'PATCH', { status: 'present' })).status, 200)
   assert.equal((await req(`/activities/${activity.id}/complete`, 'POST', {})).status, 200)

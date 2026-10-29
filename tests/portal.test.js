@@ -21,10 +21,13 @@ test('portal persists business, moderation, support and subscription flows with 
   const server = createApp(readConfig({}), { authRepository: auth }).listen(0, '127.0.0.1'); await once(server, 'listening'); t.after(() => new Promise(resolve => server.close(resolve)))
   const base = `http://127.0.0.1:${server.address().port}/api/portal`
   const request = async (path, method = 'GET', body, who = 0) => {
+    if (method === 'PATCH' && body?.status && /\/(applications|posts)\/[^/]+$/.test(path) && !('version' in body)) {
+      const parts = path.split('/'); const row = await db.collection(parts.at(-2) === 'applications' ? 'business_applications' : 'business_posts').findOne({id:parts.at(-1)}); body = {...body,version:row?.version ?? 1};
+    }
     const response = await fetch(base + path, { method, headers: { Authorization: 'Bearer ' + tokens[who], 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
     return { status: response.status, body: await response.json() }
   }
-  const application = { company: 'Test Business', category: 'Events', website: 'https://example.com', document: { name: 'proof.pdf', mime: 'application/pdf', base64: Buffer.from('%PDF-1.4\nTest document').toString('base64') } }
+  const application = { taxId: '0312345678', address: '12 Nguyễn Huệ, TP. Hồ Chí Minh', representativeName: 'Nguyễn Văn An', representativeTitle: 'Giám đốc', representativeEmail: 'an@example.com', representativePhone: '0901234567', company: 'Test Business', category: 'Events', website: 'https://example.com', document: { name: 'proof.pdf', mime: 'application/pdf', base64: Buffer.from('%PDF-1.4\nTest document').toString('base64') } }
   let applicationId, postId, ticketId
   await t.test('unprivileged accounts cannot enumerate or self-assign privileged fields', async () => {
     assert.equal((await request('/users')).status, 403)
@@ -38,11 +41,11 @@ test('portal persists business, moderation, support and subscription flows with 
     assert.equal(result.body.document, undefined)
     assert.equal((await request('/applications', 'POST', application)).status, 409)
     assert.equal((await request('/me')).body.application.status, 'pending')
-    assert.equal((await request(`/applications/${applicationId}/document`, 'GET', undefined, 1)).status, 403)
+    assert.equal((await request(`/applications/${applicationId}/document`, 'GET', undefined, 1)).status, 404)
     const file = await fetch(base + `/applications/${applicationId}/document`, { headers: { Authorization: 'Bearer ' + tokens[3] } }); assert.equal(file.status, 200); assert.ok((await file.text()).startsWith('%PDF-'))
     assert.equal((await request(`/applications/${applicationId}`, 'PATCH', { status: 'approved' }, 2)).status, 200)
     assert.equal((await request(`/applications/${applicationId}`, 'PATCH', { status: 'approved' }, 3)).status, 409)
-    assert.equal((await request(`/applications/${applicationId}`, 'PATCH', { status: 'rejected' }, 3)).status, 409)
+    assert.equal((await request(`/applications/${applicationId}`, 'PATCH', { status: 'rejected', reviewNote: 'Already reviewed' }, 3)).status, 409)
     assert.equal((await request('/me')).body.role, 'business')
     assert.equal((await request('/me', 'GET', undefined, 1)).body.role, 'user')
   })
@@ -58,7 +61,7 @@ test('portal persists business, moderation, support and subscription flows with 
     assert.equal((await request(`/posts/${postId}`, 'PATCH', { status: 'approved', reviewNote: 'Reviewed' }, 2)).status, 200)
     assert.equal((await request('/feed')).body.items[0].id, postId)
     assert.equal((await request('/feed')).body.items[0].reviewedBy, undefined)
-    assert.equal((await request(`/posts/${postId}`, 'PATCH', { status: 'rejected' }, 3)).status, 409)
+    assert.equal((await request(`/posts/${postId}`, 'PATCH', { status: 'rejected', reviewNote: 'Already reviewed' }, 3)).status, 409)
     await request(`/users/${people[0].id}/subscription`, 'PATCH', { plan: 'plus', status: 'paused' }, 3)
     assert.equal((await request('/posts', 'POST', post)).status, 403)
   })

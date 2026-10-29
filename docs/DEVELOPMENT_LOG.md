@@ -1,5 +1,116 @@
 # Development log
 
+## 2026-10-29 - Surface approved business assignments in the staff app
+
+### Summary
+
+- Include approved, consented enterprise assignments in the staff member's activity list and home schedule without creating participant requests, consuming capacity or requiring a deposit.
+- Materialize missing group conversations when staff open their chat list, including older approved assignments. Keep current grants authoritative so edits/revocation remove access immediately.
+- Allow assigned staff to read their group's activity, members, attendance/updates and completed activity details. Show a manager badge and business portal shortcut in the app; hide the ordinary participant leave action for assigned managers.
+
+### Files changed
+
+- BE: `src/common/business-staff-access.js`; activity repository/routes; chat repository; `tests/business-workflow.test.js`; business API docs.
+- FE: `src/data/activities.ts`, `src/services/activityApi.ts`; `MainApp.tsx`, `ActivityDetailScreen.tsx`, `GroupScreen.tsx`, `MembershipViews.tsx`; `tests/business-workflow.web.cjs`.
+- Development and decision logs.
+
+### Verification
+
+- BE `npm.cmd test`: Passed, 120 tests. Added assignment visibility, automatic chat creation/idempotency, no participant request or capacity changes, completed-group reads, and immediate revocation coverage.
+- FE typecheck, lint and Expo web export: Passed.
+- `npx.cmd expo-doctor`: 17/18 passed; existing expo/expo-location/expo-sharing patch mismatches remain.
+- `npm.cmd run test:business:web`: Passed, including assigned staff activity visibility, automatic chat discovery, member list access and sending a real message without participant registration; full lifecycle/revocation and timeout recovery regressions also passed, with no browser runtime errors. Reviewed staff group screenshot.
+- `git diff --check`: Passed in both repositories. Existing unrelated working changes preserved.
+
+### Remaining work
+
+- Restart the running backend to load the new APIs, then refresh the app. Existing staff assignments need no database migration or reapproval.
+- Staff use the existing business portal for delegated management actions; ordinary activity owner write permissions remain restricted to the owner.
+
+## 2026-10-29 - Business wallet reconciliation without unverified payouts
+
+### Summary
+
+- Add an owner-only wallet API and portal screen showing recorded deposits by group, estimated 10% fees rounded per participant, and estimated business proceeds.
+- Keep manual receipts separate from verified held funds and available balance (both zero). Completed activities do not create withdrawable money. Reuse existing business/staff/group lifecycle without changing shared staff authority.
+
+### Files changed
+
+- FE: `src/gomate-portal/BusinessWallet.jsx`, `ConnectedPortal.jsx`, `tests/business-workflow.web.cjs`.
+- BE: `src/modules/portal/wallet.js`, `operations.js`, `operations-routes.js`; `tests/business-wallet.test.js`, `business-workflow.test.js`; business API documentation.
+- `docs/DEVELOPMENT_LOG.md`, `docs/DECISIONS.md`.
+
+### Verification
+
+- FE `npm.cmd run typecheck`, `npm.cmd run lint`, Expo web export: Passed.
+- BE `node --test tests/business-wallet.test.js tests/business-workflow.test.js`: Passed, 10 tests including owner-only access, tenant isolation, receipt reversal and zero spendable funds after completion.
+- FE `npm.cmd run test:business:web`: Passed, full owner/admin/staff/participant lifecycle and wallet UI; no browser runtime errors. Used cached MongoDB binary after default cache access failed. Reviewed wallet screenshot.
+- `npx.cmd expo-doctor`: 17/18 passed; existing expo, expo-location and expo-sharing patch mismatches. Initial sandbox npm access failed; network-enabled retry completed.
+- `git diff --check`: Passed in both repositories; existing unrelated working changes preserved.
+
+### Remaining work
+
+- Payment integration is explicitly excluded by the user. No real collection, refunds, payouts, payment webhooks, dispute handling or financial fraud protection is implemented. The 10% fee is an estimate only, not a persisted contractual fee.
+- Business web self-registration and automatic capacity-based chat splitting were not added in this task; existing GoMate account/application and manually composed groups remain.
+- Existing Expo patch mismatches remain.
+
+## 2026-10-27 - Refine enterprise staff, shared group plans and mapped locations
+
+### Summary
+
+- Keep enterprise staff as consented, admin-reviewed group assignments. Notify the admin queue when businesses submit and recipients accept. Expose multiple approved managers per group without counting them as participants.
+- Preserve itinerary dates and saved-location selection; canonical business locations supply addresses and map coordinates. Assigned staff can quick-select locations belonging to their business, with server ownership checks on every save.
+- Add editable offer notifications with version conflict checks; update delivered notifications instead of duplicating them. Add participation/management views and deposit confirmation reversal controls to the business dashboard.
+
+### Files changed
+
+- BE: src/modules/portal/operations.js, operations-routes.js, repository.js; tests/business-workflow.test.js; docs/business-workflow.md.
+- FE: ActiveCampaignDashboard.jsx, ConnectedPortal.jsx, BusinessStaffManagement.jsx; tests/business-workflow.web.cjs; development and decision logs.
+
+### Verification
+
+- BE npm.cmd test: Passed, 118 tests, including multiple employees sharing a group, independent revocation, admin queue notifications, canonical coordinates/location references and stale offer edits.
+- BE node --test tests/business-workflow.test.js: Passed after the final canonical-address length guard.
+- npm.cmd run test:business:web: Passed with owner/admin/employee/participant accounts; confirms saved location coordinates, offer edits without duplicate notifications, participant access to the same plan, attendance/completion/rating and revocation. No browser runtime errors.
+- npm.cmd run typecheck, npm.cmd run lint and Expo web export: Passed.
+- npx.cmd expo-doctor: 17/18 passed; existing expo/expo-location/expo-sharing patch mismatches remain.
+- Git diff --check: Passed in both repositories.
+
+### Remaining work
+
+- Staff sign in with their own verified GoMate accounts; the business requests their enterprise role. No shared credentials or platform-staff permissions are granted.
+- Deposits remain a manual ledger. Existing Expo patch-version mismatches remain.
+
+## 2026-10-27 - Persist the complete business web workflow
+
+### Summary
+
+- Complete and validate company/tax/address/representative/license registration, private document access, rejection/resubmission, duplicate tax guards and versioned reviews.
+- Persist business locations, multi-group campaigns, assigned employees, plans, manual deposit receipts and offers. Publish real activities only after review; use stable IDs and reconcile interrupted publication.
+- Require employee consent and admin approval with group-scoped permissions; assignment edits/revocation remove delegated portal and chat access. Keep global account roles and participant counts unchanged.
+- Connect the existing web portal to these APIs and enforce participant/deposit/schedule/attendance guards through completion and existing mobile ratings.
+
+### Files changed
+
+- BE: src/modules/portal/{validation,operations,operations-routes,repository,routes}.js; src/database/mongo.js; activity-readiness, activities/chat repositories and server publication reconciliation.
+- BE: tests/business-workflow.test.js, portal.test.js, business-events.test.js; docs/business-workflow.md and README.md.
+- FE: ConnectedPortal, BusinessVerificationForm, BusinessStaffManagement, AdminBusinessReview, LocationLibrary, ActiveCampaignDashboard; MainApp business notification routing; BusinessIdentity and activity type expose the required deposit before joining.
+- FE: tests/business-workflow.web.cjs and business-demo.web.cjs; development and decision logs.
+
+### Verification
+
+- BE npm.cmd test: Passed, 117 tests against temporary MongoDB, including cross-business access, stale writes, consent/re-consent, chat revocation, publication interruption/retry and the full group lifecycle.
+- FE npm.cmd run typecheck and npm.cmd run lint: Passed.
+- Expo web export with EXPO_PUBLIC_API_BASE_URL=/api: Passed.
+- Activity lifecycle browser suite: Passed, including personal chat/planning/attendance/rating regression checks.
+- npm.cmd run test:business:web: Passed, four isolated accounts through registration/rejection/resubmission, real two-group publication, employee consent/approval, deposits/plans/offers, attendance/completion/rating and immediate revocation; no browser runtime errors.
+- npx.cmd expo-doctor: 17/18 checks passed; existing Expo/expo-location/expo-sharing patch-version mismatch remains.
+
+### Remaining work
+
+- Deposits are an audited manual ledger, without a payment gateway/refunds. Business verification is staff document review, without a government registry integration.
+- Existing Expo/expo-location/expo-sharing patch mismatches remain; dependencies were not changed. Restart BE to create the new indexes and serve the matching FE export.
+
 ## 2026-10-26 - Allow the Expo web fallback port through backend CORS
 
 ### Summary

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { publicActivity } from './validation.js'
 import { createCommunityRepository } from '../community/repository.js'
+import { staffGroupScope, isAssignedStaff } from '../../common/business-staff-access.js'
 
 export function createActivityRepository(db) {
   const activities = db.collection('activities')
@@ -16,6 +17,7 @@ export function createActivityRepository(db) {
   }
 
   return {
+    isAssignedStaff: (userId, activityId) => isAssignedStaff(db, userId, activityId),
     async create(fields, host) {
       const now = new Date()
       const { initialMembers = [], initialFriendIds: _initialFriendIds, ...stored } = fields
@@ -36,8 +38,10 @@ export function createActivityRepository(db) {
     },
     async participating(userId, { page, limit, status }, requests = false) {
       const member = { userId, ...(!requests ? { status: 'approved' } : status ? { status } : {}) }
+      const managed = requests ? [] : await activities.find(await staffGroupScope(db, userId), { projection: { id: 1 } }).toArray()
+      const managedIds = managed.map(row => row.id)
       const [result] = await activities.aggregate([
-        { $match: { status: { $ne: 'deleted' }, hostId: { $ne: userId }, joinRequests: { $elemMatch: member } } },
+        { $match: { status: { $nin: ['deleted', 'pending-review'] }, hostId: { $ne: userId }, $or: [{ joinRequests: { $elemMatch: member } }, { id: { $in: managedIds } }] } },
         { $set: { ownRequest: { $arrayElemAt: [{ $filter: { input: '$joinRequests', as: 'request',
           cond: { $eq: ['$$request.userId', userId] } } }, 0] } } },
         { $unset: ['joinRequests', '_id', 'imagePublicId', 'planFileData'] },
@@ -47,7 +51,7 @@ export function createActivityRepository(db) {
       const total = result?.total[0]?.count ?? 0
       const items = (result?.items ?? []).map(row => requests
         ? { ...row.ownRequest, activityId: row.id, activity: publicActivity(row) }
-        : publicActivity(row))
+        : { ...publicActivity(row), isBusinessManager: managedIds.includes(row.id) })
       return { items: requests ? items : await memberAvatars(items), total, page, limit, hasMore: page * limit < total }
     },
     // Keep requests and capacity in one document so approval is atomic even on standalone MongoDB.
@@ -70,9 +74,9 @@ export function createActivityRepository(db) {
       }, { $set: { 'joinRequests.$': request, updatedAt: now }, $inc: { version: 1 } }, { returnDocument: 'after' })
       return retry ? request : null
     },
-    async changeJoinRequest(id, { userId, hostId, requestId, status }) {
+    async changeJoinRequest(id, { userId, hostId, requestId, status, version }) {
       const now = new Date()
-      const query = { id, status: 'published', startsAt: { $gt: now },
+      const query = { id, status: 'published', startsAt: { $gt: now }, ...(version !== undefined ? { version } : {}),
         ...(hostId ? { hostId } : {}),
         joinRequests: { $elemMatch: { ...(userId ? { userId } : { id: requestId }), status: 'pending' } },
         ...(status === 'approved' ? { $expr: { $lt: ['$memberCount', '$maxParticipants'] } } : {}),

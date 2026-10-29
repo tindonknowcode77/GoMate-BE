@@ -1,3 +1,5 @@
+import { applicationFields, postFields, version } from './validation.js'
+import { createBusinessOperationsRouter } from './operations-routes.js'
 import express, { Router } from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { authenticate } from '../../middlewares/authenticate.js'
@@ -35,45 +37,26 @@ export function createPortalRouter(auth) {
   router.get('/me', async (req, res) => res.json({ ...await repo.me(req.auth.user.id), role: req.portalRole }))
   router.get('/feed', async (req, res) => res.json(await repo.feed(offset(req))))
   router.post('/applications', allow('user'), writes, express.json({ limit: '14mb' }), async (req, res) => {
-    fields(req.body, ['company', 'website', 'category', 'taxId', 'address', 'contact', 'document'])
-    const website = text(req.body.website, 500, true)
-    if (website) { let url; try { url = new URL(website) } catch { throw new HttpError(400, 'Invalid website URL') }; if (!['https:', 'http:'].includes(url.protocol)) throw new HttpError(400, 'Invalid website URL') }
-    res.status(201).json(await repo.apply(req.auth.user.id, {
-      company: text(req.body.company, 150),
-      category: text(req.body.category, 100),
-      website,
-      ...(req.body.taxId !== undefined ? { taxId: text(req.body.taxId, 80, true) } : {}),
-      ...(req.body.address !== undefined ? { address: text(req.body.address, 300, true) } : {}),
-      ...(req.body.contact !== undefined ? { contact: text(req.body.contact, 120, true) } : {}),
-      document: document(req.body.document),
-    }))
+    res.status(201).json(await repo.apply(req.auth.user.id, applicationFields(req.body, document)))
   })
   router.get('/applications', allow('staff', 'admin'), async (req, res) => res.json(await repo.applications(offset(req))))
-  router.get('/applications/:id/document', allow('staff', 'admin'), async (req, res) => {
-    const file = await repo.document(req.params.id)
+  router.get('/applications/:id/document', async (req, res) => {
+    const file = await repo.document(req.params.id, req.auth.user.id, ['staff', 'admin'].includes(req.portalRole))
     res.set({ 'Content-Type': file.mime, 'Content-Disposition': `attachment; filename="document.${file.mime === 'application/pdf' ? 'pdf' : file.mime === 'image/png' ? 'png' : 'jpg'}"`, 'X-Content-Type-Options': 'nosniff' }).send(Buffer.from(file.base64, 'base64'))
   })
   router.patch('/applications/:id', allow('staff', 'admin'), writes, json, async (req, res) => {
-    fields(req.body, ['status', 'reviewNote'])
-    res.json(await repo.decideApplication(req.params.id, choice(req.body.status, ['approved', 'rejected']), text(req.body.reviewNote, 1000, true), req.auth.user.id))
+    fields(req.body, ['status', 'reviewNote', 'version'])
+    res.json(await repo.decideApplication(req.params.id, choice(req.body.status, ['approved', 'rejected']), text(req.body.reviewNote, 1000, true), req.auth.user.id, version(req.body.version)))
   })
   router.get('/posts', allow('business', 'staff', 'admin'), async (req, res) => res.json(await repo.posts(req.portalRole === 'business' ? req.auth.user.id : null, offset(req))))
   router.post('/posts', allow('business'), writes, json, async (req, res) => {
-    fields(req.body, ['title', 'copy', 'badge', 'discount', 'border', 'premium', 'event', 'discountPercent', 'offer', 'offerTerms'])
-    if (typeof req.body.premium !== 'boolean') throw new HttpError(400, 'Invalid premium flag')
-    const title = text(req.body.title, 120), copy = text(req.body.copy, 3000)
-    const discountPercent = req.body.discountPercent ?? 0
-    if (!Number.isInteger(discountPercent) || discountPercent < 0 || discountPercent > 100) throw new HttpError(400, 'Discount must be an integer from 0 to 100')
-    let event
-    if (req.body.event !== undefined) {
-      fields(req.body.event, ['category', 'location', 'province', 'address', 'meetingPoint', 'startsAt', 'endsAt', 'registrationDeadline', 'estimatedCost', 'maxParticipants', 'itinerary', 'plan', 'planLink'])
-      event = activityFields({ ...req.body.event, title, description: copy })
-    }
-    res.status(201).json(await repo.createPost(req.auth.user.id, { title, copy, badge: text(req.body.badge, 60, true), discount: text(req.body.discount, 60, true), border: choice(req.body.border, ['Glow', 'Soft', 'Solid']), premium: req.body.premium, ...(event ? { event } : {}), discountPercent, offer: text(req.body.offer, 200, true), offerTerms: text(req.body.offerTerms, 500, true) }))
+    res.status(201).json(await repo.createPost(req.auth.user.id, postFields(req.body)))
   })
+  router.put('/posts/:id', allow('business'), writes, json, async (req, res) => { res.json(await repo.editPost(req.params.id, req.auth.user.id, version(req.body.version), postFields(req.body))) })
+  router.delete('/posts/:id', allow('business'), writes, json, async (req, res) => { fields(req.body, ['version']); res.json(await repo.withdrawPost(req.params.id, req.auth.user.id, version(req.body.version))) })
   router.patch('/posts/:id', allow('staff', 'admin'), writes, json, async (req, res) => {
-    fields(req.body, ['status', 'reviewNote'])
-    res.json(await repo.decidePost(req.params.id, choice(req.body.status, ['approved', 'rejected']), text(req.body.reviewNote, 1000, true), req.auth.user.id))
+    fields(req.body, ['status', 'reviewNote', 'version'])
+    res.json(await repo.decidePost(req.params.id, choice(req.body.status, ['approved', 'rejected']), text(req.body.reviewNote, 1000, true), req.auth.user.id, version(req.body.version)))
   })
   router.get('/users', allow('admin'), async (req, res) => {
     const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 120) : ''
@@ -102,5 +85,7 @@ export function createPortalRouter(auth) {
     const staff = ['staff', 'admin'].includes(req.portalRole)
     res.json(await repo.reply(req.params.id, staff ? null : req.auth.user.id, req.auth.user.id, text(req.body.message, 3000), staff ? choice(req.body.status, ['open', 'closed']) : 'open'))
   })
+  router.get('/notifications', async (req, res) => res.json(await repo.notifications(req.auth.user.id, offset(req))))
+  router.use(createBusinessOperationsRouter(auth))
   return router
 }

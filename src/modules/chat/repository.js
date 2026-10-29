@@ -3,6 +3,7 @@ import { messageLinks } from './content.js'
 import { ObjectId, Binary } from 'mongodb'
 import { HttpError } from '../../common/http-error.js'
 import { createCommunityRepository } from '../community/repository.js'
+import { staffGroupScope } from '../../common/business-staff-access.js'
 
 const messageView = row => row ? { id: row._id.toHexString(), conversationId: row.conversationId,
   senderId: row.senderId, senderName: row.senderName ?? 'Thành viên', text: row.text, attachments: row.attachments ?? [], location: row.location ?? null, links: row.links ?? messageLinks(row.text), clientMessageId: row.clientMessageId, createdAt: row.createdAt } : null
@@ -15,14 +16,14 @@ export function createChatRepository(db) {
   const uploads = db.collection('chat_attachments')
   const attachmentView = row => ({ id: row._id.toHexString(), name: row.name, size: row.size, mimeType: row.mimeType, kind: row.kind })
   const reads = db.collection('chat_reads'), activities = db.collection('activities')
-  const membership = userId => ({ status: { $ne: 'deleted' }, $or: [
-    { hostId: userId }, { joinRequests: { $elemMatch: { userId, status: 'approved' } } },
-  ] })
+  async function membership(userId) {
+    return { status: { $nin: ['deleted', 'pending-review'] }, $or: [{ hostId: userId }, { joinRequests: { $elemMatch: { userId, status: 'approved' } } }, await staffGroupScope(db, userId)] }
+  }
   async function access(id, userId) {
     const row = await conversations.findOne({ id })
     if (!row) throw new HttpError(404, 'Conversation not found')
     const allowed = row.type === 'direct' ? row.participantIds.includes(userId)
-      : await activities.findOne({ id: row.activityId, ...membership(userId) }, { projection: { _id: 1 } })
+      : await activities.findOne({ id: row.activityId, ...await membership(userId) }, { projection: { _id: 1 } })
     if (!allowed) throw new HttpError(403, 'Conversation access denied')
     if (row.type === 'direct') {
       const otherId = row.participantIds.find(id => id !== userId)
@@ -80,7 +81,7 @@ export function createChatRepository(db) {
         const participantIds = [userId, body.userId].sort()
         key = `direct:${JSON.stringify(participantIds)}`; fields = { participantIds }
       } else {
-        if (!await activities.findOne({ id: body.activityId, ...membership(userId) }, { projection: { _id: 1 } })) throw new HttpError(403, 'Only host and approved members can open activity chat')
+        if (!await activities.findOne({ id: body.activityId, ...await membership(userId) }, { projection: { _id: 1 } })) throw new HttpError(403, 'Only host and approved members can open activity chat')
         key = `activity:${body.activityId}`; fields = { activityId: body.activityId }
       }
       let row
@@ -95,12 +96,19 @@ export function createChatRepository(db) {
       return summary(await access(row.id, userId), userId)
     },
     async list(userId, page, limit) {
+      // Existing approved grants also gain a visible chat without a manual open.
+      const assignedGroups = await activities.find(await staffGroupScope(db, userId), { projection: { id: 1 } }).toArray()
+      for (const group of assignedGroups) {
+        try {
+          await conversations.updateOne({ key: `activity:${group.id}` }, { $setOnInsert: { id: randomUUID(), key: `activity:${group.id}`, type: 'group', activityId: group.id, createdAt: new Date() } }, { upsert: true })
+        } catch (error) { if (error.code !== 11000) throw error }
+      }
       const excluded = await community.blockedIds(userId)
       // Lookup current activity membership instead of caching a stale group roster.
       const [result] = await conversations.aggregate([
         { $match: { $or: [{ type: 'direct', $and: [{ participantIds: userId }, { participantIds: { $nin: excluded } }] }, { type: 'group' }] } },
         { $lookup: { from: 'activities', localField: 'activityId', foreignField: 'id',
-          pipeline: [{ $match: membership(userId) }, { $project: { _id: 1 } }], as: 'allowedActivity' } },
+          pipeline: [{ $match: await membership(userId) }, { $project: { _id: 1 } }], as: 'allowedActivity' } },
         { $match: { $or: [{ type: 'direct' }, { 'allowedActivity.0': { $exists: true } }] } },
         { $lookup: { from: 'chat_messages', localField: 'id', foreignField: 'conversationId', pipeline: [{ $sort: { _id: -1 } }, { $limit: 1 }, { $project: { createdAt: 1 } }], as: 'latestMessage' } },
         { $set: { lastActivityAt: { $ifNull: [{ $arrayElemAt: ['$latestMessage.createdAt', 0] }, '$createdAt'] } } },
