@@ -78,6 +78,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const result = await repository.owned(req.auth.user.id, page, limit)
     res.json({ ...result, items: result.items.map(publicActivity) })
   })
+  router.use('/:id', async (req, _res, next) => { const row = await repository.get(req.params.id); if (row && repository.canViewBusinessGroup && !await repository.canViewBusinessGroup(row, req.auth.user.id)) throw new HttpError(404, 'Activity not found'); next(); })
   async function find(id, owner, allowStaff = false) {
     const row = await repository.get(id)
     if (!row) throw new HttpError(404, 'Activity not found')

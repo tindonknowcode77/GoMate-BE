@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 const labels = {
+  'business-group-withdrawn': 'Nhóm đã được thu hồi.', 'business-group-deleted': 'Nhóm đã được xóa.',
   'schedule-confirmed': 'Đã chốt lịch hoạt động', started: 'Hoạt động đã bắt đầu', completed: 'Hoạt động đã kết thúc',
   expired: 'Hoạt động đã hết hạn', cancelled: 'Hoạt động đã bị hủy', 'plan-updated': 'Kế hoạch đã được cập nhật',
   'business-plan-updated': 'Kế hoạch đã được cập nhật', 'activity-updated': 'Thông tin hoạt động đã được cập nhật',

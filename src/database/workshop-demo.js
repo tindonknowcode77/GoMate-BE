@@ -1,3 +1,4 @@
+import { ensureWorkshopAdmin } from './workshop-demo-admin.js'
 import { hashPassword } from '../modules/auth/password.js'
 import { createAuthRepository } from '../modules/auth/repository.js'
 import { createActivityRepository } from '../modules/activities/repository.js'
@@ -6,13 +7,14 @@ export const workshopAccounts = [
   { key: 'host', name: 'Mai · Demo Host', email: 'demo.host@gomate.local', role: 'user' },
   { key: 'member', name: 'An · Demo Member', email: 'demo.member@gomate.local', role: 'user' },
   { key: 'business', name: 'GoMate Studio · Demo', email: 'demo.business@gomate.local', role: 'user' },
-  { key: 'staff', name: 'Linh · Demo Staff', email: 'demo.staff@gomate.local', role: 'staff' },
+  { key: 'admin', name: 'Linh · Demo Admin', email: 'demo.admin@gomate.local', role: 'admin' },
   { key: 'newbusiness', name: 'Đối tác mới · Demo', email: 'demo.newbusiness@gomate.local', role: 'user' },
 ]
 export async function seedWorkshopDemo(db, { password = 'DemoGoMate123!' } = {}) {
   const auth = createAuthRepository(db), activities = createActivityRepository(db), people = {}
   const passwordHash = await hashPassword(password)
   for (const account of workshopAccounts) {
+    if (account.key === 'admin') { people.admin = await ensureWorkshopAdmin(db, { password }); continue; }
     let user = await db.collection('users').findOne({ email: account.email })
     if (user && user.demoScenario !== 'workshop') throw Error(`Refusing to change an existing non-demo account: ${account.email}`)
     if (!user) {
@@ -33,14 +35,14 @@ export async function seedWorkshopDemo(db, { password = 'DemoGoMate123!' } = {})
   if (!personal) personal = await activities.create({ ...base, title: 'DEMO · Cà phê kết bạn' }, host)
   let application = await db.collection('business_applications').findOne({ ownerId: people.business.id })
   if (!application) application = await auth.portal.apply(people.business.id, { company: 'GoMate Studio · Demo', category: 'Workshop', website: '', document: { name: 'demo.pdf', mime: 'application/pdf', base64: Buffer.from('%PDF-1.4\nGoMate demo verification document').toString('base64') } })
-  if (application.status === 'pending') await auth.portal.decideApplication(application.id, 'approved', 'Hồ sơ minh họa cho demo local', people.staff.id)
+  if (application.status === 'pending') await auth.portal.decideApplication(application.id, 'approved', 'Hồ sơ minh họa cho demo local', people.admin.id)
   let business = await db.collection('activities').findOne({ hostId: people.business.id, organizerType: 'business', status: 'published', startsAt: { $gt: now } })
   if (!business) {
     const { demoScenario: _demoScenario, ...eventBase } = base
     let post = await db.collection('business_posts').findOne({ ownerId: people.business.id, title: 'DEMO · Workshop làm gốm -20%', status: 'pending' })
     if (post?.event?.demoScenario === 'workshop') { await db.collection('business_posts').updateOne({ id: post.id }, { $unset: { 'event.demoScenario': '' } }); delete post.event.demoScenario }
     post ??= await auth.portal.createPost(people.business.id, { title: 'DEMO · Workshop làm gốm -20%', copy: 'Trải nghiệm làm gốm cùng GoMate Studio. Bài minh họa, không phải ưu đãi thương mại thật.', badge: 'Demo', discount: 'Giảm 20%', premium: false, border: 'Solid', discountPercent: 20, offer: 'Tặng một đồ uống cho thành viên GoMate', offerTerms: 'Mẫu demo; không phát sinh thanh toán.', event: { ...eventBase, title: 'DEMO · Workshop làm gốm -20%', category: 'Workshop', description: 'Sự kiện doanh nghiệp minh họa', estimatedCost: 120000 } })
-    const approved = await auth.portal.decidePost(post.id, 'approved', 'Bài minh họa cho demo local', people.staff.id)
+    const approved = await auth.portal.decidePost(post.id, 'approved', 'Bài minh họa cho demo local', people.admin.id)
     business = await activities.get(approved.activityId)
   }
   return { accounts: workshopAccounts, personalId: personal.id, businessId: business.id }

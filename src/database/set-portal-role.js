@@ -3,7 +3,7 @@ import { readConfig } from '../config/env.js'
 
 // Operator-only command. Public registration never accepts a privileged role.
 const [email, role] = process.argv.slice(2)
-if (!email || !['admin', 'staff', 'user'].includes(role)) throw new Error('Usage: npm run portal:role -- email@example.com admin|staff|user')
+if (!email || !['admin', 'user'].includes(role)) throw new Error('Usage: npm run portal:role -- email@example.com admin|user')
 const client = createClient(readConfig())
 try {
   await client.connect()

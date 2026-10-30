@@ -61,7 +61,7 @@ export function createBusinessOperations(db) {
     async saveLocation(ownerId, id, version, data) {
       if (!await verified(ownerId)) throw new HttpError(403, 'Verified business required')
       if (!id) { const row = { ...data, id: randomUUID(), ownerId, version: 1, createdAt: new Date(), updatedAt: new Date() }; await locations.insertOne(row); const { _id, ...result } = row; return result }
-      const row = await locations.findOneAndUpdate({ id, ownerId, version }, { $set: { ...data, updatedAt: new Date() }, $inc: { version: 1 } }, { returnDocument: 'after', projection: view })
+      const row = await locations.findOneAndUpdate({ id, ownerId, version }, { $set: { ...data, updatedAt: new Date() }, ...(!Number.isFinite(data.latitude)?{$unset:{latitude:'',longitude:''}}:{}), $inc: { version: 1 } }, { returnDocument: 'after', projection: view })
       if (!row) throw new HttpError(409, 'Location not found or changed')
       return row
     },

@@ -1,12 +1,15 @@
+import { createPostLifecycle } from './post-lifecycle.js'
+import { createBusinessAudience } from '../../common/business-audience.js'
 import { createBusinessOperations } from './operations.js'
 import { randomUUID } from 'node:crypto'
 import { HttpError } from '../../common/http-error.js'
 import { createCommunityRepository } from '../community/repository.js'
 import { activityFields } from '../activities/validation.js'
 
-const publicRow = { _id: 0, document: 0 }
+const publicRow = { _id: 0, document: 0, lifecycleTasks: 0 }
 export function createPortalRepository(db) {
   const community = createCommunityRepository(db)
+  const lifecycle = createPostLifecycle(db), audience = createBusinessAudience(db)
   const notify = (userId, key, title, text, actorId) => community.notify(userId, { key, type: 'business-update', title, text, actorId })
   const applications = db.collection('business_applications'), posts = db.collection('business_posts')
   const users = db.collection('users'), tickets = db.collection('support_tickets')
@@ -16,6 +19,7 @@ export function createPortalRepository(db) {
   })
   return {
     operations: createBusinessOperations(db),
+    postLifecycle: lifecycle.command,
     async me(id) {
       const user = await users.findOne({ id }, { projection: { id: 1, name: 1, email: 1, role: 1, subscription: 1, _id: 0 } })
       if (!user) throw new HttpError(401, 'Account not found')
@@ -27,25 +31,37 @@ export function createPortalRepository(db) {
       const previous = await applications.findOne({ ownerId })
       if (previous && previous.status !== 'rejected') throw new HttpError(409, 'An application is already pending or approved')
       if (previous && data.version !== (previous.version ?? 0)) throw new HttpError(409, 'Hồ sơ đã thay đổi. Tải lại trước khi gửi lại.')
+      if (previous?.certificateNumber && (data.certificateNumber !== previous.certificateNumber || data.country !== previous.country || data.accountType !== previous.accountType)) throw new HttpError(409, 'Không thể thay đổi số giấy chứng nhận, quốc gia hoặc loại tài khoản sau khi gửi.')
       if (!data.document && !previous?.document) throw new HttpError(400, 'Business license is required')
       if (data.taxId && await applications.findOne({ ownerId: { $ne: ownerId }, taxId: data.taxId, status: { $in: ['pending', 'approved'] } })) throw new HttpError(409, 'Mã số thuế đang được sử dụng.')
-      const { version: _version, ...stored } = data
+      if (data.certificateNumber && await applications.findOne({ ownerId: { $ne: ownerId }, country: data.country, certificateNumber: data.certificateNumber, status: { $in: ['pending', 'approved'] } })) throw new HttpError(409, 'Số giấy chứng nhận đang được sử dụng.')
+      const { version: _version, supplementalDocument, ...stored } = data
+      const supplementalId = supplementalDocument ? randomUUID() : null
       let row
       try {
+        // Keep each private file in a separate Mongo document so two 10 MB files fit.
+        if (supplementalId) await db.collection('business_verification_files').insertOne({ id: supplementalId, ownerId, ...supplementalDocument })
         row = await applications.findOneAndUpdate(previous ? { ownerId, status: 'rejected', version: previous.version ?? { $exists: false } } : { ownerId, status: 'rejected' }, {
-          $set: { ...stored, ...(data.document ? { license: { name: data.document.name, mime: data.document.mime, size: Buffer.from(data.document.base64, 'base64').length } } : {}), status: 'pending', updatedAt: new Date(), reviewNote: '' },
+          $set: { ...stored, ...(supplementalId ? { supplementalLicense: { id: supplementalId, name: supplementalDocument.name, mime: supplementalDocument.mime, size: Buffer.from(supplementalDocument.base64, 'base64').length } } : {}), ...(data.document ? { license: { name: data.document.name, mime: data.document.mime, size: Buffer.from(data.document.base64, 'base64').length } } : {}), status: 'pending', updatedAt: new Date(), reviewNote: '' },
           $unset: { reviewedBy: '', reviewedAt: '' },
           $setOnInsert: { id: randomUUID(), ownerId, createdAt: new Date() }, $inc: { version: 1 },
           $push: { history: { type: previous ? 'resubmitted' : 'submitted', actorId: ownerId, createdAt: new Date() } },
         }, { upsert: !previous, returnDocument: 'after', projection: publicRow })
-      } catch (error) { if (error.code === 11000) throw new HttpError(409, 'Hồ sơ hoặc mã số thuế đang được sử dụng.'); throw error }
-      if (!row) throw new HttpError(409, 'Hồ sơ đã thay đổi. Tải lại trước khi gửi lại.')
+      } catch (error) { if (supplementalId) await db.collection('business_verification_files').deleteOne({ id: supplementalId, ownerId }); if (error.code === 11000) throw new HttpError(409, 'Hồ sơ hoặc số giấy chứng nhận đang được sử dụng.'); throw error }
+      if (!row) { if (supplementalId) await db.collection('business_verification_files').deleteOne({ id: supplementalId, ownerId }); throw new HttpError(409, 'Hồ sơ đã thay đổi. Tải lại trước khi gửi lại.') }
       return row
     },
     async applications(offset) { const result=await page(applications,{},offset);return {...result,items:result.items.map(row=>({...row,version:row.version ?? 0}))} },
-    async document(id, actorId, reviewer) {
+    async document(id, actorId, reviewer, kind) {
       const row = await applications.findOne({ id, ...(!reviewer ? { ownerId: actorId } : {}) })
       if (!row) throw new HttpError(404, 'Application not found')
+      if (kind !== undefined && kind !== 'supplemental') throw new HttpError(400, 'Invalid document kind')
+      if (kind === 'supplemental') {
+        const file = row.supplementalLicense && await db.collection('business_verification_files').findOne({ id: row.supplementalLicense.id, ownerId: row.ownerId })
+        if (!file) throw new HttpError(404, 'Không có tài liệu bổ sung.')
+        return file
+      }
+      if (!row.document) throw new HttpError(404, 'Không có tài liệu xác minh.')
       return row.document
     },
     async decideApplication(id, status, reviewNote, actorId, version) {
@@ -62,18 +78,18 @@ export function createPortalRepository(db) {
     },
     async access(id) {
       const user = await users.findOne({ id }, { projection: { role: 1 } })
-      if (['admin', 'staff'].includes(user?.role)) return user.role
+      if (user?.role === 'admin') return user.role
       if (await applications.findOne({ ownerId: id, status: 'approved' })) return 'business'
       const grants = await db.collection('business_staff').find({ userId: id, status: 'approved', acceptedAt: { $ne: null } }).toArray()
       return grants.length && await applications.findOne({ ownerId: { $in: grants.map(grant => grant.ownerId) }, status: 'approved' }) ? 'business-staff' : 'user'
     },
-    async posts(ownerId,offset) { const result=await page(posts,ownerId?{ownerId}:{},offset);return {...result,items:result.items.map(row=>({...row,version:row.version ?? 0}))} },
+    async posts(ownerId,offset) { const result=await page(posts,{...(ownerId?{ownerId}:{}),status:{$ne:'deleted'}},offset);return {...result,items:result.items.map(row=>({...row,version:row.version ?? 0}))} },
     async createPost(ownerId, data) {
       const user = await users.findOne({ id: ownerId })
       if (data.premium && !(user?.subscription?.plan === 'plus' && user.subscription.status === 'active')) throw new HttpError(403, 'An active Plus plan is required for premium styling')
       const application = await applications.findOne({ ownerId, status: 'approved' })
       if (!application) throw new HttpError(403, 'A verified business is required')
-      for (const group of data.groups ?? []) if(group.locationId) { const place=await db.collection('business_locations').findOne({id:group.locationId,ownerId});if(!place)throw new HttpError(400,'Địa điểm không thuộc doanh nghiệp.');group.event.coordinates={type:'Point',coordinates:[place.longitude,place.latitude]}; }
+      for (const group of data.groups ?? []) if(group.locationId) { const place=await db.collection('business_locations').findOne({id:group.locationId,ownerId});if(!place)throw new HttpError(400,'Địa điểm không thuộc doanh nghiệp.');if(Number.isFinite(place.longitude)&&Number.isFinite(place.latitude))group.event.coordinates={type:'Point',coordinates:[place.longitude,place.latitude]}; }
       const groups = data.groups?.map(group => ({ ...group, activityId: randomUUID() }))
       const row = { ...data, ...(groups ? { groups } : {}), id: randomUUID(), ...(data.event ? { activityId: randomUUID() } : {}), ownerId, businessName: application.company, status: 'pending', version: 1, history: [{ type: 'submitted', actorId: ownerId, createdAt: new Date() }], createdAt: new Date(), updatedAt: new Date() }
       await posts.insertOne(row)
@@ -86,7 +102,7 @@ export function createPortalRepository(db) {
       if (!['pending', 'rejected'].includes(previous.status)) throw new HttpError(409, 'Chỉ sửa bài chờ duyệt hoặc bị từ chối.')
       const user = await users.findOne({ id: ownerId })
       if (data.premium && !(user?.subscription?.plan === 'plus' && user.subscription.status === 'active')) throw new HttpError(403, 'Plus is required')
-      for (const group of data.groups ?? []) if(group.locationId) { const place=await db.collection('business_locations').findOne({id:group.locationId,ownerId});if(!place)throw new HttpError(400,'Địa điểm không thuộc doanh nghiệp.');group.event.coordinates={type:'Point',coordinates:[place.longitude,place.latitude]}; }
+      for (const group of data.groups ?? []) if(group.locationId) { const place=await db.collection('business_locations').findOne({id:group.locationId,ownerId});if(!place)throw new HttpError(400,'Địa điểm không thuộc doanh nghiệp.');if(Number.isFinite(place.longitude)&&Number.isFinite(place.latitude))group.event.coordinates={type:'Point',coordinates:[place.longitude,place.latitude]}; }
       if (version !== (previous.version ?? 0)) throw new HttpError(409, 'Post changed. Reload before editing.')
       const groups = data.groups?.map((group, index) => ({ ...group, activityId: previous.groups?.[index]?.activityId || randomUUID() }))
       const row = await posts.findOneAndUpdate({ id, ownerId, version: previous.version ?? { $exists: false }, status: previous.status }, {
@@ -121,9 +137,9 @@ export function createPortalRepository(db) {
       if (publishing) {
         try {
           for (const group of groups) await db.collection('activities').updateOne({ id: group.activityId, status: { $in: ['pending-review'] } }, { $set: {
-            ...group.event, title: previous.groups ? (row.title+' · '+group.name).slice(0,120) : row.title, businessCampaignTitle: row.title, id: group.activityId, organizerType: 'business', hostId: row.ownerId, hostName: application.company, businessPostId: row.id, businessGroupName: group.name, businessLocationId: group.locationId || '', depositAmount: group.depositAmount || 0,
+            ...group.event, title: row.title, businessCampaignTitle: row.title, id: group.activityId, organizerType: 'business', hostId: row.ownerId, hostName: application.company, businessPostId: row.id, businessGroupName: group.name, businessLocationId: group.locationId || '', depositAmount: group.depositAmount || 0,
             business: { name: application.company, verified: true, depositAmount: group.depositAmount || 0, discountPercent: row.discountPercent || 0, offer: row.offer || row.discount || '', terms: row.offerTerms || '' },
-            status: 'pending-review', memberCount: 1, reservedSeats: 0, version: 1, tags: ['Doanh nghiệp'], requirements: [], scheduleConfirmedAt: null, scheduleConfirmedBy: null, createdAt: now, updatedAt: now,
+            status: 'pending-review', memberCount: 0, reservedSeats: 0, version: 1, tags: ['Doanh nghiệp'], requirements: [], scheduleConfirmedAt: null, scheduleConfirmedBy: null, createdAt: now, updatedAt: now,
           } }, { upsert: true })
           await posts.updateOne({ id, status: 'publishing' }, { $set: { status: 'approved', updatedAt: now }, $inc: { version: 1 }, $push: { history: { type: 'approved', actorId, note: reviewNote, createdAt: now } } })
           await db.collection('activities').updateMany({ businessPostId: id, status: 'pending-review' }, { $set: { status: 'published' } })
@@ -137,19 +153,27 @@ export function createPortalRepository(db) {
       return row
     },
     async reconcilePublications() {
+      for (const pending of await posts.find({ 'lifecycleTasks.0': { $exists: true } }).limit(100).toArray()) await lifecycle.reconcile(pending)
       const staged = await db.collection('activities').find({ status: 'pending-review' }, { projection: { id: 1, businessPostId: 1 } }).limit(500).toArray()
       for (const activity of staged) if (await posts.findOne({ id: activity.businessPostId, status: 'approved' })) await db.collection('activities').updateOne({ id: activity.id, status: 'pending-review' }, { $set: { status: 'published' } })
     },
     async notifications(userId, offset) { return page(db.collection('notifications'), { userId, type: /^business-/ }, offset, { _id: 0 }) },
-    feed: offset => page(posts, { status: 'approved' }, offset, { _id: 0, reviewedBy: 0, reviewNote: 0, reviewedAt: 0, history: 0, publishLeaseUntil: 0 }),
+    async feed(offset, userId) {
+      const campaigns = await posts.find({ status:'approved', 'groups.0': { $exists:true } }, { projection:{id:1,groups:1} }).toArray()
+      const selected = new Map()
+      for (const campaign of campaigns) { const id = await audience.choose(userId,campaign.id); if(campaign.groups.some(group=>group.activityId===id&&!group.state) && await db.collection('activities').findOne({id,status:{$nin:['deleted','cancelled','pending-review']},businessRevoked:{$ne:true}},{projection:{id:1}})) selected.set(campaign.id,id) }
+      const result = await page(posts, { status:'approved', $or:[{'groups.0':{$exists:false}},{id:{$in:[...selected.keys()]}}] }, offset, { _id:0, reviewedBy:0, reviewNote:0, reviewedAt:0, history:0, publishLeaseUntil:0, lifecycleTasks:0 })
+      for (const row of result.items) if(row.groups?.length) {row.groups=row.groups.filter(group=>group.activityId===selected.get(row.id));row.activityId=row.groups[0]?.activityId}
+      return result
+    },
     async users(offset) {
       const result = await page(users, {}, offset, { _id: 0, id: 1, name: 1, email: 1, role: 1, email_verified: 1, subscription: 1, created_at: 1 })
       const approved = await applications.find({ ownerId: { $in: result.items.map(user => user.id) }, status: 'approved' }, { projection: { ownerId: 1 } }).toArray()
       const businesses = new Set(approved.map(item => item.ownerId))
-      return { ...result, items: result.items.map(user => ({ ...user, effectiveRole: ['admin', 'staff'].includes(user.role) ? user.role : businesses.has(user.id) ? 'business' : 'user' })) }
+      return { ...result, items: result.items.map(user => ({ ...user, effectiveRole: user.role === 'admin' ? user.role : businesses.has(user.id) ? 'business' : 'user' })) }
     },
     async setRole(id, role, actorId) {
-      if (!['user', 'staff', 'admin'].includes(role)) throw new HttpError(400, 'Invalid role')
+      if (!['user', 'admin'].includes(role)) throw new HttpError(400, 'Invalid role')
       if (id === actorId) throw new HttpError(409, 'You cannot change your own role')
       const row = await users.findOneAndUpdate({ id }, {
         $set: { role, updated_at: new Date(), roleUpdatedBy: actorId, roleUpdatedAt: new Date() },

@@ -11,7 +11,7 @@ import { createActivityRepository } from '../src/modules/activities/repository.j
 import { createChatRepository } from '../src/modules/chat/repository.js'
 import { newToken, hashToken } from '../src/modules/auth/token.js'
 
-test('verified business events publish through staff, reach discovery and preserve membership permissions', async t => {
+test('verified business events publish through admin, reach discovery and preserve membership permissions', async t => {
   const mongo = await MongoMemoryServer.create(); t.after(() => mongo.stop())
   const client = createClient(readConfig({ MONGODB_URI: mongo.getUri('business_events') })); await client.connect(); t.after(() => client.close())
   const db = client.db(); await initializeDatabase(db)
@@ -19,7 +19,7 @@ test('verified business events publish through staff, reach discovery and preser
   assert.equal(seeded.personalId, repeated.personalId); assert.equal(seeded.businessId, repeated.businessId)
   assert.equal(await db.collection('users').countDocuments({ demoScenario: 'workshop' }), 5)
   const auth = createAuthRepository(db), activities = createActivityRepository(db), chat = createChatRepository(db), tokens = {}, people = {}
-  for (const key of ['business', 'staff', 'member', 'newbusiness']) {
+  for (const key of ['business', 'admin', 'member', 'newbusiness']) {
     people[key] = await db.collection('users').findOne({ email: `demo.${key}@gomate.local` }); tokens[key] = newToken()
     await auth.createSession({ userId: people[key].id, tokenHash: hashToken(tokens[key]), expiresAt: new Date(Date.now() + 600000) })
   }
@@ -40,8 +40,8 @@ test('verified business events publish through staff, reach discovery and preser
   const created = await req('/portal/posts', 'POST', post); assert.equal(created.status, 201)
   assert.equal((await req('/activities?q=Business%20Publication', 'GET', undefined, 'member')).body.total, 0)
   assert.equal((await req(`/portal/posts/${created.body.id}`, 'PATCH', { status: 'approved' }, 'member')).status, 403)
-  assert.equal((await req(`/portal/posts/${created.body.id}`, 'PATCH', { status: 'approved' }, 'staff')).status, 200)
-  assert.equal((await req(`/portal/posts/${created.body.id}`, 'PATCH', { status: 'approved' }, 'staff')).status, 409)
+  assert.equal((await req(`/portal/posts/${created.body.id}`, 'PATCH', { status: 'approved' }, 'admin')).status, 200)
+  assert.equal((await req(`/portal/posts/${created.body.id}`, 'PATCH', { status: 'approved' }, 'admin')).status, 409)
   const found = await req('/activities?q=Business%20Publication&organizerType=business', 'GET', undefined, 'member')
   assert.equal(found.body.total, 1)
   const activity = found.body.items[0]; assert.equal(activity.id, created.body.activityId); assert.equal(activity.business.verified, true); assert.equal(activity.business.discountPercent, 25); assert.equal(activity.hostName, 'GoMate Studio · Demo')
@@ -50,7 +50,7 @@ test('verified business events publish through staff, reach discovery and preser
   assert.equal((await req(`/activities/${activity.id}/members/friends`, 'POST', { friendIds: [people.member.id], useReservedSeats: false })).status, 403)
   assert.equal((await req(`/activities/${activity.id}/companions`, 'PATCH', { version: activity.version, companions: [] })).status, 403)
   const joined = await req(`/activities/${activity.id}/join-requests`, 'POST', {}, 'member'); assert.equal(joined.status, 201)
-  assert.equal((await req(`/activities/${activity.id}/join-requests/${joined.body.request.id}`, 'PATCH', { status: 'approved' }, 'staff')).status, 403)
+  assert.equal((await req(`/activities/${activity.id}/join-requests/${joined.body.request.id}`, 'PATCH', { status: 'approved' }, 'admin')).status, 403)
   assert.equal((await req(`/activities/${activity.id}/join-requests/${joined.body.request.id}`, 'PATCH', { status: 'approved' })).status, 200)
   assert.equal((await req('/conversations', 'POST', { type: 'group', activityId: activity.id }, 'member')).status, 200)
   assert.equal((await req(`/activities/${activity.id}/start`, 'POST', {})).status, 409)

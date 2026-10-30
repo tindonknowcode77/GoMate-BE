@@ -1,3 +1,4 @@
+import { PDFDocument } from 'pdf-lib'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { test } from 'node:test'
@@ -13,7 +14,7 @@ test('portal persists business, moderation, support and subscription flows with 
   const client = createClient(readConfig({ MONGODB_URI: mongo.getUri('portal') })); await client.connect(); t.after(() => client.close())
   const db = client.db(); await initializeDatabase(db)
   const auth = createAuthRepository(db), people = [], tokens = []
-  for (const role of ['user', 'user', 'staff', 'admin']) {
+  for (const role of ['user', 'user', 'admin', 'admin']) {
     const user = await auth.createUser({ name: role, email: `${people.length}@example.com`, passwordHash: 'secret' }); people.push(user)
     await db.collection('users').updateOne({ id: user.id }, { $set: { role, email_verified: true } })
     const token = newToken(); tokens.push(token); await auth.createSession({ userId: user.id, tokenHash: hashToken(token), expiresAt: new Date(Date.now() + 600000) })
@@ -27,7 +28,7 @@ test('portal persists business, moderation, support and subscription flows with 
     const response = await fetch(base + path, { method, headers: { Authorization: 'Bearer ' + tokens[who], 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
     return { status: response.status, body: await response.json() }
   }
-  const application = { taxId: '0312345678', address: '12 Nguyễn Huệ, TP. Hồ Chí Minh', representativeName: 'Nguyễn Văn An', representativeTitle: 'Giám đốc', representativeEmail: 'an@example.com', representativePhone: '0901234567', company: 'Test Business', category: 'Events', website: 'https://example.com', document: { name: 'proof.pdf', mime: 'application/pdf', base64: Buffer.from('%PDF-1.4\nTest document').toString('base64') } }
+  const application = { taxId: '0312345678', address: '12 Nguyễn Huệ, TP. Hồ Chí Minh', representativeName: 'Nguyễn Văn An', representativeTitle: 'Giám đốc', representativeEmail: 'an@example.com', representativePhone: '0901234567', company: 'Test Business', category: 'Events', website: 'https://example.com', document: { name: 'proof.pdf', mime: 'application/pdf', base64: Buffer.from(await (async () => { const pdf = await PDFDocument.create(); pdf.addPage(); return pdf.save(); })()).toString('base64') } }
   let applicationId, postId, ticketId
   await t.test('unprivileged accounts cannot enumerate or self-assign privileged fields', async () => {
     assert.equal((await request('/users')).status, 403)
@@ -52,7 +53,7 @@ test('portal persists business, moderation, support and subscription flows with 
   await t.test('premium is enforced on server, posts are owned and only approved posts appear in feed', async () => {
     const post = { title: 'A real event', copy: 'A community invitation', premium: true, badge: 'New', discount: 'Free entry', border: 'Soft' }
     assert.equal((await request('/posts', 'POST', post)).status, 403)
-    assert.equal((await request(`/users/${people[0].id}/subscription`, 'PATCH', { plan: 'plus', status: 'active' }, 2)).status, 403)
+    assert.equal((await request(`/users/${people[0].id}/subscription`, 'PATCH', { plan: 'plus', status: 'active' }, 1)).status, 403)
     assert.equal((await request(`/users/${people[0].id}/subscription`, 'PATCH', { plan: 'plus', status: 'active', role: 'admin' }, 3)).status, 400)
     assert.equal((await request(`/users/${people[0].id}/subscription`, 'PATCH', { plan: 'plus', status: 'active' }, 3)).status, 200)
     const result = await request('/posts', 'POST', post); assert.equal(result.status, 201); postId = result.body.id
@@ -94,19 +95,20 @@ test('portal persists business, moderation, support and subscription flows with 
     assert.equal((await request(path, 'PATCH', { role: 'admin' }, 0)).status, 403)
     await db.collection('users').updateOne({ id: people[2].id }, { $set: { role: 'staff' } })
     assert.equal((await request(path, 'PATCH', { role: 'admin' }, 2)).status, 403)
+    assert.equal((await request(path, 'PATCH', { role: 'staff' }, 3)).status, 400)
     assert.equal((await request(path, 'PATCH', { role: 'business' }, 3)).status, 400)
     assert.equal((await request(path, 'PATCH', { role: 'staff', email_verified: true }, 3)).status, 400)
     assert.equal((await request('/users/' + people[3].id + '/role', 'PATCH', { role: 'user' }, 3)).status, 409)
-    assert.equal((await request('/users/missing/role', 'PATCH', { role: 'staff' }, 3)).status, 404)
+    assert.equal((await request('/users/missing/role', 'PATCH', { role: 'admin' }, 3)).status, 404)
     await db.collection('users').updateOne({ id: people[1].id }, { $set: { email_verified: false } })
-    assert.equal((await request(path, 'PATCH', { role: 'staff' }, 3)).status, 200)
+    assert.equal((await request(path, 'PATCH', { role: 'admin' }, 3)).status, 200)
     assert.equal((await db.collection('users').findOne({ id: people[1].id })).email_verified, false)
     await db.collection('users').updateOne({ id: people[1].id }, { $set: { email_verified: true } })
-    assert.equal((await request(path, 'PATCH', { role: 'staff' }, 3)).status, 200)
+    assert.equal((await request(path, 'PATCH', { role: 'admin' }, 3)).status, 200)
     assert.equal((await request('/me', 'GET', undefined, 1)).status, 401)
     const token = newToken(); tokens[1] = token
     await auth.createSession({ userId: people[1].id, tokenHash: hashToken(token), expiresAt: new Date(Date.now() + 600000) })
-    assert.equal((await request('/me', 'GET', undefined, 1)).body.role, 'staff')
+    assert.equal((await request('/me', 'GET', undefined, 1)).body.role, 'admin')
     assert.equal((await request('/reports', 'GET', undefined, 1)).status, 200)
     assert.equal((await request(path, 'PATCH', { role: 'admin' }, 3)).body.role, 'admin')
     assert.equal((await request(path, 'PATCH', { role: 'user' }, 3)).body.role, 'user')

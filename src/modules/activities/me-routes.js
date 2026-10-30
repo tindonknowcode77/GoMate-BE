@@ -31,7 +31,7 @@ export function createMyActivityRouter(repository, authRepository) {
     if (Object.keys(req.query).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Unsupported query parameter')
     const { page, limit } = searchOptions(req.query)
     const user = await authRepository.getProfile(req.auth.user.id)
-    res.json(await repository.favorites(user.favorite_activity_ids ?? [], page, limit))
+    res.json(await repository.favorites(user.favorite_activity_ids ?? [], page, limit, req.auth.user.id))
   })
   for (const method of ['put', 'delete']) router[method]('/favorites/:id', async (req, res) => {
     const saved = method === 'put'

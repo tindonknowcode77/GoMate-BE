@@ -1,3 +1,4 @@
+import { PDFDocument } from 'pdf-lib'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { once } from 'node:events'
@@ -27,7 +28,7 @@ test('business registration, revisions, multi-group publication, staff consent a
     return { status: response.status, body: response.status === 204 ? null : response.headers.get('content-type')?.includes('json') ? await response.json() : await response.text() }
   }
   const expect = (response, status = 200) => { assert.equal(response.status, status, JSON.stringify(response.body)); return response.body }
-  const profile = { company: 'Business full profile', category: 'Workshop', taxId: '0312345678', address: '12 Nguyễn Huệ, TP. Hồ Chí Minh', representativeName: 'Nguyễn Văn An', representativeTitle: 'Giám đốc', representativeEmail: 'AN@example.com', representativePhone: '+84 901 234 567', website: 'https://example.com', document: { name: 'license.pdf', mime: 'application/pdf', base64: Buffer.from('%PDF-1.4\nPrivate license').toString('base64') } }
+  const profile = { company: 'Business full profile', category: 'Workshop', taxId: '0312345678', address: '12 Nguyễn Huệ, TP. Hồ Chí Minh', representativeName: 'Nguyễn Văn An', representativeTitle: 'Giám đốc', representativeEmail: 'AN@example.com', representativePhone: '+84 901 234 567', website: 'https://example.com', document: { name: 'license.pdf', mime: 'application/pdf', base64: Buffer.from(await (async () => { const pdf = await PDFDocument.create(); pdf.addPage(); return pdf.save(); })()).toString('base64') } }
   let application, location, post, groups, grant, secondGrant
   await t.test('required profile data, unique tax identity, private license and reviewed resubmission persist', async () => {
     expect(await call(0, '/portal/applications', 'POST', { ...profile, representativeEmail: '' }), 400)
@@ -38,13 +39,13 @@ test('business registration, revisions, multi-group publication, staff consent a
     expect(await call(1, '/portal/applications', 'POST', profile), 409)
     expect(await call(1, '/portal/applications/' + application.id + '/document'), 404)
     assert.match(expect(await call(0, '/portal/applications/' + application.id + '/document')), /^%PDF/)
-    expect(await call(3, '/portal/applications/' + application.id, 'PATCH', { version: 1, status: 'rejected' }), 400)
-    application = expect(await call(3, '/portal/applications/' + application.id, 'PATCH', { version: 1, status: 'rejected', reviewNote: 'Bổ sung địa chỉ.' }))
+    expect(await call(4, '/portal/applications/' + application.id, 'PATCH', { version: 1, status: 'rejected' }), 400)
+    application = expect(await call(4, '/portal/applications/' + application.id, 'PATCH', { version: 1, status: 'rejected', reviewNote: 'Bổ sung địa chỉ.' }))
     const { document: _document, ...resubmit } = profile
     application = expect(await call(0, '/portal/applications', 'POST', { ...resubmit, address: '20 Nguyễn Huệ, TP. Hồ Chí Minh', version: application.version }), 201)
     assert.equal(application.reviewedBy, undefined); assert.equal(application.history.length, 3); assert.equal(application.license.name, 'license.pdf')
-    expect(await call(3, '/portal/applications/' + application.id, 'PATCH', { version: 1, status: 'approved' }), 409)
-    application = expect(await call(3, '/portal/applications/' + application.id, 'PATCH', { version: application.version, status: 'approved' }))
+    expect(await call(4, '/portal/applications/' + application.id, 'PATCH', { version: 1, status: 'approved' }), 409)
+    application = expect(await call(4, '/portal/applications/' + application.id, 'PATCH', { version: application.version, status: 'approved' }))
     assert.equal(expect(await call(0, '/portal/me')).role, 'business')
     assert.equal(expect(await call(0, '/portal/me')).application.address, '20 Nguyễn Huệ, TP. Hồ Chí Minh')
     assert.equal(expect(await call(0, '/portal/notifications')).items.length, 2)
@@ -62,13 +63,13 @@ test('business registration, revisions, multi-group publication, staff consent a
     post = expect(await call(0, '/portal/posts', 'POST', campaign), 201)
     assert.equal(expect(await call(5, '/activities?q=Real%20multi')).total, 0)
     expect(await call(0, '/portal/locations/' + location.id, 'DELETE', { version: location.version }), 409)
-    expect(await call(3, '/portal/posts/' + post.id, 'PATCH', { version: post.version, status: 'rejected' }), 400)
-    post = expect(await call(3, '/portal/posts/' + post.id, 'PATCH', { version: post.version, status: 'rejected', reviewNote: 'Clarify offer terms' }))
+    expect(await call(4, '/portal/posts/' + post.id, 'PATCH', { version: post.version, status: 'rejected' }), 400)
+    post = expect(await call(4, '/portal/posts/' + post.id, 'PATCH', { version: post.version, status: 'rejected', reviewNote: 'Clarify offer terms' }))
     post = expect(await call(0, '/portal/posts/' + post.id, 'PUT', { ...campaign, offerTerms: 'One drink per person', version: post.version }))
     expect(await call(0, '/portal/posts/' + post.id, 'PUT', { ...campaign, version: 1 }), 409)
-    expect(await call(3, '/portal/posts/' + post.id, 'PATCH', { version: post.version, status: 'approved' }))
+    expect(await call(4, '/portal/posts/' + post.id, 'PATCH', { version: post.version, status: 'approved' }))
     groups = expect(await call(0, '/portal/groups')).items
-    assert.equal(groups.length, 2); assert.equal(expect(await call(5, '/activities?q=Real%20multi')).total, 2)
+    assert.equal(groups.length, 2); await db.collection('business_audiences').insertOne({userId:users[5].id,postId:post.id,activityId:groups[0].id}); assert.equal(expect(await call(5, '/activities?q=Real%20multi')).total, 1)
     assert.equal(expect(await call(0, '/activities?q=Real%20multi')).total, 0)
     assert.equal(expect(await call(1, '/portal/groups')).total, 0)
     expect(await call(1, '/portal/groups/' + groups[0].id), 403)
@@ -101,7 +102,7 @@ test('business registration, revisions, multi-group publication, staff consent a
     expect(await call(2, '/portal/groups/' + groups[1].id), 403)
     expect(await call(2, '/portal/posts', 'POST', campaign), 403)
     const conversation = expect(await call(2, '/conversations', 'POST', { type: 'group', activityId: groups[0].id })).conversation
-    assert.equal(conversation.memberCount, 1)
+    assert.equal(conversation.memberCount, 0)
     assert.ok(expect(await call(2, '/conversations')).items.some(item => item.id === conversation.id))
     grant = expect(await call(0, '/portal/staff/' + grant.id, 'PUT', { ...data, title: 'Updated coordinator', version: grant.version }))
     assert.equal(grant.acceptedAt, null)
@@ -120,7 +121,7 @@ test('business registration, revisions, multi-group publication, staff consent a
     secondGrant=expect(await call(4,'/portal/staff-requests/'+secondGrant.id,'PATCH',{version:secondGrant.version,status:'approved'}))
     const group=expect(await call(6,'/portal/groups/'+groups[0].id))
     assert.equal(group.managers.length,2)
-    assert.equal(group.memberCount,1)
+    assert.equal(group.memberCount,0)
     expect(await call(6,'/portal/groups/'+groups[1].id),403)
     assert.equal(expect(await call(6,'/portal/me')).role,'business-staff')
   })
@@ -176,10 +177,10 @@ test('business registration, revisions, multi-group publication, staff consent a
     const draft = expect(await call(0, '/portal/posts', 'POST', { ...campaign, title: 'Recoverable campaign' }), 201)
     const original = db.collection.bind(db); let calls = 0
     db.collection = name => { const collection = original(name); if (name === 'activities') { const update = collection.updateOne.bind(collection); collection.updateOne = (...args) => { if (++calls === 2) throw new Error('Simulated storage interruption'); return update(...args) } }; return collection }
-    try { expect(await call(3, '/portal/posts/' + draft.id, 'PATCH', { version: draft.version, status: 'approved' }), 500) } finally { db.collection = original }
+    try { expect(await call(4, '/portal/posts/' + draft.id, 'PATCH', { version: draft.version, status: 'approved' }), 500) } finally { db.collection = original }
     assert.equal(expect(await call(5, '/activities?q=Recoverable')).total, 0)
-    expect(await call(3, '/portal/posts/' + draft.id, 'PATCH', { version: draft.version, status: 'approved' }))
-    assert.equal(expect(await call(5, '/activities?q=Recoverable')).total, 2)
+    expect(await call(4, '/portal/posts/' + draft.id, 'PATCH', { version: draft.version, status: 'approved' }))
+    assert.equal(expect(await call(5, '/activities?q=Recoverable')).total, 1)
     assert.equal(await db.collection('activities').countDocuments({ businessPostId: draft.id }), 2)
     const row = await db.collection('activities').findOne({ businessPostId: draft.id })
     await db.collection('activities').updateOne({ id: row.id }, { $set: { status: 'pending-review' } })
@@ -205,10 +206,10 @@ test('business registration, revisions, multi-group publication, staff consent a
     const draft = expect(await call(0, '/portal/posts', 'POST', { ...campaign, title: 'Legacy version campaign' }), 201)
     await db.collection('business_posts').updateOne({id:draft.id}, {$unset:{version:''}})
     assert.equal(expect(await call(0, '/portal/posts')).items.find(row=>row.id===draft.id).version, 0)
-    let row = expect(await call(3, '/portal/posts/'+draft.id, 'PATCH', {version:0,status:'rejected',reviewNote:'Correct the legacy draft'}))
+    let row = expect(await call(4, '/portal/posts/'+draft.id, 'PATCH', {version:0,status:'rejected',reviewNote:'Correct the legacy draft'}))
     assert.equal(row.version,1)
     row = expect(await call(0, '/portal/posts/'+draft.id, 'PUT', {...campaign,version:row.version}))
     assert.equal(row.version,2)
-    expect(await call(3, '/portal/posts/'+draft.id, 'PATCH', {version:0,status:'approved'}),409)
+    expect(await call(4, '/portal/posts/'+draft.id, 'PATCH', {version:0,status:'approved'}),409)
   })
 })

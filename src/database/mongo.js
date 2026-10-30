@@ -8,7 +8,11 @@ export function createClient(config) {
 }
 
 export async function initializeDatabase(db) {
+  await db.collection('business_audiences').createIndex({ userId: 1, postId: 1 }, { unique: true })
+  await db.collection('activities').createIndex({ businessPostId: 1, id: 1 })
   await db.collection('business_applications').createIndex({ ownerId: 1 }, { unique: true })
+  await db.collection('business_applications').createIndex({ country: 1, certificateNumber: 1 }, { unique: true, partialFilterExpression: { certificateNumber: { $type: 'string' }, status: { $in: ['pending', 'approved'] } } })
+  await db.collection('business_verification_files').createIndex({ id: 1 }, { unique: true })
   await db.collection('business_applications').createIndex({ taxId: 1 }, { unique: true, partialFilterExpression: { schemaVersion: 2, taxId: { $type: 'string' }, status: { $in: ['pending', 'approved'] } } })
   for (const name of ['business_locations', 'business_staff']) { await db.collection(name).createIndex({ id: 1 }, { unique: true }); await db.collection(name).createIndex({ ownerId: 1, createdAt: -1 }) }
   await db.collection('business_staff').createIndex({ ownerId: 1, userId: 1 }, { unique: true })

@@ -1,3 +1,4 @@
+import { createBusinessAudience } from '../../common/business-audience.js'
 import { syncActivityMessages } from '../activities/chat-events.js'
 import { randomUUID } from 'node:crypto'
 import { messageLinks } from './content.js'
@@ -13,12 +14,13 @@ const conversationView = row => ({ id: row.id, type: row.type, createdAt: row.cr
 
 export function createChatRepository(db) {
   const community = createCommunityRepository(db)
+  const audience = createBusinessAudience(db)
   const conversations = db.collection('conversations'), messages = db.collection('chat_messages')
   const uploads = db.collection('chat_attachments')
   const attachmentView = row => ({ id: row._id.toHexString(), name: row.name, size: row.size, mimeType: row.mimeType, kind: row.kind })
   const reads = db.collection('chat_reads'), activities = db.collection('activities')
   async function membership(userId) {
-    return { status: { $nin: ['deleted', 'pending-review'] }, $or: [{ hostId: userId }, { joinRequests: { $elemMatch: { userId, status: 'approved' } } }, await staffGroupScope(db, userId)] }
+    return { $and: [await audience.scope(userId, true)], status: { $nin: ['deleted', 'pending-review'] }, $or: [{ hostId: userId }, { joinRequests: { $elemMatch: { userId, status: 'approved' } } }, await staffGroupScope(db, userId)] }
   }
   async function access(id, userId) {
     const row = await conversations.findOne({ id })

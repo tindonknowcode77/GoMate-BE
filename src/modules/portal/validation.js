@@ -1,5 +1,6 @@
 import { HttpError } from '../../common/http-error.js'
 import { activityFields } from '../activities/validation.js'
+import { businessIndustries } from './business-options.js'
 
 export function fields(body, keys) {
   if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !keys.includes(key))) throw new HttpError(400, 'Invalid request fields')
@@ -21,14 +22,23 @@ export function phone(value) {
   return result
 }
 export function applicationFields(body, parseDocument) {
-  fields(body, ['company', 'website', 'category', 'taxId', 'address', 'representativeName', 'representativeTitle', 'representativeEmail', 'representativePhone', 'document', 'version'])
-  const taxId = text(body.taxId, 20).replace(/[-\s]/g, '')
-  if (!/^\d{10}(?:\d{3})?$/.test(taxId)) throw new HttpError(400, 'Mã số thuế cần 10 hoặc 13 chữ số.')
+  fields(body, ['company', 'website', 'category', 'taxId', 'address', 'representativeName', 'representativeTitle', 'representativeEmail', 'representativePhone', 'document', 'version', 'accountType', 'country', 'certificateNumber', 'supplementalDocument'])
+  const modern = body.accountType !== undefined || body.certificateNumber !== undefined || body.country !== undefined
+  const taxId = text(body.taxId, 20, modern).replace(/[-\s]/g, '')
+  if ((!modern || taxId) && !/^\d{10}(?:\d{3})?$/.test(taxId)) throw new HttpError(400, 'Mã số thuế cần 10 hoặc 13 chữ số.')
+  let identity = {}
+  if (modern) {
+    if (!['business', 'individual'].includes(body.accountType) || body.country !== 'VN') throw new HttpError(400, 'Loại tài khoản hoặc quốc gia không hợp lệ.')
+    if (!businessIndustries.includes(body.category)) throw new HttpError(400, 'Vui lòng chọn một ngành trong danh sách.')
+    const certificateNumber = text(body.certificateNumber, 60).toUpperCase()
+    if (!/^[A-Z0-9][A-Z0-9.\/-]{1,59}$/.test(certificateNumber)) throw new HttpError(400, 'Vui lòng nhập số giấy chứng nhận chính xác.')
+    identity = { accountType: body.accountType, country: 'VN', certificateNumber }
+  }
   const website = text(body.website, 500, true)
   if (website) { let url; try { url = new URL(website) } catch { throw new HttpError(400, 'Invalid website URL') }; if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new HttpError(400, 'Invalid website URL') }
   return { company: text(body.company, 150), category: text(body.category, 100), taxId, website, address: text(body.address, 500),
     representativeName: text(body.representativeName, 120), representativeTitle: text(body.representativeTitle, 80), representativeEmail: email(body.representativeEmail), representativePhone: phone(body.representativePhone),
-    schemaVersion: 2, ...(body.document !== undefined ? { document: parseDocument(body.document) } : {}), ...(body.version !== undefined ? { version: version(body.version) } : {}) }
+    ...identity, schemaVersion: modern ? 3 : 2, ...(body.document !== undefined ? { document: parseDocument(body.document) } : {}), ...(body.supplementalDocument !== undefined ? { supplementalDocument: parseDocument(body.supplementalDocument) } : {}), ...(body.version !== undefined ? { version: version(body.version) } : {}) }
 }
 export function postFields(body) {
   fields(body, ['title', 'copy', 'badge', 'discount', 'border', 'premium', 'event', 'groups', 'discountPercent', 'offer', 'offerTerms', 'version'])
@@ -57,7 +67,7 @@ export function postFields(body) {
 
 export function locationFields(body) {
   fields(body, ['name', 'address', 'city', 'phone', 'latitude', 'longitude', 'mapX', 'mapY', 'version'])
-  if (![body.latitude, body.longitude].every(Number.isFinite) || Math.abs(body.latitude) > 90 || Math.abs(body.longitude) > 180) throw new HttpError(400, 'Invalid coordinates')
+  if ((body.latitude !== undefined || body.longitude !== undefined) && (![body.latitude, body.longitude].every(Number.isFinite) || Math.abs(body.latitude) > 90 || Math.abs(body.longitude) > 180)) throw new HttpError(400, 'Invalid coordinates')
   for (const key of ['mapX', 'mapY']) if (body[key] !== undefined && (!Number.isFinite(body[key]) || body[key] < 0 || body[key] > 100)) throw new HttpError(400, 'Invalid map position')
-  return { name: text(body.name, 150), address: text(body.address, 300), city: text(body.city, 100), phone: body.phone ? phone(body.phone) : '', latitude: body.latitude, longitude: body.longitude, mapX: body.mapX ?? 50, mapY: body.mapY ?? 50 }
+  return { name: text(body.name, 150), address: text(body.address, 300), city: text(body.city, 100), phone: body.phone ? phone(body.phone) : '', ...(Number.isFinite(body.latitude)?{latitude: body.latitude, longitude: body.longitude}:{}), mapX: body.mapX ?? 50, mapY: body.mapY ?? 50 }
 }

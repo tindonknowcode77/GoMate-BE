@@ -1,3 +1,4 @@
+import { createBusinessAudience } from '../../common/business-audience.js'
 import { syncActivityMessages, closedRequests } from './chat-events.js'
 import { randomUUID } from 'node:crypto'
 import { publicActivity } from './validation.js'
@@ -7,6 +8,7 @@ import { staffGroupScope, isAssignedStaff } from '../../common/business-staff-ac
 export function createActivityRepository(db) {
   const activities = db.collection('activities')
   const community = createCommunityRepository(db)
+  const audience = createBusinessAudience(db)
   async function memberAvatars(rows) {
     if (!rows.length) return rows
     const memberships = await activities.find({ id: { $in: rows.map(row => row.id) } }, { projection: { id: 1, hostId: 1, joinRequests: 1 } }).toArray()
@@ -18,6 +20,7 @@ export function createActivityRepository(db) {
   }
 
   return {
+    canViewBusinessGroup: audience.canView,
     isAssignedStaff: (userId, activityId) => isAssignedStaff(db, userId, activityId),
     async create(fields, host) {
       const now = new Date()
@@ -51,7 +54,7 @@ export function createActivityRepository(db) {
       const managed = requests ? [] : await activities.find(await staffGroupScope(db, userId), { projection: { id: 1 } }).toArray()
       const managedIds = managed.map(row => row.id)
       const [result] = await activities.aggregate([
-        { $match: { ...(requests && status === 'pending' ? { status: 'published', startsAt: { $gt: new Date() } } : { status: { $nin: ['deleted', 'pending-review'] } }), hostId: { $ne: userId }, $or: [{ joinRequests: { $elemMatch: member } }, { id: { $in: managedIds } }] } },
+        { $match: { $and: [await audience.scope(userId, true)], ...(requests && status === 'pending' ? { status: 'published', startsAt: { $gt: new Date() } } : { status: { $nin: ['deleted', 'pending-review'] } }), hostId: { $ne: userId }, $or: [{ joinRequests: { $elemMatch: member } }, { id: { $in: managedIds } }] } },
         { $set: { ownRequest: { $arrayElemAt: [{ $filter: { input: '$joinRequests', as: 'request',
           cond: { $eq: ['$$request.userId', userId] } } }, 0] } } },
         { $unset: ['joinRequests', '_id', 'imagePublicId', 'planFileData'] },
@@ -66,6 +69,7 @@ export function createActivityRepository(db) {
     },
     // Keep requests and capacity in one document so approval is atomic even on standalone MongoDB.
     async submitJoinRequest(id, user, version) {
+      const target = await activities.findOne({ id }); if (target && !await audience.canView(target, user.id)) return null
       const now = new Date()
       const request = { id: randomUUID(), userId: user.id, name: user.name, status: 'pending', createdAt: now, updatedAt: now }
       const row = await activities.findOneAndUpdate({ id, status: 'published', startsAt: { $gt: now }, hostId: { $ne: user.id },
@@ -157,8 +161,8 @@ export function createActivityRepository(db) {
         version: previous.version ?? { $exists: false }, status: { $ne: 'deleted' },
       }, { $set: { status: 'deleted', deletedAt: new Date(), updatedAt: new Date() }, $unset: { planFileData: '' }, $inc: { version: 1 } }, { returnDocument: 'after' })
     },
-    async favorites(ids, page, limit) {
-      const query = { id: { $in: ids }, status: { $ne: 'deleted' } }
+    async favorites(ids, page, limit, userId) {
+      const query = { id: { $in: ids }, status: { $ne: 'deleted' }, ...(userId ? { $and: [await audience.scope(userId)] } : {}) }
       const [rows, total] = await Promise.all([activities.find(query, { projection: { planFileData: 0 } }).sort({ startsAt: 1, id: 1 }).skip((page - 1) * limit).limit(limit).toArray(), activities.countDocuments(query)])
       return { items: rows.map(publicActivity), total, page, limit, hasMore: page * limit < total }
     },
@@ -200,6 +204,7 @@ export function createActivityRepository(db) {
       if (options.days.length) checks.push({ $in: [{ $isoDayOfWeek: date }, options.days] })
       checks.push({ $gte: [{ $hour: date }, options.fromHour] }, { $lt: [{ $hour: date }, options.toHour] })
       match.$expr = { $and: checks }
+      match.$and = [...(match.$and || []), await audience.scope(userId)]
       const geo = options.lat !== undefined
       const pipeline = geo ? [{ $geoNear: { near: { type: 'Point', coordinates: [options.lng, options.lat] },
         key: 'coordinates', distanceField: 'distanceMeters', spherical: true, query: match,
