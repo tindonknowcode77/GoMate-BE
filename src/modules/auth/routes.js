@@ -24,14 +24,14 @@ export function createAuthRouter(repository, config, verifyGoogle = createGoogle
 
   router.post('/register', rateLimit({ ...limitOptions, limit: 5 }), async (req, res) => {
     const { email, password, name } = credentials(req.body, true)
-    mailer.assertConfigured()
     const passwordHash = await hashPassword(password)
     try {
       const user = await repository.createUser({ email, name, passwordHash })
-      await sendVerification(email)
-      res.status(201).json({ user: publicUser(user), verificationRequired: true, message: 'Check your email for the verification code.' })
+      let verificationSent = false
+      try { mailer.assertConfigured(); await sendVerification(email); verificationSent = true } catch { /* Account can log in and request another code. */ }
+      res.status(201).json({ user: publicUser(user), verificationRequired: true, verificationSent, message: verificationSent ? 'Kiểm tra email để nhận mã xác minh.' : 'Tài khoản đã được tạo. Bạn có thể đăng nhập và gửi lại mã xác minh.' })
     } catch (error) {
-      if (error.code === 11000) throw new HttpError(409, 'Email already registered')
+      if (error.code === 11000) throw new HttpError(409, 'Email đã có tài khoản. Hãy đăng nhập để tiếp tục.', 'EMAIL_ALREADY_REGISTERED')
       throw error
     }
   })
@@ -92,7 +92,6 @@ export function createAuthRouter(repository, config, verifyGoogle = createGoogle
     const user = await repository.findUserByEmail(email)
     const valid = await verifyPassword(password, user?.password_hash ?? dummyPasswordHash)
     if (!user?.password_hash || !valid) throw new HttpError(401, 'Invalid email or password')
-    if (user.email_verified !== true) throw new HttpError(403, 'Verify your email before logging in')
     await issueSession(user, res, rememberMe)
   })
 

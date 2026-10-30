@@ -61,7 +61,7 @@ test('authentication lifecycle using the MongoDB engine', async t => {
     const response = await client.request('/register', { method: 'POST', body: { ...account, role: 'admin' } })
     assert.equal(response.status, 201)
     assert.equal(response.body.user.email, 'test@example.com')
-    assert.deepEqual(Object.keys(response.body.user).sort(), ['createdAt', 'email', 'id', 'name'])
+    assert.deepEqual(Object.keys(response.body.user).sort(), ['createdAt', 'email', 'emailVerified', 'id', 'name'])
     userId = response.body.user.id
     const saved = await repository.findUserByEmail('test@example.com')
     assert.notEqual(saved.password_hash, account.password)
@@ -74,7 +74,7 @@ test('authentication lifecycle using the MongoDB engine', async t => {
     assert.equal(await db.collection('users').countDocuments(), 1)
   })
   await t.test('email verification gates login and codes are single use', async () => {
-    assert.equal((await client.request('/login', { method: 'POST', body: account })).status, 403)
+    const unverifiedLogin = await client.request('/login', { method: 'POST', body: account }); assert.equal(unverifiedLogin.status, 200); assert.equal(unverifiedLogin.body.user.emailVerified, false); assert.equal((await client.request('/logout', { method: 'POST', token: unverifiedLogin.body.accessToken })).status, 204)
     assert.equal(delivered.length, 1)
     const { code } = delivered[0]
     assert.match(code, /^\d{6}$/)

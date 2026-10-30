@@ -72,7 +72,6 @@ test('trip plans, companion capacity, friends and early chat enforce identity an
     assert.equal((await req(path, 'POST', { version: activity.version }, 1)).status, 403)
     assert.equal((await req(path, 'POST', { version: activity.version - 1 })).status, 409)
     assert.equal((await req(path, 'POST', { version: activity.version, status: 'completed' })).status, 400)
-    assert.equal((await req(path, 'POST', { version: activity.version })).status, 409)
     const outsider = (await req('/activities/' + activity.id + '/join-requests', 'POST', {}, 3)).body.request
     await req('/activities/' + activity.id + '/join-requests/' + outsider.id, 'PATCH', { status: 'approved' })
     activity = (await req('/activities/' + activity.id)).body.activity

@@ -50,7 +50,7 @@ export function createAuthRepository(db) {
       // TTL cleanup is asynchronous; enforce expiration on every request.
       const session = await sessions.findOne({ token_hash: { $eq: tokenHash }, expires_at: { $gt: new Date() } })
       if (!session) return null
-      const user = await users.findOne({ id: session.user_id, $or: [{ email_verified: true }, { google_sub: { $type: 'string' } }] }, { projection: { password_hash: 0, verification: 0, password_reset: 0, avatar: 0 } })
+      const user = await users.findOne({ id: session.user_id }, { projection: { password_hash: 0, verification: 0, password_reset: 0, avatar: 0 } })
       return user && (user.credential_version ?? 0) === (session.credential_version ?? 0) ? { user, expiresAt: session.expires_at } : null
     },
     async reservePasswordReset(email, hash) {

@@ -9,6 +9,7 @@ import { searchOptions } from './routes.js'
 export function createMyActivityRouter(repository, authRepository) {
   const router = Router()
   router.use(authenticate(authRepository))
+  router.get('/activity-counts', async (req, res) => res.json(await repository.counts(req.auth.user.id)))
   router.get('/match-preferences', async (req, res) => {
     const user = await authRepository.getProfile(req.auth.user.id)
     res.json({ filters: user.match_filters ?? null, favoriteIds: user.favorite_activity_ids ?? [] })
@@ -44,7 +45,7 @@ export function createMyActivityRouter(repository, authRepository) {
       const allowed = requests ? ['page', 'limit', 'status'] : ['page', 'limit']
       if (Object.keys(req.query).some(key => !allowed.includes(key))) throw new HttpError(400, 'Unsupported query parameter')
       const { status, ...pagination } = req.query
-      if (status !== undefined && !['pending', 'approved', 'rejected', 'cancelled', 'left', 'removed'].includes(status)) throw new HttpError(400, 'Invalid request status')
+      if (status !== undefined && !['pending', 'approved', 'rejected', 'cancelled', 'left', 'removed', 'closed'].includes(status)) throw new HttpError(400, 'Invalid request status')
       const { page, limit } = searchOptions(pagination)
       res.json(await repository.participating(req.auth.user.id, { page, limit, status }, requests))
     })

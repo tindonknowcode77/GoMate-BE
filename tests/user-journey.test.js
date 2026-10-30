@@ -61,16 +61,14 @@ test('independent accounts discover, consent to invites, qualify, attend, rate a
     assert.equal((await call(2, path + '/members')).status, 403)
     assert.equal((await call(2, path + '/invitations/' + second.id, 'PATCH', { status: 'accepted' })).status, 409)
   })
-  await t.test('host friends and companions cannot satisfy the external-member gate; minimum counts confirmed accounts', async () => {
-    // Invite again, and convert a companion only after consent.
+  await t.test('invited friends and matched members both unlock schedule confirmation; starts require schedule confirmation', async () => {
     assert.equal((await call(0, path + '/members/friends', 'POST', { friendIds: [users[2].id], useReservedSeats: true })).status, 200)
     const invitation = (await call(2, '/activities/invitations')).body.items[0]
     assert.equal((await call(2, path + '/invitations/' + invitation.id, 'PATCH', { status: 'accepted' })).status, 200)
     activity = (await call(0, path)).body.activity
     assert.equal(activity.reservedSeats, 1)
     assert.equal(activity.readiness.confirmedParticipants, 3)
-    assert.equal(activity.readiness.externalParticipants, 0)
-    assert.equal((await call(0, path + '/confirm-schedule', 'POST', { version: activity.version })).status, 409)
+    assert.equal(activity.readiness.ready, true)
     const pending = (await call(3, path + '/join-requests', 'POST', {})).body.request
     assert.equal((await call(3, path + '/members')).status, 403)
     assert.equal((await call(0, path + '/start', 'POST', {})).status, 409)
@@ -91,10 +89,11 @@ test('independent accounts discover, consent to invites, qualify, attend, rate a
     const starts = await Promise.all([call(0, path + '/start', 'POST', {}), call(0, path + '/start', 'POST', {})])
     assert.deepEqual(starts.map(item => item.status).sort(), [200, 409])
   })
-  await t.test('attendance required to complete; only actual attendees rate once and can send friend requests', async () => {
+  await t.test('attendance finalized on complete; only actual attendees rate once and can send friend requests', async () => {
     assert.equal((await call(3, '/community/ratings/' + activity.id)).status, 409)
-    assert.equal((await call(0, path + '/complete', 'POST', {})).status, 409)
-    for (const index of [0, 1, 2, 3]) assert.equal((await call(0, path + '/attendance/' + users[index].id, 'PATCH', { status: index === 2 ? 'absent' : 'present' })).status, 200)
+    assert.equal((await call(3, path + '/complete', 'POST', {})).status, 403)
+    // Mark user 2 as absent; leave others unmarked or present, complete auto-marks unmarked as present
+    assert.equal((await call(0, path + '/attendance/' + users[2].id, 'PATCH', { status: 'absent' })).status, 200)
     assert.equal((await call(0, path + '/complete', 'POST', {})).status, 200)
     assert.equal((await call(4, '/community/ratings/' + activity.id)).status, 403)
     assert.equal((await call(2, '/community/ratings/' + activity.id)).status, 403)

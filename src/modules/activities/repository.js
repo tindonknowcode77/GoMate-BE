@@ -1,3 +1,4 @@
+import { syncActivityMessages, closedRequests } from './chat-events.js'
 import { randomUUID } from 'node:crypto'
 import { publicActivity } from './validation.js'
 import { createCommunityRepository } from '../community/repository.js'
@@ -31,17 +32,26 @@ export function createActivityRepository(db) {
     async get(id) { return activities.findOne({ id, status: { $ne: 'deleted' } }, { projection: { planFileData: 0 } }) },
     async getWithPlanFile(id) { return activities.findOne({ id, status: { $ne: 'deleted' } }) },
     async lifecycle(previous, hostId, fields, event) {
-      return activities.findOneAndUpdate({ id: previous.id, hostId,
+      if (fields.status && fields.status !== 'published') fields = { ...fields, joinRequests: closedRequests(previous, event.createdAt) }
+      const row = await activities.findOneAndUpdate({ id: previous.id, hostId,
         status: previous.status, version: previous.version ?? { $exists: false },
       }, { $set: { ...fields, updatedAt: event.createdAt },
         $push: { updates: event }, $inc: { version: 1 } }, { returnDocument: 'after' })
+      if (row) await syncActivityMessages(db, row)
+      return row
+    },
+    async counts(userId) {
+      const upcoming = { status: 'published', startsAt: { $gt: new Date() } }
+      const pending = await activities.countDocuments({ ...upcoming, joinRequests: { $elemMatch: { userId, status: 'pending' } } })
+      const owned = await activities.find({ ...upcoming, hostId: userId }, { projection: { joinRequests: 1 } }).toArray()
+      return { pending, hostRequests: owned.reduce((total, row) => total + (row.joinRequests ?? []).filter(item => item.status === 'pending').length, 0) }
     },
     async participating(userId, { page, limit, status }, requests = false) {
       const member = { userId, ...(!requests ? { status: 'approved' } : status ? { status } : {}) }
       const managed = requests ? [] : await activities.find(await staffGroupScope(db, userId), { projection: { id: 1 } }).toArray()
       const managedIds = managed.map(row => row.id)
       const [result] = await activities.aggregate([
-        { $match: { status: { $nin: ['deleted', 'pending-review'] }, hostId: { $ne: userId }, $or: [{ joinRequests: { $elemMatch: member } }, { id: { $in: managedIds } }] } },
+        { $match: { ...(requests && status === 'pending' ? { status: 'published', startsAt: { $gt: new Date() } } : { status: { $nin: ['deleted', 'pending-review'] } }), hostId: { $ne: userId }, $or: [{ joinRequests: { $elemMatch: member } }, { id: { $in: managedIds } }] } },
         { $set: { ownRequest: { $arrayElemAt: [{ $filter: { input: '$joinRequests', as: 'request',
           cond: { $eq: ['$$request.userId', userId] } } }, 0] } } },
         { $unset: ['joinRequests', '_id', 'imagePublicId', 'planFileData'] },
@@ -76,7 +86,7 @@ export function createActivityRepository(db) {
     },
     async changeJoinRequest(id, { userId, hostId, requestId, status, version }) {
       const now = new Date()
-      const query = { id, status: 'published', startsAt: { $gt: now }, ...(version !== undefined ? { version } : {}),
+      const query = { id, ...(status === 'cancelled' ? { status: { $ne: 'deleted' } } : { status: 'published', startsAt: { $gt: now } }), ...(version !== undefined ? { version } : {}),
         ...(hostId ? { hostId } : {}),
         joinRequests: { $elemMatch: { ...(userId ? { userId } : { id: requestId }), status: 'pending' } },
         ...(status === 'approved' ? { $expr: { $lt: ['$memberCount', '$maxParticipants'] } } : {}),
@@ -124,8 +134,6 @@ export function createActivityRepository(db) {
     async decideInvitation(previous, invitation, status) {
       const now = new Date(), accepting = status === 'accepted'
       const consumed = accepting && invitation.useReservedSeats ? Math.min(previous.reservedSeats ?? 0, 1) : 0
-      const hasExternal = (previous.joinRequests ?? []).some(item => item.status === 'approved' && !['host-added', 'host-invited'].includes(item.source))
-      if (accepting && !hasExternal && previous.memberCount + 1 - consumed >= previous.maxParticipants) return null
       if (accepting && (previous.joinRequests ?? []).some(item => item.userId === invitation.userId && ['approved', 'pending'].includes(item.status))) return null
       const request = { id: randomUUID(), userId: invitation.userId, name: invitation.name, status: 'approved', source: 'host-invited', createdAt: now, updatedAt: now }
       return activities.findOneAndUpdate({ id: previous.id, status: 'published', startsAt: { $gt: now }, version: previous.version,

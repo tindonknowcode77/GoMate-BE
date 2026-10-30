@@ -94,6 +94,6 @@ export function activityFields(body, previous) {
 }
 
 export function publicActivity(row) {
-  const keys = ['memberAvatars', 'address', 'province', 'district', 'ward', 'costNote', 'reservedSeats', 'itinerary', 'planLink', 'planFile', 'id', 'hostId', 'hostName', 'title', 'description', 'category', 'location', 'organizerType', 'coordinates', 'startsAt', 'endsAt', 'registrationDeadline', 'meetingPoint', 'financialConfig', 'participantPreferences', 'estimatedCost', 'minParticipants', 'maxParticipants', 'memberCount', 'tags', 'requirements', 'plan', 'imageUrl', 'imageUrls', 'status', 'createdAt', 'updatedAt', 'version', 'startedAt', 'completedAt']
+  const keys = ['memberAvatars', 'address', 'province', 'district', 'ward', 'costNote', 'reservedSeats', 'itinerary', 'planLink', 'planFile', 'id', 'hostId', 'hostName', 'title', 'description', 'category', 'location', 'organizerType', 'coordinates', 'startsAt', 'endsAt', 'registrationDeadline', 'meetingPoint', 'financialConfig', 'participantPreferences', 'estimatedCost', 'minParticipants', 'maxParticipants', 'memberCount', 'tags', 'requirements', 'plan', 'imageUrl', 'imageUrls', 'status', 'createdAt', 'updatedAt', 'version', 'startedAt', 'completedAt', 'autoCompletedAt', 'cancelledAt']
   return { ...Object.fromEntries([...keys, 'business', 'scheduleConfirmedAt', 'scheduleConfirmedBy'].filter(key => row[key] !== undefined).map(key => [key, row[key]])), readiness: activityReadiness(row) }
 }

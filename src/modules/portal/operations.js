@@ -7,6 +7,11 @@ import { planningFields } from '../../common/activity-plan.js'
 import { businessWallet } from './wallet.js'
 
 const view = { _id: 0 }
+function buildAttendanceRoster(row) {
+  const existing = new Map((row.attendance ?? []).map(item => [item.userId, item]))
+  const members = [{ userId: row.hostId, name: row.hostName }, ...(row.joinRequests ?? []).filter(item => item.status === 'approved').map(item => ({ userId: item.userId, name: item.name }))]
+  return members.map(item => existing.get(item.userId) ? { ...existing.get(item.userId), name: item.name } : { ...item, status: 'unmarked' })
+}
 export function createBusinessOperations(db) {
   const locations = db.collection('business_locations'), staff = db.collection('business_staff'), activities = db.collection('activities')
   const community = createCommunityRepository(db), repository = createActivityRepository(db)
@@ -29,7 +34,7 @@ export function createBusinessOperations(db) {
     const receipts = row.businessReceipts ?? []
     return { id: row.id, ownerId: row.hostId, version: row.version, name: row.businessGroupName || row.title, campaignTitle: row.businessCampaignTitle || row.title, promotionalPostTitle: row.businessCampaignTitle || row.title, promotionalPostId: row.businessPostId,
       status: row.status, startsAt: row.startsAt, endsAt: row.endsAt, locationId: row.businessLocationId || '', location: row.location, meetingPoint: row.meetingPoint, maxParticipants: row.maxParticipants, memberCount: row.memberCount, estimatedCost: row.estimatedCost, depositAmount: row.depositAmount || 0,
-      managers: await staff.find({ownerId:row.hostId,groupIds:row.id,status:'approved',acceptedAt:{$ne:null}},{projection:{_id:0,userId:1,name:1,title:1}}).toArray(), attendance: row.attendance ?? [], readiness: activityReadiness(row), itineraryConfirmed: Boolean(row.scheduleConfirmedAt), scheduleConfirmedAt: row.scheduleConfirmedAt,
+      managers: await staff.find({ownerId:row.hostId,groupIds:row.id,status:'approved',acceptedAt:{$ne:null}},{projection:{_id:0,userId:1,name:1,title:1}}).toArray(), attendance: row.attendance?.length ? row.attendance : buildAttendanceRoster(row), readiness: activityReadiness(row), itineraryConfirmed: Boolean(row.scheduleConfirmedAt), scheduleConfirmedAt: row.scheduleConfirmedAt,
       depositMembers: members.map(member => { const receipt = receipts.find(item => item.userId === member.userId); return { id: member.userId, name: member.name, amount: receipt?.amount ?? row.depositAmount ?? 0, status: receipt?.status || (row.depositAmount ? 'pending' : 'not-required'), paidAt: receipt?.paidAt ?? null } }),
       itinerary: (row.itinerary ?? []).map(item => ({ ...item, locationId: row.businessPlanLocations?.[item.id] || '', location: item.place, notes: item.note })), notifications: row.businessOffers ?? [], requests: (row.joinRequests ?? []).filter(item => item.status === 'pending') }
   }
@@ -46,7 +51,7 @@ export function createBusinessOperations(db) {
     assigned,
     async wallet(ownerId) {
       if (!await verified(ownerId)) throw new HttpError(403, 'Verified business required')
-      return businessWallet(await activities.find({ hostId: ownerId, organizerType: 'business' }, { projection: { id: 1, title: 1, businessGroupName: 1, status: 1, businessReceipts: 1, joinRequests: 1 } }).toArray())
+      return businessWallet(await activities.find({ hostId: ownerId, organizerType: 'business' }, { projection: { id: 1, title: 1, businessGroupName: 1, status: 1, businessReceipts: 1, joinRequests: 1, attendance: 1 } }).toArray())
     },
     async listLocations(ownerId, offset) {
       if (await verified(ownerId)) return page(locations, { ownerId }, offset)
@@ -89,7 +94,9 @@ export function createBusinessOperations(db) {
       if (!['published', 'in-progress'].includes(row.status) || !row.depositAmount) throw new HttpError(409, 'No deposit to record or group closed')
       if (!row.joinRequests?.some(member => member.userId === memberId && member.status === 'approved')) throw new HttpError(400, 'Only approved members have deposit records')
       const receipt = { userId: memberId, status, amount: row.depositAmount, paidAt: status === 'paid' ? new Date() : null, recordedBy: userId, recordedAt: new Date(), method: 'manual' }
-      return change(row, userId, version, { businessReceipts: [...(row.businessReceipts ?? []).filter(item => item.userId !== memberId), receipt], ...(row.status === 'published' && status === 'pending' ? { scheduleConfirmedAt: null, scheduleConfirmedBy: null } : {}) }, 'business-deposit-recorded')
+      const updated = await change(row, userId, version, { businessReceipts: [...(row.businessReceipts ?? []).filter(item => item.userId !== memberId), receipt], ...(row.status === 'published' && status === 'pending' ? { scheduleConfirmedAt: null, scheduleConfirmedBy: null } : {}) }, 'business-deposit-recorded')
+      if (status === 'paid') await community.notify(memberId, { key: 'deposit-confirmed:' + id + ':' + memberId + ':' + updated.version, type: 'activity', title: 'Đã xác nhận tiền cọc', text: row.title + ' · ' + row.depositAmount.toLocaleString('vi-VN') + 'đ', activityId: id, actorId: userId })
+      return updated
     },
     async decideMember(userId, id, version, requestId, status) {
       const row = await group(userId, id)
@@ -131,19 +138,22 @@ export function createBusinessOperations(db) {
           if (row.depositAmount && row.joinRequests.filter(item => item.status === 'approved').some(member => !row.businessReceipts?.some(receipt => receipt.userId === member.userId && receipt.status === 'paid'))) throw new HttpError(409, 'Còn thành viên chưa được ghi nhận tiền cọc.')
           return change(row, userId, version, { scheduleConfirmedAt: new Date(), scheduleConfirmedBy: userId }, 'schedule-confirmed')
         }
-        if (!row.scheduleConfirmedAt) throw new HttpError(409, 'Confirm schedule first')
-        const attendance = [{ userId: row.hostId, name: row.hostName }, ...row.joinRequests.filter(item => item.status === 'approved').map(item => ({ userId: item.userId, name: item.name }))].map(item => ({ ...item, status: 'unmarked' }))
-        return change(row, userId, version, { status: 'in-progress', startedAt: new Date(), attendance }, 'started')
+        const now = new Date()
+        const attendance = buildAttendanceRoster(row)
+        return change(row, userId, version, { status: 'in-progress', startedAt: now, scheduleConfirmedAt: row.scheduleConfirmedAt || now, scheduleConfirmedBy: row.scheduleConfirmedBy || userId, attendance }, 'started')
       }
-      if (row.status !== 'in-progress' || !row.attendance?.length || row.attendance.some(item => item.status === 'unmarked')) throw new HttpError(409, 'Điểm danh đầy đủ trước khi kết thúc.')
-      const result = await change(row, userId, version, { status: 'completed', completedAt: new Date() }, 'completed')
-      await Promise.all(row.attendance.map(member => community.notify(member.userId, { key: 'business-completed:' + id, type: 'activity', title: 'Hoạt động đã kết thúc', text: row.title, activityId: id, actorId: userId })))
+      if (row.status !== 'in-progress') throw new HttpError(409, 'Group is not running')
+      const now = new Date()
+      const attendance = buildAttendanceRoster(row).map(item => item.status === 'unmarked' ? { ...item, status: 'present', updatedBy: userId, updatedAt: now } : item)
+      const result = await change(row, userId, version, { status: 'completed', completedAt: now, attendance }, 'completed')
+      await Promise.all(attendance.map(member => community.notify(member.userId, { key: 'business-completed:' + id, type: 'activity', title: 'Hoạt động đã kết thúc', text: row.title, activityId: id, actorId: userId })))
       return result
     },
     async attendance(userId, id, version, memberId, status) {
       const row = await group(userId, id)
-      if (row.status !== 'in-progress' || !row.attendance?.some(item => item.userId === memberId)) throw new HttpError(409, 'Participant not found or group not running')
-      return change(row, userId, version, { attendance: row.attendance.map(item => item.userId === memberId ? { ...item, status, updatedBy: userId, updatedAt: new Date() } : item) }, 'attendance-changed')
+      const roster = buildAttendanceRoster(row)
+      if (!['published', 'in-progress'].includes(row.status) || !roster.some(item => item.userId === memberId)) throw new HttpError(409, 'Participant not found or group not running')
+      return change(row, userId, version, { attendance: roster.map(item => item.userId === memberId ? { ...item, status, updatedBy: userId, updatedAt: new Date() } : item) }, 'attendance-changed')
     },
     async listStaff(ownerId, offset, reviewing = false) { return page(staff, reviewing ? {} : { ownerId }, offset) },
     async incomingStaff(userId) { return { items: await staff.find({ userId, acceptedAt: null, status: 'pending' }, { projection: view }).toArray() } },

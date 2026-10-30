@@ -78,10 +78,10 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const result = await repository.owned(req.auth.user.id, page, limit)
     res.json({ ...result, items: result.items.map(publicActivity) })
   })
-  async function find(id, owner) {
+  async function find(id, owner, allowStaff = false) {
     const row = await repository.get(id)
     if (!row) throw new HttpError(404, 'Activity not found')
-    if (owner && row.hostId !== owner) throw new HttpError(403, 'Only the host can change this activity')
+    if (owner && row.hostId !== owner && !(allowStaff && await repository.isAssignedStaff(owner, row.id))) throw new HttpError(403, 'Only the host can change this activity')
     return row
   }
   router.get('/:id', async (req, res) => {
@@ -120,37 +120,46 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   const cleanGallery = async row => { await Promise.all([...new Set(row.imagePublicIds ?? (row.imagePublicId ? [row.imagePublicId] : []))].map(cleanup)) }
   const writes = rateLimit({ windowMs: 15 * 60 * 1000, limit: 40, keyGenerator: req => req.auth.user.id, standardHeaders: 'draft-8', legacyHeaders: false })
   const json = express.json({ limit: '16kb' })
-  const event = (req, type, details = {}) => ({ id: randomUUID(), type, actorId: req.auth.user.id, createdAt: new Date(), ...details })
+  const event = (req, type, details = {}) => ({ id: randomUUID(), type, actorId: req.auth.user.id, actorName: req.auth.user.name, createdAt: new Date(), ...details })
   const notifyMembers = async (row, req, key, title) => Promise.all((row.joinRequests ?? []).filter(item => item.status === 'approved').map(member => authRepository.community?.notify(member.userId, { key, type: 'activity', title, text: row.title, activityId: row.id, actorId: req.auth.user.id })))
   function emptyBody(body) {
     if (body !== undefined && (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length)) throw new HttpError(400, 'Body must be empty')
   }
   async function saveLifecycle(activity, req, fields, entry) {
-    const row = await repository.lifecycle(activity, req.auth.user.id, fields, entry)
+    const row = await repository.lifecycle(activity, activity.hostId, fields, entry)
     if (!row) throw new HttpError(409, 'Activity changed. Reload and try again.')
-    if (['schedule-confirmed', 'started', 'completed', 'note'].includes(entry.type)) {
-      const title = entry.type === 'schedule-confirmed' ? 'Host đã chốt lịch đi' : entry.type === 'started' ? 'Hoạt động đã bắt đầu' : entry.type === 'completed' ? 'Hoạt động đã kết thúc' : 'Cập nhật từ host'
+    if (['schedule-confirmed', 'started', 'completed', 'cancelled', 'note'].includes(entry.type)) {
+      const title = entry.type === 'schedule-confirmed' ? 'Host đã chốt lịch đi' : entry.type === 'started' ? 'Hoạt động đã bắt đầu' : entry.type === 'completed' ? 'Hoạt động đã kết thúc' : entry.type === 'cancelled' ? 'Hoạt động đã bị hủy' : 'Cập nhật từ người tổ chức'
       await Promise.all((activity.joinRequests ?? []).filter(item => item.status === 'approved').map(member => authRepository.community?.notify(member.userId, { key: `activity:${entry.id}`, type: 'activity', title, text: entry.text || activity.title, activityId: activity.id, actorId: req.auth.user.id })))
     }
     return row
   }
   router.post('/:id/confirm-schedule', writes, json, async (req, res) => {
     if (!req.body || Object.keys(req.body).length !== 1 || !Number.isInteger(req.body.version)) throw new HttpError(400, 'Provide the current activity version')
-    const activity = await find(req.params.id, req.auth.user.id)
+    const activity = await find(req.params.id, req.auth.user.id, true)
     if (activity.status !== 'published' || activity.startsAt <= new Date()) throw new HttpError(409, 'Chỉ chốt lịch cho hoạt động sắp diễn ra')
     if (req.body.version !== activity.version) throw new HttpError(409, 'Hoạt động đã thay đổi. Tải lại trước khi chốt lịch.')
     const readiness = activityReadiness(activity)
     if (!readiness.ready) throw new HttpError(409, readiness.reason)
+    if (activity.organizerType === 'business' && activity.depositAmount && (activity.joinRequests ?? []).filter(item => item.status === 'approved').some(member => !activity.businessReceipts?.some(receipt => receipt.userId === member.userId && receipt.status === 'paid'))) throw new HttpError(409, 'Còn thành viên chưa được ghi nhận tiền cọc.')
     if (activity.scheduleConfirmedAt) { res.json({ activity: publicActivity(activity) }); return }
     if ((activity.updates?.length ?? 0) >= 2000) throw new HttpError(409, 'Activity update limit reached')
     const entry = event(req, 'schedule-confirmed')
     const row = await saveLifecycle(activity, req, { scheduleConfirmedAt: entry.createdAt, scheduleConfirmedBy: req.auth.user.id }, entry)
     res.json({ activity: publicActivity(row) })
   })
+  function buildAttendanceRoster(activity) {
+    const existing = new Map((activity.attendance ?? []).map(item => [item.userId, item]))
+    const members = [
+      { userId: activity.hostId, name: activity.hostName },
+      ...(activity.joinRequests ?? []).filter(item => item.status === 'approved').map(item => ({ userId: item.userId, name: item.name })),
+    ]
+    return members.map(item => existing.get(item.userId) ? { ...existing.get(item.userId), name: item.name } : { ...item, status: 'unmarked' })
+  }
   for (const action of ['start', 'complete']) {
     router.post(`/:id/${action}`, writes, json, async (req, res) => {
       emptyBody(req.body)
-      const activity = await find(req.params.id, req.auth.user.id)
+      const activity = await find(req.params.id, req.auth.user.id, true)
       const starting = action === 'start'
       if (activity.status !== (starting ? 'published' : 'in-progress')) throw new HttpError(409, 'Invalid activity transition')
       if (starting) {
@@ -158,15 +167,18 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
         if (!readiness.ready) throw new HttpError(409, readiness.reason)
         if (!activity.scheduleConfirmedAt) throw new HttpError(409, 'Cần chốt lịch trước khi bắt đầu hoạt động.')
         if (activity.endsAt && activity.endsAt <= new Date()) throw new HttpError(409, 'Hoạt động đã hết thời gian.')
-      } else if (!activity.attendance?.length || activity.attendance.some(member => member.status === 'unmarked')) {
-        throw new HttpError(409, 'Cần điểm danh tất cả thành viên trước khi kết thúc hoạt động.')
       }
       const entry = event(req, starting ? 'started' : 'completed')
-      const fields = starting ? { status: 'in-progress', startedAt: entry.createdAt,
-        attendance: [{ userId: activity.hostId, name: activity.hostName },
-          ...(activity.joinRequests ?? []).filter(item => item.status === 'approved').map(item => ({ userId: item.userId, name: item.name }))]
-          .map(item => ({ ...item, status: 'unmarked' })),
-      } : { status: 'completed', completedAt: entry.createdAt }
+      const roster = buildAttendanceRoster(activity)
+      const fields = starting ? {
+        status: 'in-progress',
+        startedAt: entry.createdAt,
+        attendance: roster,
+      } : {
+        status: 'completed',
+        completedAt: entry.createdAt,
+        attendance: roster.map(member => member.status === 'unmarked' ? { ...member, status: 'present', updatedAt: entry.createdAt, updatedBy: req.auth.user.id } : member),
+      }
       const row = await saveLifecycle(activity, req, fields, entry)
       res.json({ activity: publicActivity(row) })
     })
@@ -181,29 +193,34 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
       const activity = await groupActivity(req)
       if (Object.keys(req.query).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Only page and limit are supported')
       const { page, limit } = searchOptions(req.query)
-      const items = kind === 'updates' ? [...(activity.updates ?? [])].reverse() : activity.attendance ?? []
+      const items = kind === 'updates' ? [...(activity.updates ?? [])].reverse() : (activity.attendance?.length ? activity.attendance : buildAttendanceRoster(activity))
       res.json({ items: items.slice((page - 1) * limit, page * limit), total: items.length, page, limit, hasMore: page * limit < items.length })
     })
   }
   router.patch('/:id/attendance/:userId', writes, json, async (req, res) => {
     if (!req.body || Array.isArray(req.body) || Object.keys(req.body).length !== 1 || !['present', 'absent', 'late', 'unmarked'].includes(req.body.status)) throw new HttpError(400, 'Provide only status: present, absent, late or unmarked')
-    const activity = await find(req.params.id, req.auth.user.id)
-    if (activity.status !== 'in-progress') throw new HttpError(409, 'Attendance can only change while in progress')
-    const target = activity.attendance?.find(item => item.userId === req.params.userId)
+    const activity = await find(req.params.id, req.auth.user.id, true)
+    const correction = activity.status === 'completed' && activity.autoCompletedAt && Date.now() - new Date(activity.autoCompletedAt).getTime() < 86400000
+    if (!['published', 'in-progress'].includes(activity.status) && !correction) throw new HttpError(409, 'Đã hết thời gian cập nhật điểm danh.')
+    const roster = buildAttendanceRoster(activity)
+    const target = roster.find(item => item.userId === req.params.userId)
     if (!target) throw new HttpError(404, 'Participant not found in attendance roster')
+    if (correction && (target.status !== 'unmarked' || req.body.status === 'unmarked')) throw new HttpError(409, 'Chỉ bổ sung điểm danh còn thiếu sau khi tự kết thúc.')
     if (target.status === req.body.status) { res.json({ attendance: target }); return }
     if ((activity.updates?.length ?? 0) >= 2000) throw new HttpError(409, 'Activity update limit reached')
     const entry = event(req, 'attendance-changed', { userId: target.userId, previousStatus: target.status, status: req.body.status })
-    const attendance = activity.attendance.map(item => item.userId === target.userId ? { ...item, status: req.body.status, updatedAt: entry.createdAt, updatedBy: req.auth.user.id } : item)
+    const attendance = roster.map(item => item.userId === target.userId ? { ...item, status: req.body.status, updatedAt: entry.createdAt, updatedBy: req.auth.user.id } : item)
     await saveLifecycle(activity, req, { attendance }, entry)
     res.json({ attendance: attendance.find(item => item.userId === target.userId) })
   })
   router.post('/:id/updates', writes, json, async (req, res) => {
-    if (!req.body || Array.isArray(req.body) || Object.keys(req.body).length !== 1 || typeof req.body.text !== 'string' || !req.body.text.trim() || req.body.text.length > 1000) throw new HttpError(400, 'Provide only text of 1-1000 characters')
-    const activity = await find(req.params.id, req.auth.user.id)
-    if (activity.status !== 'in-progress') throw new HttpError(409, 'Updates can only be added while in progress')
+    if (!req.body || Array.isArray(req.body) || Object.keys(req.body).some(key => !['text', 'clientId'].includes(key)) || (req.body.clientId !== undefined && (typeof req.body.clientId !== 'string' || !/^[a-zA-Z0-9_-]{8,100}$/.test(req.body.clientId))) || typeof req.body.text !== 'string' || !req.body.text.trim() || req.body.text.length > 1000) throw new HttpError(400, 'Provide only text of 1-1000 characters')
+    const activity = await find(req.params.id, req.auth.user.id, true)
+    if (!['published', 'in-progress'].includes(activity.status)) throw new HttpError(409, 'Hoạt động đã đóng, không thể đăng cập nhật.', 'ACTIVITY_CLOSED')
     if ((activity.updates?.length ?? 0) >= 2000) throw new HttpError(409, 'Activity update limit reached')
-    const entry = event(req, 'note', { text: req.body.text.trim() })
+    const existing = req.body.clientId && activity.updates?.find(item => item.clientId === req.body.clientId && item.actorId === req.auth.user.id)
+    if (existing) { if (existing.text !== req.body.text.trim()) throw new HttpError(409, 'Mã cập nhật đã được dùng.'); res.status(200).json({ update: existing }); return }
+    const entry = event(req, 'note', { text: req.body.text.trim(), ...(req.body.clientId ? { clientId: req.body.clientId } : {}) })
     await saveLifecycle(activity, req, {}, entry)
     res.status(201).json({ update: entry })
   })
@@ -228,8 +245,10 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     if (Object.keys(req.query).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Only page and limit are supported')
     const { page, limit } = searchOptions(req.query)
     approved.sort((a, b) => a.updatedAt - b.updatedAt || a.userId.localeCompare(b.userId))
+    const receipts = new Map((activity.businessReceipts ?? []).map(item => [item.userId, item]))
+    const depositAmount = activity.organizerType === 'business' ? (activity.depositAmount ?? activity.business?.depositAmount ?? 0) : 0
     const items = [{ userId: activity.hostId, name: activity.hostName, role: 'host' },
-      ...approved.map(item => ({ userId: item.userId, name: item.name, role: 'member' }))]
+      ...approved.map(item => ({ userId: item.userId, name: item.name, role: 'member', ...(depositAmount > 0 ? { depositAmount, depositStatus: receipts.get(item.userId)?.status || 'pending' } : {}) }))]
     const paged = await Promise.all(items.slice((page - 1) * limit, page * limit).map(async item => {
       const user = await authRepository.getProfile(item.userId)
       return { ...item, name: user?.name ?? item.name, avatarUrl: user?.avatar_url ?? null }
@@ -237,7 +256,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     res.json({ items: paged, total: items.length, page, limit, hasMore: page * limit < items.length })
   })
   async function removeMember(req, res, hostAction) {
-    const activity = await find(req.params.id, hostAction ? req.auth.user.id : undefined)
+    const activity = await find(req.params.id, hostAction ? req.auth.user.id : undefined, hostAction)
     const userId = hostAction ? req.params.userId : req.auth.user.id
     if (userId === activity.hostId) throw new HttpError(403, 'Host cannot leave or be removed')
     if (!activity.joinRequests?.some(item => item.userId === userId && item.status === 'approved')) throw new HttpError(404, 'Approved member not found')
@@ -276,7 +295,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     if (invitation.status !== 'pending') throw new HttpError(409, 'Lời mời đã được xử lý.')
     if (req.body.status === 'accepted') {
       if (!await authRepository.resolveFriends(previous.hostId, [req.auth.user.id]) || await authRepository.community?.blocked(previous.hostId, req.auth.user.id)) throw new HttpError(403, 'Không thể nhận lời mời từ tài khoản này.')
-      if (!canParticipate(previous.participantPreferences, await authRepository.getProfile(req.auth.user.id))) throw new HttpError(403, 'Hồ sơ chưa đáp ứng điều kiện hoạt động.')
+      if (!canParticipate(previous.participantPreferences, await authRepository.getProfile(req.auth.user.id))) throw new HttpError(403, 'Hồ sơ chưa đáp ứng điều kiện hoạt động.', 'PROFILE_REQUIREMENTS_NOT_MET')
     }
     const row = await repository.decideInvitation(previous, invitation, req.body.status)
     if (!row) throw new HttpError(409, 'Lời mời không còn khả dụng, nhóm đã đủ chỗ hoặc có thay đổi. Nhóm phải chừa ít nhất một chỗ cho thành viên bên ngoài. Hãy tải lại hoặc nhờ host tăng sức chứa.')
@@ -290,9 +309,15 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const activity = await find(req.params.id)
     if (await authRepository.community?.blocked(req.auth.user.id, activity.hostId)) throw new HttpError(403, 'Không thể tham gia hoạt động của tài khoản đã chặn')
     if (activity.hostId === req.auth.user.id) throw new HttpError(403, 'Host cannot request to join their own activity')
-    if (activity.participantPreferences && !canParticipate(activity.participantPreferences, await authRepository.getProfile(req.auth.user.id))) throw new HttpError(403, 'Hồ sơ chưa đáp ứng yêu cầu nhóm. Hãy kiểm tra giới tính, ngôn ngữ và tùy chọn cá nhân trong hồ sơ.')
+    if (activity.participantPreferences && !canParticipate(activity.participantPreferences, await authRepository.getProfile(req.auth.user.id))) throw new HttpError(403, 'Hồ sơ chưa đáp ứng yêu cầu nhóm. Hãy kiểm tra giới tính, ngôn ngữ và tùy chọn cá nhân trong hồ sơ.', 'PROFILE_REQUIREMENTS_NOT_MET')
     const request = await repository.submitJoinRequest(activity.id, req.auth.user, activity.version)
-    if (!request) throw new HttpError(409, 'Activity is unavailable, full, request limit reached, or you already have a pending/approved request')
+    if (!request) {
+      const current = await repository.get(activity.id)
+      if (current?.joinRequests?.some(item => item.userId === req.auth.user.id && ['pending', 'approved'].includes(item.status))) throw new HttpError(409, 'Bạn đã gửi yêu cầu hoặc đã tham gia hoạt động.', 'REQUEST_EXISTS')
+      if (current?.memberCount >= current?.maxParticipants) throw new HttpError(409, 'Hoạt động đã đủ chỗ.', 'ACTIVITY_FULL')
+      if (current?.registrationDeadline && current.registrationDeadline <= new Date()) throw new HttpError(409, 'Đã hết hạn đăng ký.', 'REGISTRATION_CLOSED')
+      throw new HttpError(409, 'Hoạt động đã thay đổi hoặc không còn nhận đăng ký. Hãy tải lại.', 'ACTIVITY_UNAVAILABLE')
+    }
     await authRepository.community?.notify(activity.hostId, { key: `join:${request.id}`, type: 'activity', title: 'Yêu cầu tham gia mới', text: `${req.auth.user.name} muốn tham gia ${activity.title}`, activityId: activity.id, actorId: req.auth.user.id })
     res.status(201).json({ request })
   })
@@ -305,9 +330,9 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     res.status(204).end()
   })
   router.get('/:id/join-requests', async (req, res) => {
-    const activity = await find(req.params.id, req.auth.user.id)
+    const activity = await find(req.params.id, req.auth.user.id, true)
     const { status, ...pagination } = req.query
-    if (status !== undefined && !['pending', 'approved', 'rejected', 'cancelled', 'left', 'removed'].includes(status)) throw new HttpError(400, 'Invalid request status')
+    if (status !== undefined && !['pending', 'approved', 'rejected', 'cancelled', 'left', 'removed', 'closed'].includes(status)) throw new HttpError(400, 'Invalid request status')
     if (Object.keys(pagination).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Only status, page and limit are supported')
     const { page, limit } = searchOptions(pagination)
     const items = (activity.joinRequests ?? []).filter(item => !status || item.status === status)
@@ -316,9 +341,9 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   })
   router.patch('/:id/join-requests/:requestId', writes, express.json({ limit: '16kb' }), async (req, res) => {
     if (!req.body || Array.isArray(req.body) || Object.keys(req.body).length !== 1 || !['approved', 'rejected'].includes(req.body.status)) throw new HttpError(400, 'Provide only status: approved or rejected')
-    const activity = await find(req.params.id, req.auth.user.id)
+    const activity = await find(req.params.id, req.auth.user.id, true)
     if (!activity.joinRequests?.some(item => item.id === req.params.requestId)) throw new HttpError(404, 'Join request not found')
-    const request = await repository.changeJoinRequest(activity.id, { hostId: req.auth.user.id, requestId: req.params.requestId, status: req.body.status })
+    const request = await repository.changeJoinRequest(activity.id, { hostId: activity.hostId, requestId: req.params.requestId, status: req.body.status })
     if (!request) throw new HttpError(409, 'Request is no longer pending, activity unavailable, or capacity reached')
     await authRepository.community?.notify(request.userId, { key: `decision:${request.id}:${request.status}`, type: 'activity', title: request.status === 'approved' ? 'Yêu cầu đã được duyệt' : 'Yêu cầu chưa được duyệt', text: activity.title, activityId: activity.id, actorId: req.auth.user.id })
     res.json({ request })
@@ -335,8 +360,9 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).some(key => ![...planKeys, 'version'].includes(key)) || !planKeys.some(key => Object.hasOwn(req.body, key))) throw new HttpError(400, 'Invalid plan update')
     const previous = await find(req.params.id, req.auth.user.id)
     if (req.body.version !== (previous.version ?? 0)) throw new HttpError(409, 'Kế hoạch đã thay đổi. Tải lại trước khi lưu.')
-    const row = await repository.savePlan(previous, planningFields(req.body, previous))
+    let row = await repository.savePlan(previous, planningFields(req.body, previous))
     if (!row) throw new HttpError(409, 'Hoạt động đã kết thúc hoặc kế hoạch đã thay đổi')
+    row = await repository.lifecycle(row, req.auth.user.id, {}, event(req, 'plan-updated')) || row
     await notifyMembers(row, req, `plan:${row.id}:${row.version}`, 'Host đã cập nhật kế hoạch')
     res.json({ activity: publicActivity(row) })
   })
@@ -344,6 +370,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const fields = activityFields(req.body)
     if (fields.organizerType === 'business') throw new HttpError(403, 'Bài đăng doanh nghiệp chỉ được tạo qua nền tảng website dành cho doanh nghiệp.')
     if (fields.financialConfig && fields.financialConfig.treasurerUserId !== req.auth.user.id) throw new HttpError(400, 'Treasurer must be the activity host')
+    if (fields.participantPreferences && !canParticipate(fields.participantPreferences, await authRepository.getProfile(req.auth.user.id))) throw new HttpError(400, 'Hồ sơ của người đăng chưa đủ thông tin hoặc chưa đáp ứng điều kiện nhóm đã chọn. Vui lòng bổ sung hồ sơ trước khi tạo bài đăng.', 'HOST_PROFILE_MISMATCH')
     const initialMembers = await authRepository.resolveFriends(req.auth.user.id, fields.initialFriendIds ?? [])
     if (!initialMembers) throw new HttpError(403, 'Chỉ thêm được bạn bè đã chấp nhận kết bạn')
     if (initialMembers.some(person => !canParticipate(fields.participantPreferences, person))) throw new HttpError(400, 'Một người bạn chưa đáp ứng tùy chọn nhóm')
@@ -359,6 +386,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     if (previous.organizerType === 'business' || req.body?.organizerType === 'business') throw new HttpError(403, 'Quản lý bài đăng doanh nghiệp trên nền tảng website dành cho doanh nghiệp.')
     if (previous.status !== 'published' || previous.startsAt <= new Date()) throw new HttpError(409, 'Started activities cannot be edited')
     const fields = activityFields(req.body, previous)
+    if (fields.participantPreferences && !canParticipate(fields.participantPreferences, await authRepository.getProfile(req.auth.user.id))) throw new HttpError(400, 'Hồ sơ của người đăng chưa đủ thông tin hoặc chưa đáp ứng điều kiện nhóm đã chọn. Vui lòng bổ sung hồ sơ trước khi lưu thay đổi.', 'HOST_PROFILE_MISMATCH')
     const scheduleKeys = ['minParticipants', 'maxParticipants', 'reservedSeats', 'participantPreferences', 'startsAt', 'endsAt', 'location', 'meetingPoint', 'address', 'province', 'district', 'ward', 'coordinates']
     if (scheduleKeys.some(key => Object.hasOwn(fields, key) && JSON.stringify(fields[key]) !== JSON.stringify(previous[key]))) {
       fields.scheduleConfirmedAt = null
@@ -372,11 +400,18 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
       if (!row) throw new HttpError(409, 'Activity changed. Reload and try again.')
     } catch (error) { if (images) await cleanGallery(images); throw error }
     if (images) await cleanGallery(previous)
+    row = await repository.lifecycle(row, req.auth.user.id, {}, event(req, 'activity-updated')) || row
     await notifyMembers(row, req, `edited:${row.id}:${row.version}`, 'Host đã cập nhật hoạt động')
     res.json({ activity: publicActivity(row) })
   })
   router.delete('/:id', writes, async (req, res) => {
     const previous = await find(req.params.id, req.auth.user.id)
+    if (previous.organizerType === 'business') throw new HttpError(403, 'Quản lý sự kiện doanh nghiệp trong trang đối tác.')
+    if (['completed', 'in-progress'].includes(previous.status)) throw new HttpError(409, 'Chỉ hủy hoạt động chưa bắt đầu.')
+    if (previous.joinRequests?.some(item => item.status === 'approved')) {
+      if (previous.status !== 'cancelled') await saveLifecycle(previous, req, { status: 'cancelled', cancelledAt: new Date() }, event(req, 'cancelled'))
+      res.status(204).end(); return
+    }
     if (!await repository.remove(previous)) throw new HttpError(409, 'Activity changed. Reload and try again.')
     await cleanGallery(previous)
     await notifyMembers(previous, req, `deleted:${previous.id}`, 'Hoạt động đã bị hủy')

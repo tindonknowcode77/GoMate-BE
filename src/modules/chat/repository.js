@@ -1,3 +1,4 @@
+import { syncActivityMessages } from '../activities/chat-events.js'
 import { randomUUID } from 'node:crypto'
 import { messageLinks } from './content.js'
 import { ObjectId, Binary } from 'mongodb'
@@ -6,7 +7,7 @@ import { createCommunityRepository } from '../community/repository.js'
 import { staffGroupScope } from '../../common/business-staff-access.js'
 
 const messageView = row => row ? { id: row._id.toHexString(), conversationId: row.conversationId,
-  senderId: row.senderId, senderName: row.senderName ?? 'Thành viên', text: row.text, attachments: row.attachments ?? [], location: row.location ?? null, links: row.links ?? messageLinks(row.text), clientMessageId: row.clientMessageId, createdAt: row.createdAt } : null
+  kind: row.kind || 'message', eventId: row.eventId, senderId: row.senderId, senderName: row.senderName ?? 'Thành viên', text: row.text, attachments: row.attachments ?? [], location: row.location ?? null, links: row.links ?? messageLinks(row.text), clientMessageId: row.clientMessageId, createdAt: row.createdAt } : null
 const conversationView = row => ({ id: row.id, type: row.type, createdAt: row.createdAt,
   ...(row.type === 'direct' ? { participantIds: row.participantIds } : { activityId: row.activityId }) })
 
@@ -29,6 +30,7 @@ export function createChatRepository(db) {
       const otherId = row.participantIds.find(id => id !== userId)
       if (await community.blocked(userId, otherId)) throw new HttpError(403, 'Không thể nhắn tin với tài khoản đã chặn')
     }
+    if (row.type === 'group') await syncActivityMessages(db, await activities.findOne({ id: row.activityId }))
     return row
   }
   async function summary(row, userId) {
@@ -97,11 +99,12 @@ export function createChatRepository(db) {
     },
     async list(userId, page, limit) {
       // Existing approved grants also gain a visible chat without a manual open.
-      const assignedGroups = await activities.find(await staffGroupScope(db, userId), { projection: { id: 1 } }).toArray()
+      const assignedGroups = await activities.find(await membership(userId), { projection: { id: 1, hostId: 1, hostName: 1, createdAt: 1, updates: 1 } }).toArray()
       for (const group of assignedGroups) {
         try {
           await conversations.updateOne({ key: `activity:${group.id}` }, { $setOnInsert: { id: randomUUID(), key: `activity:${group.id}`, type: 'group', activityId: group.id, createdAt: new Date() } }, { upsert: true })
         } catch (error) { if (error.code !== 11000) throw error }
+        if (group.updates?.length) await syncActivityMessages(db, group)
       }
       const excluded = await community.blockedIds(userId)
       // Lookup current activity membership instead of caching a stale group roster.
@@ -129,6 +132,7 @@ export function createChatRepository(db) {
     },
     async send(id, userId, { text, clientMessageId, attachmentIds = [], location = null }) {
       const target = await access(id, userId)
+      if (target.type === 'group' && (await activities.findOne({ id: target.activityId }))?.status === 'cancelled') throw new HttpError(409, 'Hoạt động đã hủy. Bạn vẫn có thể xem lịch sử trò chuyện.', 'ACTIVITY_CANCELLED')
       if (target.type === 'direct') {
         const otherId = target.participantIds.find(id => id !== userId)
         if ((await community.settings(otherId)).directMessages === 'friends' && !await db.collection('friendships').findOne({ key: JSON.stringify([userId, otherId].sort()), status: 'accepted' })) throw new HttpError(403, 'Người này chỉ nhận tin nhắn từ bạn bè')
