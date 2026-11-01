@@ -38,11 +38,26 @@ export function readConfig(env = process.env) {
     // Only a public token may be exposed to the iframe/WebView.
     mapboxAccessToken: env.MAPBOX_ACCESS_TOKEN?.trim().startsWith('pk.') ? env.MAPBOX_ACCESS_TOKEN.trim() : '',
     vietmapApiKey: env.VIETMAP_API_KEY?.trim() || '',
+    vietqrBankId: env.VIETQR_BANK_ID?.trim() || 'MB',
+    vietqrBankBin: env.VIETQR_BANK_BIN?.trim() || '970422',
+    vietqrAccountNo: env.VIETQR_ACCOUNT_NO?.trim() || '0901234567',
+    vietqrAccountName: env.VIETQR_ACCOUNT_NAME?.trim() || 'CONG TY GOMATE',
+    vietqrTemplate: env.VIETQR_TEMPLATE?.trim() || 'compact2',
     sessionTtlHours,
     rememberSessionTtlHours,
     trustProxyHops,
     port,
     host: env.HOST || (env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1'),
-    corsOrigin: (env.CORS_ORIGIN || 'http://localhost:8081,http://127.0.0.1:8081,http://localhost:8082,http://127.0.0.1:8082,http://localhost:5173').split(',').map(value => value.trim()).filter(Boolean),
+    corsOrigin: Array.from(new Set([
+      ...(env.CORS_ORIGIN || '').split(',').map(value => value.trim()).filter(Boolean),
+      ...(env.NODE_ENV === 'production' ? [] : [
+        'http://localhost:8081',
+        'http://127.0.0.1:8081',
+        'http://localhost:8082',
+        'http://127.0.0.1:8082',
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+      ]),
+    ])),
   }
 }

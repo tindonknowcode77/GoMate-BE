@@ -22,6 +22,10 @@ export async function initializeDatabase(db) {
     await db.collection(name).createIndex({ ownerId: 1, createdAt: -1 })
     await db.collection(name).createIndex({ status: 1, createdAt: -1 })
   }
+  await db.collection('payments').createIndex({ id: 1 }, { unique: true })
+  await db.collection('payments').createIndex({ orderCode: 1 }, { unique: true })
+  await db.collection('payments').createIndex({ userId: 1, createdAt: -1 })
+  await db.collection('payments').createIndex({ activityId: 1, userId: 1 })
   await db.collection('activity_drafts').createIndex({ ownerId: 1 }, { unique: true })
   await db.collection('chat_attachments').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
   await db.collection('chat_attachments').createIndex({ conversationId: 1, ownerId: 1 })
