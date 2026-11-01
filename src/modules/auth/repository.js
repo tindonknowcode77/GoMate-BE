@@ -26,6 +26,12 @@ export function createAuthRepository(db) {
     async findOrCreateGoogleUser({ googleSub, email, name }) {
       const existing = await users.findOne({ google_sub: googleSub })
       if (existing) return existing
+      const verifiedUser = await users.findOne({ email, email_verified: true, google_sub: { $exists: false } })
+      if (verifiedUser) {
+        await users.updateOne({ id: verifiedUser.id }, { $set: { google_sub: googleSub, updated_at: new Date() } })
+        verifiedUser.google_sub = googleSub
+        return verifiedUser
+      }
       const user = { id: randomUUID(), google_sub: googleSub, email, name, email_verified: true, created_at: new Date() }
       try {
         await users.insertOne(user)
