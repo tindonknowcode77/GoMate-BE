@@ -80,7 +80,7 @@ export function createPortalRepository(db) {
       const user = await users.findOne({ id }, { projection: { role: 1 } })
       if (user?.role === 'admin') return user.role
       if (await applications.findOne({ ownerId: id, status: 'approved' })) return 'business'
-      const grants = await db.collection('business_staff').find({ userId: id, status: 'approved', acceptedAt: { $ne: null } }).toArray()
+      const grants = await db.collection('business_staff').find({ userId: id, status: 'approved', $or: [{ provisionedAt: { $ne: null } }, { acceptedAt: { $ne: null } }] }).toArray()
       return grants.length && await applications.findOne({ ownerId: { $in: grants.map(grant => grant.ownerId) }, status: 'approved' }) ? 'business-staff' : 'user'
     },
     async posts(ownerId,offset) { const result=await page(posts,{...(ownerId?{ownerId}:{}),status:{$ne:'deleted'}},offset);return {...result,items:result.items.map(row=>({...row,version:row.version ?? 0}))} },

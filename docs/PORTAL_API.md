@@ -99,6 +99,12 @@ Validation: `node --test tests/business-verification.test.js tests/portal.test.j
 
 Only `admin` has platform moderation permissions (business/post approval, reports, cross-account support, user/plan/role management). The legacy global `staff` role no longer grants portal privileges and cannot be assigned through the role API or operator command. Existing real Staff accounts are not automatically promoted. Explicit operators can grant `admin` where appropriate.
 
-Business Staff access remains derived from an approved, consented business assignment created by a business owner. The account's global role remains user; its effective role is `business-staff`, scoped to assigned business groups. It has no platform review permissions.
+Business Staff access is derived from an active assignment provisioned directly by a verified business owner (or a legacy approved/consented assignment). The account's global role remains user; its effective role is `business-staff`, scoped to assigned business groups. It has no platform review permissions.
 
 The demo moderation card uses `demo.admin@gomate.local`. Workshop seeding migrates only explicitly marked `demoScenario: workshop` legacy demo Staff accounts, preserves their password/user ID, and invalidates their previous sessions. It never promotes a non-demo account or overwrites a colliding non-demo administrator. The migration helper can also run independently without reseeding activities.
+
+## Direct business employee provisioning (2026-11-01)
+
+POST /api/portal/staff accepts name, a new email, password, phone, title and groupIds; only business owners may call it. The account and group assignment are active immediately, with status approved and provisionedAt, without staff consent or admin review. Passwords use the normal auth hashing and are never returned. An existing email returns 409. Assigning zero groups is allowed; access to unassigned groups is denied.
+
+PUT /staff/:id accepts the same profile/assignment fields except password, plus version; email identity cannot be changed. Updates take effect immediately and DELETE revokes access. The staff-invitations and staff-requests endpoints no longer exist. Admin remains the only platform reviewer. See business-workflow.md for the detailed contract and legacy compatibility.

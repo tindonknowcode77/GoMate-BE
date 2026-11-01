@@ -19,7 +19,7 @@ export function createBusinessOperations(db) {
   const page = async (collection, query, offset) => ({ items: await collection.find(query, { projection: view }).sort({ createdAt: -1, id: 1 }).skip(offset).limit(20).toArray(), total: await collection.countDocuments(query) })
   const verified = ownerId => db.collection('business_applications').findOne({ ownerId, status: 'approved' }, { projection: { id: 1 } })
   async function assigned(userId) {
-    const grants = await staff.find({ userId, status: 'approved', acceptedAt: { $ne: null } }).toArray()
+    const grants = await staff.find({ userId, status: 'approved', $or: [{ provisionedAt: { $ne: null } }, { acceptedAt: { $ne: null } }] }).toArray()
     const owners = await db.collection('business_applications').find({ ownerId: { $in: grants.map(item => item.ownerId) }, status: 'approved' }, { projection: { ownerId: 1 } }).toArray()
     return grants.filter(item => owners.some(owner => owner.ownerId === item.ownerId))
   }
@@ -34,7 +34,7 @@ export function createBusinessOperations(db) {
     const receipts = row.businessReceipts ?? []
     return { id: row.id, ownerId: row.hostId, version: row.version, name: row.businessGroupName || row.title, campaignTitle: row.businessCampaignTitle || row.title, promotionalPostTitle: row.businessCampaignTitle || row.title, promotionalPostId: row.businessPostId,
       status: row.status, startsAt: row.startsAt, endsAt: row.endsAt, locationId: row.businessLocationId || '', location: row.location, meetingPoint: row.meetingPoint, maxParticipants: row.maxParticipants, memberCount: row.memberCount, estimatedCost: row.estimatedCost, depositAmount: row.depositAmount || 0,
-      managers: await staff.find({ownerId:row.hostId,groupIds:row.id,status:'approved',acceptedAt:{$ne:null}},{projection:{_id:0,userId:1,name:1,title:1}}).toArray(), attendance: row.attendance?.length ? row.attendance : buildAttendanceRoster(row), readiness: activityReadiness(row), itineraryConfirmed: Boolean(row.scheduleConfirmedAt), scheduleConfirmedAt: row.scheduleConfirmedAt,
+      managers: await staff.find({ownerId:row.hostId,groupIds:row.id,status:'approved',$or:[{provisionedAt:{$ne:null}},{acceptedAt:{$ne:null}}]},{projection:{_id:0,userId:1,name:1,title:1}}).toArray(), attendance: row.attendance?.length ? row.attendance : buildAttendanceRoster(row), readiness: activityReadiness(row), itineraryConfirmed: Boolean(row.scheduleConfirmedAt), scheduleConfirmedAt: row.scheduleConfirmedAt,
       depositMembers: members.map(member => { const receipt = receipts.find(item => item.userId === member.userId); return { id: member.userId, name: member.name, amount: receipt?.amount ?? row.depositAmount ?? 0, status: receipt?.status || (row.depositAmount ? 'pending' : 'not-required'), paidAt: receipt?.paidAt ?? null } }),
       itinerary: (row.itinerary ?? []).map(item => ({ ...item, locationId: row.businessPlanLocations?.[item.id] || '', location: item.place, notes: item.note })), notifications: row.businessOffers ?? [], requests: (row.joinRequests ?? []).filter(item => item.status === 'pending') }
   }
@@ -156,36 +156,38 @@ export function createBusinessOperations(db) {
       return change(row, userId, version, { attendance: roster.map(item => item.userId === memberId ? { ...item, status, updatedBy: userId, updatedAt: new Date() } : item) }, 'attendance-changed')
     },
     async listStaff(ownerId, offset, reviewing = false) { return page(staff, reviewing ? {} : { ownerId }, offset) },
-    async incomingStaff(userId) { return { items: await staff.find({ userId, acceptedAt: null, status: 'pending' }, { projection: view }).toArray() } },
-    async saveStaff(ownerId, id, version, data) {
+    async saveStaff(ownerId, id, version, { passwordHash, ...data }) {
       if (!await verified(ownerId)) throw new HttpError(403, 'Verified business required')
-      const user = await db.collection('users').findOne({ email: data.email, email_verified: true }, { projection: { id: 1 } })
-      if (!user || user.id === ownerId) throw new HttpError(400, 'Nhân sự cần tài khoản GoMate đã xác minh email riêng.')
-      if (await activities.countDocuments({ id: { $in: data.groupIds }, hostId: ownerId, organizerType: 'business', status: { $nin: ['deleted', 'pending-review'] } }) !== data.groupIds.length) throw new HttpError(400, 'Chỉ phân công nhóm đã được duyệt thuộc doanh nghiệp.')
       const previous = id && await staff.findOne({ id, ownerId })
-      if (id && (!previous || previous.version !== version)) throw new HttpError(409, 'Staff request changed')
+      if (id && (!previous || previous.version !== version)) throw new HttpError(409, 'Staff account changed')
+      if (await activities.countDocuments({ id: { $in: data.groupIds }, hostId: ownerId, organizerType: 'business', status: { $nin: ['deleted', 'pending-review'] } }) !== data.groupIds.length) throw new HttpError(400, 'Only assign approved groups belonging to this business')
+      const users = db.collection('users')
+      let user, createdUser = false
+      if (previous) {
+        if (data.email !== previous.email) throw new HttpError(400, 'Cannot change the account identity of an employee')
+        user = await users.findOne({ id: previous.userId })
+        if (!user || user.id === ownerId) throw new HttpError(409, 'Employee account not found')
+      } else {
+        if (!passwordHash) throw new HttpError(400, 'Employee password required')
+        if (await users.findOne({ email: data.email })) throw new HttpError(409, 'Email already registered; use a new employee email')
+        user = { id: randomUUID(), email: data.email, name: data.name, password_hash: passwordHash, email_verified: true, role: 'user', businessManagedBy: ownerId, created_at: new Date() }
+        try { await users.insertOne(user); createdUser = true }
+        catch (error) { if (error.code === 11000) throw new HttpError(409, 'Email already registered'); throw error }
+      }
       const business = await db.collection('business_applications').findOne({ ownerId, status: 'approved' }, { projection: { company: 1 } })
       const assignedGroups = await activities.find({ id: { $in: data.groupIds }, hostId: ownerId }, { projection: { title: 1 } }).toArray()
-      const row = { ...data, businessName: business.company, groupNames: assignedGroups.map(item=>item.title), id: id || randomUUID(), ownerId, userId: user.id, status: 'pending', acceptedAt: null, version: (previous?.version ?? 0) + 1, updatedAt: new Date() }
+      const now = new Date()
+      const row = { ...data, businessName: business.company, groupNames: assignedGroups.map(item => item.title), id: id || randomUUID(), ownerId, userId: user.id, status: 'approved', provisionedAt: previous?.provisionedAt || now, acceptedAt: previous?.acceptedAt || null, version: (previous?.version ?? 0) + 1, updatedAt: now }
       try {
-        if (previous) { if (!(await staff.replaceOne({ id, ownerId, version }, { ...row, createdAt: previous.createdAt, history: [...(previous.history ?? []).slice(-199), { type: 'updated', actorId: ownerId, createdAt: new Date() }] })).matchedCount) throw new HttpError(409, 'Staff request changed') }
-        else await staff.insertOne({ ...row, createdAt: new Date(), history: [{ type: 'requested', actorId: ownerId, createdAt: new Date() }] })
-      } catch (error) { if (error.code === 11000) throw new HttpError(409, 'Nhân sự này đã có yêu cầu; hãy chỉnh sửa yêu cầu hiện tại.'); throw error }
-      await notify(user.id, 'business-staff:' + row.id + ':' + row.version, 'Lời mời làm nhân sự doanh nghiệp', 'Bạn cần đồng ý trước khi Admin duyệt quyền quản lý nhóm.', ownerId)
-      for(const admin of await db.collection('users').find({role:'admin'},{projection:{id:1}}).toArray()) await notify(admin.id,'business-staff-queue:'+row.id+':'+row.version,'Yêu cầu nhân sự doanh nghiệp',business.company+' · '+row.name,ownerId)
-      return row
-    },
-    async acceptStaff(userId, id, version, accepted) {
-      const row = await staff.findOneAndUpdate({ id, userId, version, status: 'pending', acceptedAt: null }, { $set: { acceptedAt: accepted ? new Date() : null, status: accepted ? 'pending' : 'declined', updatedAt: new Date() }, $inc: { version: 1 }, $push: { history: { type: accepted ? 'accepted' : 'declined', actorId: userId, createdAt: new Date() } } }, { returnDocument: 'after', projection: view })
-      if (!row) throw new HttpError(409, 'Staff invitation changed')
-      await notify(row.ownerId, 'business-staff-consent:' + id + ':' + row.version, accepted ? 'Nhân sự đã đồng ý' : 'Nhân sự đã từ chối', row.name, userId)
-      if(accepted) for(const admin of await db.collection('users').find({role:'admin'},{projection:{id:1}}).toArray()) await notify(admin.id,'business-staff-ready:'+row.id+':'+row.version,'Nhân sự đã đồng ý, chờ duyệt',row.businessName+' · '+row.name,userId)
-      return row
-    },
-    async decideStaff(actorId, id, version, status, note) {
-      const row = await staff.findOneAndUpdate({ id, version, status: 'pending', ...(status === 'approved' ? { acceptedAt: { $ne: null } } : {}) }, { $set: { status, reviewNote: note, reviewedBy: actorId, reviewedAt: new Date() }, $inc: { version: 1 }, $push: { history: { type: status, actorId, note, createdAt: new Date() } } }, { returnDocument: 'after', projection: view })
-      if (!row) throw new HttpError(409, 'Nhân sự chưa đồng ý hoặc yêu cầu đã thay đổi.')
-      await Promise.all([row.ownerId, row.userId].map(userId => notify(userId, 'business-staff-review:' + id + ':' + row.version, status === 'approved' ? 'Quyền nhân sự đã được duyệt' : 'Yêu cầu nhân sự bị từ chối', note || row.name, actorId)))
+        if (previous) {
+          if (!(await staff.replaceOne({ id, ownerId, version }, { ...row, createdAt: previous.createdAt, history: [...(previous.history ?? []).slice(-199), { type: 'updated', actorId: ownerId, createdAt: now }] })).matchedCount) throw new HttpError(409, 'Staff account changed')
+        } else await staff.insertOne({ ...row, createdAt: now, history: [{ type: 'provisioned', actorId: ownerId, createdAt: now }] })
+      } catch (error) {
+        if (createdUser) await users.deleteOne({ id: user.id, businessManagedBy: ownerId })
+        if (error.code === 11000) throw new HttpError(409, 'Employee already belongs to this business')
+        throw error
+      }
+      await notify(user.id, 'business-staff:' + row.id + ':' + row.version, 'Phân công nhân viên doanh nghiệp', 'Bạn có thể quản lý ngay các nhóm được doanh nghiệp phân công.', ownerId)
       return row
     },
     async removeStaff(ownerId, id, version) {

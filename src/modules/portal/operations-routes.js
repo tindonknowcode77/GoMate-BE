@@ -1,3 +1,5 @@
+import { credentials } from '../auth/validation.js'
+import { hashPassword } from '../auth/password.js'
 import express, { Router } from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { HttpError } from '../../common/http-error.js'
@@ -45,25 +47,18 @@ export function createBusinessOperationsRouter(auth) {
     fields(req.body, ['version', 'status']); if (!['unmarked', 'present', 'late', 'absent'].includes(req.body.status)) throw new HttpError(400, 'Invalid attendance')
     res.json(await repo.attendance(req.auth.user.id, req.params.id, version(req.body.version), req.params.userId, req.body.status))
   })
-  const staffFields = body => {
-    fields(body, ['name', 'email', 'phone', 'title', 'groupIds', 'version'])
-    if (!Array.isArray(body.groupIds) || !body.groupIds.length || body.groupIds.length > 50 || new Set(body.groupIds).size !== body.groupIds.length || body.groupIds.some(id => typeof id !== 'string' || !/^[\da-f-]{36}$/i.test(id))) throw new HttpError(400, 'Select 1–50 valid groups')
+  const staffFields = (body, creating = false) => {
+    fields(body, ['name', 'email', 'phone', 'title', 'groupIds', 'version', ...(creating ? ['password'] : [])])
+    if (!Array.isArray(body.groupIds) || body.groupIds.length > 50 || new Set(body.groupIds).size !== body.groupIds.length || body.groupIds.some(id => typeof id !== 'string' || !/^[\da-f-]{36}$/i.test(id))) throw new HttpError(400, 'Select 0–50 valid groups')
     return { name: text(body.name, 120), email: email(body.email), phone: phone(body.phone), title: text(body.title, 80), groupIds: body.groupIds }
   }
   router.get('/staff', allow('business'), async (req, res) => res.json(await repo.listStaff(req.auth.user.id, offset(req))))
-  router.post('/staff', allow('business'), writes, json, async (req, res) => res.status(201).json(await repo.saveStaff(req.auth.user.id, null, null, staffFields(req.body))))
+  router.post('/staff', allow('business'), writes, json, async (req, res) => {
+    const data = staffFields(req.body, true)
+    const { password } = credentials(req.body, true)
+    res.status(201).json(await repo.saveStaff(req.auth.user.id, null, null, { ...data, passwordHash: await hashPassword(password) }))
+  })
   router.put('/staff/:id', allow('business'), writes, json, async (req, res) => res.json(await repo.saveStaff(req.auth.user.id, req.params.id, version(req.body?.version), staffFields(req.body))))
   router.delete('/staff/:id', allow('business'), writes, json, async (req, res) => { fields(req.body, ['version']); res.json(await repo.removeStaff(req.auth.user.id, req.params.id, version(req.body.version))) })
-  router.get('/staff-invitations', async (req, res) => res.json(await repo.incomingStaff(req.auth.user.id)))
-  router.patch('/staff-invitations/:id', writes, json, async (req, res) => {
-    fields(req.body, ['version', 'status']); if (!['accepted', 'declined'].includes(req.body.status)) throw new HttpError(400, 'Invalid staff consent')
-    res.json(await repo.acceptStaff(req.auth.user.id, req.params.id, version(req.body.version), req.body.status === 'accepted'))
-  })
-  router.get('/staff-requests', allow('admin'), async (req, res) => res.json(await repo.listStaff(null, offset(req), true)))
-  router.patch('/staff-requests/:id', allow('admin'), writes, json, async (req, res) => {
-    fields(req.body, ['version', 'status', 'reviewNote']); if (!['approved', 'rejected'].includes(req.body.status)) throw new HttpError(400, 'Invalid staff review')
-    const note = text(req.body.reviewNote, 1000, req.body.status === 'approved')
-    res.json(await repo.decideStaff(req.auth.user.id, req.params.id, version(req.body.version), req.body.status, note))
-  })
   return router
 }

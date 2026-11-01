@@ -6,9 +6,9 @@ All endpoints below use `/api/portal`, require a GoMate bearer token and enforce
 
 - `GET /me`: effective portal role and the owner's persisted application, excluding document bytes.
 - `POST /applications`: company, category, taxId (10/13 digits), address, representativeName, representativeTitle, representativeEmail, representativePhone, optional website and license `document: {name,mime,base64}` (PDF/PNG/JPEG, maximum 10 MB). A rejected application can be corrected and resubmitted with its version; the existing license can be reused.
-- `GET /applications`: platform staff/admin review queue.
+- `GET /applications`: admin review queue.
 - `GET /applications/:id/document`: owner or platform reviewer only.
-- `PATCH /applications/:id`: platform staff/admin, `{version,status:approved|rejected,reviewNote}`. Rejection requires a reason. Pending applications and approved businesses reserve their tax ID. Verification is a human document review, not a government tax-registry integration.
+- `PATCH /applications/:id`: admin, `{version,status:approved|rejected,reviewNote}`. Rejection requires a reason. Pending applications and approved businesses reserve their tax ID. Verification is a human document review, not a government tax-registry integration.
 
 ## Locations and campaigns
 
@@ -16,15 +16,15 @@ Verified owners manage `GET/POST /locations`, `PUT/DELETE /locations/:id`. Locat
 
 Owners use `GET/POST /posts`, `PUT /posts/:id` to correct pending/rejected posts and `DELETE /posts/:id` to withdraw them. Post fields: title, copy, badge, discount, border (Glow/Soft/Solid), premium, discountPercent, offer, offerTerms and either a legacy event or 1–20 groups. Each group has name, optional locationId, depositAmount and event. Event fields follow activity validation, including dates, capacity, price and coordinates. Deposits cannot exceed the published price; premium styling requires an active Plus plan.
 
-Platform staff/admin review with `PATCH /posts/:id` (`version`, status, reviewNote). Each approved group becomes a real activity. Before approval, staged activities are private. Stable activity IDs and a publication lease prevent duplicate groups during retries; the server periodically reconciles approved publications after interruptions. Public `/feed` excludes reviewer notes and audit history.
+Admin review with `PATCH /posts/:id` (`version`, status, reviewNote). Each approved group becomes a real activity. Before approval, staged activities are private. Stable activity IDs and a publication lease prevent duplicate groups during retries; the server periodically reconciles approved publications after interruptions. Public `/feed` excludes reviewer notes and audit history.
 
-## Employee consent and scoped authority
+## Business-created employee accounts and scoped authority
 
-- Owners: `GET/POST /staff`, `PUT/DELETE /staff/:id`. Fields: name, email, phone, title, groupIds. Target must have a separate email-verified GoMate account; group IDs must belong to the business.
-- Recipient: `GET /staff-invitations`, `PATCH /staff-invitations/:id` with version and accepted/declined status.
-- Platform admin: `GET /staff-requests`, `PATCH /staff-requests/:id` with version, approved/rejected status and reviewNote. Approval requires recipient acceptance; rejection requires a reason.
-
-Every assignment edit revokes the previous grant and requires renewed recipient consent and admin approval. Revocation removes portal and group-chat access immediately. Employees receive the effective `business-staff` portal role without changing their global account role, becoming participants or counting toward capacity. Each request checks the current grant and business verification.
+- Only verified business owners use GET/POST /staff and PUT/DELETE /staff/:id. New accounts require name (2–100 characters), a new email, password (6–128 characters), phone, title and groupIds (0–50 unique approved groups owned by that business).
+- POST creates a separate active password account immediately. Passwords are hashed by the standard auth module and never returned or stored in grant/notification records. Existing emails return 409; this endpoint never changes another account's password or identity.
+- Assignments use status approved and provisionedAt. There is no staff consent or admin review step. The staff-invitations and staff-requests APIs have been removed. Global staff moderation remains disabled; only admin reviews business applications/posts and handles platform administration.
+- PUT requires the current version, keeps the employee email/user identity, and applies group changes immediately. DELETE revokes delegated access immediately. Updates can activate a legacy pending assignment explicitly; existing approved/consented assignments keep working without migration.
+- The global account role stays user; the effective portal role is business-staff only while an active assignment belongs to a verified business. Group, app activity, member list and chat access remain limited to assigned groups. Employee assignments do not create participants, consume seats or grant global moderation.
 
 ## Real group operations
 

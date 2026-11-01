@@ -1,5 +1,32 @@
 # Development log
 
+## 2026-11-01 - Business-created employees without consent or admin approval
+
+### Summary
+
+- Create new employee password accounts directly for verified businesses, with immediate scoped group access; keep existing verified/consented grants compatible. Remove staff consent/review endpoints, methods and admin approval notifications.
+- Reject existing emails, password/identity takeover, foreign groups and stale writes; retain immediate assignment updates and revocation. Keep global roles user/admin and platform review admin-only.
+- Coordinate the FE staff form/admin queue removal and top-right action notifications.
+
+### Files changed
+
+- src/modules/portal/{operations-routes.js,operations.js,repository.js}; src/common/business-staff-access.js.
+- tests/{business-workflow.test.js,business-campaign-control.test.js}; docs/{business-workflow.md,PORTAL_API.md}.
+- FE portal components/notifications, browser regressions and shared decision/development logs.
+
+### Verification
+
+- npm.cmd test: Passed, all 124 tests. Direct provisioning/login, email collision, admin-only authority, assigned-group isolation, immediate reassignment and chat revocation are covered.
+- FE browser campaign controls and portal registration: Passed, including real account creation/login, top-right desktop/mobile success/error notices, repeated failures, dismissal and scoped staff chat.
+- FE typecheck, web export and Expo Doctor: Passed (18/18 doctor checks). Repository-wide FE lint reports two pre-existing purity errors outside the portal; changed portal JSX passes explicit ESLint checking.
+- git diff --check: Passed.
+
+### Remaining work
+
+- Legacy pending assignments stay pending until the owner explicitly saves them. No production data was migrated.
+- Business-managed employee email is marked verified to allow immediate login; no verification email or credential notification is sent. The owner supplies the initial password to their employee.
+
+
 ## 2026-10-29 - Surface approved business assignments in the staff app
 
 ### Summary

@@ -43,9 +43,9 @@ test('manual campaigns expose one stable group per consumer, scoped chat, and ow
   const feed=ok(await call(3,'/portal/feed'));assert.equal(feed.items[0].groups.length,1);assert.equal(feed.items[0].groups[0].activityId,selected)
   const request=ok(await call(3,`/activities/${selected}/join-requests`,'POST',{}),201).request
   ok(await call(0,`/activities/${selected}/join-requests/${request.id}`,'PATCH',{status:'approved'}))
-  let grant=ok(await call(0,'/portal/staff','POST',{name:'Coordinator',email:users[2].email,phone:'0901234567',title:'Group manager',groupIds:[selected]}),201)
-  grant=ok(await call(2,`/portal/staff-invitations/${grant.id}`,'PATCH',{version:grant.version,status:'accepted'}))
-  ok(await call(1,`/portal/staff-requests/${grant.id}`,'PATCH',{version:grant.version,status:'approved'}))
+  let grant=ok(await call(0,'/portal/staff','POST',{name:'Coordinator',email:'campaign.employee@example.com',password:'Employee123!',phone:'0901234567',title:'Group manager',groupIds:[selected]}),201)
+  users[2]=await db.collection('users').findOne({id:grant.userId})
+  tokens[2]=ok(await call(0,'/auth/login','POST',{email:users[2].email,password:'Employee123!'})).accessToken
   const conversation=ok(await call(0,'/conversations','POST',{type:'group',activityId:selected})).conversation
   assert.equal(ok(await call(2,'/conversations','POST',{type:'group',activityId:selected})).conversation.id,conversation.id)
   ok(await call(2,'/conversations','POST',{type:'group',activityId:sibling.id}),403)

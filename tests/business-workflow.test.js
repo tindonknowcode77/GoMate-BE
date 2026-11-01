@@ -11,7 +11,7 @@ import { createActivityRepository } from '../src/modules/activities/repository.j
 import { createChatRepository } from '../src/modules/chat/repository.js'
 import { newToken, hashToken } from '../src/modules/auth/token.js'
 
-test('business registration, revisions, multi-group publication, staff consent and real group operations', async t => {
+test('business registration, revisions, multi-group publication, direct employee provisioning and real group operations', async t => {
   const mongo = await MongoMemoryServer.create(); t.after(() => mongo.stop())
   const client = createClient(readConfig({ MONGODB_URI: mongo.getUri('business_workflow') })); await client.connect(); t.after(() => client.close())
   const db = client.db(); await initializeDatabase(db)
@@ -75,16 +75,26 @@ test('business registration, revisions, multi-group publication, staff consent a
     expect(await call(1, '/portal/groups/' + groups[0].id), 403)
     expect(await call(0, '/portal/posts/' + post.id, 'DELETE', { version: post.version }), 409)
   })
-  await t.test('staff consent and admin approval grant only assigned groups; global staff roles are never assigned', async () => {
-    const data = { name: 'Group coordinator', email: users[2].email, phone: '0901234567', title: 'Host', groupIds: [groups[0].id] }
+  await t.test('business-created accounts immediately manage assigned groups without consent or admin review', async () => {
+    const data = { name: 'Group coordinator', email: 'new.coordinator@example.com', password: 'Employee123!', phone: '0901234567', title: 'Host', groupIds: [groups[0].id] }
     expect(await call(1, '/portal/staff', 'POST', data), 400)
+    expect(await call(0, '/portal/staff', 'POST', { ...data, password: 'short' }), 400)
+    expect(await call(0, '/portal/staff', 'POST', { ...data, email: users[2].email }), 409)
     grant = expect(await call(0, '/portal/staff', 'POST', data), 201)
-    expect(await call(4, '/portal/staff-requests/' + grant.id, 'PATCH', { version: 1, status: 'approved' }), 409)
-    expect(await call(5, '/portal/staff-invitations/' + grant.id, 'PATCH', { version: 1, status: 'accepted' }), 409)
-    assert.equal(expect(await call(2, '/portal/staff-invitations')).items[0].id, grant.id)
-    grant = expect(await call(2, '/portal/staff-invitations/' + grant.id, 'PATCH', { version: grant.version, status: 'accepted' }))
-    expect(await call(3, '/portal/staff-requests/' + grant.id, 'PATCH', { version: grant.version, status: 'approved' }), 403)
-    grant = expect(await call(4, '/portal/staff-requests/' + grant.id, 'PATCH', { version: grant.version, status: 'approved' }))
+    assert.equal(grant.status, 'approved'); assert.equal(grant.acceptedAt, null); assert.ok(grant.provisionedAt)
+    assert.equal(grant.password, undefined); assert.equal(grant.passwordHash, undefined)
+    users[2] = await db.collection('users').findOne({ id: grant.userId })
+    assert.equal(users[2].email_verified, true); assert.notEqual(users[2].password_hash, data.password)
+    const login = expect(await call(0, '/auth/login', 'POST', { email: data.email, password: data.password }))
+    tokens[2] = login.accessToken
+    expect(await call(4, '/portal/staff-requests'), 404)
+    expect(await call(2, '/portal/staff-invitations'), 404)
+    expect(await call(4, '/portal/staff-requests/' + grant.id, 'PATCH', { version: grant.version, status: 'approved' }), 404)
+    expect(await call(2, '/portal/applications'), 403)
+    expect(await call(2, '/portal/users'), 403)
+    expect(await call(2, '/portal/reports'), 403)
+    expect(await call(2, '/portal/staff', 'POST', { ...data, email: 'nested@example.com' }), 403)
+    expect(await call(0, '/portal/staff', 'POST', data), 409)
     assert.equal(expect(await call(2, '/portal/me')).role, 'business-staff')
     assert.equal((await db.collection('users').findOne({ id: users[2].id })).role, 'user')
     assert.equal(expect(await call(2, '/portal/groups')).total, 1)
@@ -104,26 +114,30 @@ test('business registration, revisions, multi-group publication, staff consent a
     const conversation = expect(await call(2, '/conversations', 'POST', { type: 'group', activityId: groups[0].id })).conversation
     assert.equal(conversation.memberCount, 0)
     assert.ok(expect(await call(2, '/conversations')).items.some(item => item.id === conversation.id))
-    grant = expect(await call(0, '/portal/staff/' + grant.id, 'PUT', { ...data, title: 'Updated coordinator', version: grant.version }))
-    assert.equal(grant.acceptedAt, null)
-    expect(await call(2, '/portal/groups'), 403)
-    assert.equal(expect(await call(2, '/me/activities')).total, 0)
-    assert.equal(expect(await call(2, '/conversations')).total, 0)
+
+    const { password, ...changes } = data
+    grant = expect(await call(0, '/portal/staff/' + grant.id, 'PUT', { ...changes, title: 'Updated coordinator', groupIds: [groups[1].id], version: grant.version }))
+    assert.equal(grant.status, 'approved')
+    expect(await call(2, '/portal/groups/' + groups[0].id), 403)
+    expect(await call(2, '/portal/groups/' + groups[1].id))
+    assert.equal(expect(await call(2, '/me/activities')).items[0].id, groups[1].id)
+    assert.equal(expect(await call(2, '/conversations')).items.some(item => item.activityId === groups[0].id), false)
     expect(await call(2, '/conversations/' + conversation.id), 403)
-    expect(await call(4, '/portal/staff-requests/' + grant.id, 'PATCH', { version: grant.version, status: 'approved' }), 409)
-    grant = expect(await call(2, '/portal/staff-invitations/' + grant.id, 'PATCH', { version: grant.version, status: 'accepted' }))
-    grant = expect(await call(4, '/portal/staff-requests/' + grant.id, 'PATCH', { version: grant.version, status: 'approved' }))
+    expect(await call(0, '/portal/staff/' + grant.id, 'PUT', { ...changes, email: users[5].email, version: grant.version }), 400)
+    grant = expect(await call(0, '/portal/staff/' + grant.id, 'PUT', { ...changes, version: grant.version }))
   })
-  await t.test('multiple enterprise staff manage one group independently and admins receive the review queue', async () => {
-    secondGrant=expect(await call(0,'/portal/staff','POST',{name:'Second coordinator',email:users[6].email,phone:'0901234567',title:'Assistant',groupIds:[groups[0].id]}),201)
-    assert.ok(await db.collection('notifications').findOne({userId:users[4].id,key:'business-staff-queue:'+secondGrant.id+':1'}))
-    secondGrant=expect(await call(6,'/portal/staff-invitations/'+secondGrant.id,'PATCH',{version:secondGrant.version,status:'accepted'}))
-    secondGrant=expect(await call(4,'/portal/staff-requests/'+secondGrant.id,'PATCH',{version:secondGrant.version,status:'approved'}))
-    const group=expect(await call(6,'/portal/groups/'+groups[0].id))
-    assert.equal(group.managers.length,2)
-    assert.equal(group.memberCount,0)
-    expect(await call(6,'/portal/groups/'+groups[1].id),403)
-    assert.equal(expect(await call(6,'/portal/me')).role,'business-staff')
+  await t.test('multiple employees manage one group without any admin approval queue', async () => {
+    const data = {name:'Second coordinator',email:'second.employee@example.com',password:'Employee123!',phone:'0901234567',title:'Assistant',groupIds:[groups[0].id]}
+    secondGrant = expect(await call(0, '/portal/staff', 'POST', data), 201)
+    users[6] = await db.collection('users').findOne({ id: secondGrant.userId })
+    tokens[6] = expect(await call(0, '/auth/login', 'POST', {email:data.email,password:data.password})).accessToken
+    assert.equal(await db.collection('notifications').countDocuments({userId:users[4].id,key:'business-staff-queue:'+secondGrant.id+':1'}),0)
+    const group = expect(await call(6, '/portal/groups/' + groups[0].id))
+    assert.equal(group.managers.length, 2); assert.equal(group.memberCount, 0)
+    expect(await call(6, '/portal/groups/' + groups[1].id), 403)
+    assert.equal(expect(await call(6, '/portal/me')).role, 'business-staff')
+    const unassigned = expect(await call(0, '/portal/staff', 'POST', {...data,email:'unassigned.employee@example.com',groupIds:[]}),201)
+    assert.equal(unassigned.status, 'approved')
   })
   await t.test('assigned staff approve real requests, record audited deposits, plan, notify, attend and finish', async () => {
     const id = groups[0].id, path = '/portal/groups/' + id
