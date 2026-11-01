@@ -1,3 +1,4 @@
+import { createPaymentRouter } from './modules/payment/routes.js'
 import { createPortalRouter } from './modules/portal/routes.js'
 import { createDraftRouter } from './modules/drafts/routes.js'
 import { createMapsRouter } from './modules/maps/routes.js'
@@ -48,6 +49,7 @@ export function createApp(config = readConfig(), { authRepository, activityRepos
   if (chatRepository && authRepository) app.use('/api/conversations', createChatRouter(chatRepository, authRepository, chatOptions))
 
   if (authRepository) app.use('/api/maps', createMapsRouter(config, authRepository, mapsOptions))
+  if (authRepository?.payments && activityRepository) app.use('/api/payments', createPaymentRouter(authRepository.payments, authRepository, activityRepository, config))
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', service: 'gomate-be' })

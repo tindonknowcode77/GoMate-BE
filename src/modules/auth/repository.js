@@ -1,3 +1,4 @@
+import { createPaymentRepository } from '../payment/repository.js'
 import { createPortalRepository } from '../portal/repository.js'
 import { createDraftRepository } from '../drafts/repository.js'
 import { randomUUID } from 'node:crypto'
@@ -13,6 +14,7 @@ export function createAuthRepository(db) {
     community,
     portal: createPortalRepository(db),
     drafts: createDraftRepository(db),
+    payments: createPaymentRepository(db, community),
     async createUser({ email, name, passwordHash }) {
       const user = { id: randomUUID(), email, name, password_hash: passwordHash, email_verified: false, created_at: new Date() }
       await users.insertOne(user)
