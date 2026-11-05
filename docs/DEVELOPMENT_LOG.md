@@ -1,5 +1,53 @@
 # Development log
 
+## 2026-11-05 - Harden admin input validation and revision checks
+
+### Summary
+
+- Require strict paginated query shapes and resource-specific status filters, reject duplicate/unknown query fields and malformed reference IDs, and normalize owner IDs before lookup and persistence.
+- Require safe nonnegative integer revisions for every admin edit, including posts. Reject one-character/blank names, blank passwords, control characters, invalid nested payloads and nonnumeric/out-of-range discounts. Normalize optional text consistently; limit ordinary JSON to 32 KB while retaining business document uploads.
+- Advance user admin revisions on role/subscription changes so existing forms cannot overwrite newer admin actions; verify concurrent updates permit exactly one writer.
+
+### Files changed
+
+- `src/modules/portal/admin-validation.js`, `admin.js`, `validation.js`, `repository.js`.
+- `tests/admin-validation.test.js`, `tests/admin-validation-http.test.js`, `docs/ADMIN_CRUD.md`; matching FE form validation/browser coverage in GoMate-FE.
+
+### Verification
+
+- `node --test tests/admin-validation.test.js tests/admin-validation-http.test.js tests/admin-crud.test.js tests/portal.test.js tests/portal-authority.test.js tests/business-campaign-control.test.js tests/business-events.test.js tests/auth.test.js`: Passed, 34 tests with negative/boundary cases and concurrent/stale mutation assertions against temporary MongoDB.
+- FE typecheck, lint and web export: Passed. Expo doctor retains its existing patch mismatch finding (17/18).
+- FE admin browser CRUD/validation test: Passed, including assertions that invalid client forms send no mutation requests.
+
+### Remaining work
+
+- Existing operational archival restrictions remain as documented in `ADMIN_CRUD.md`.
+
+## 2026-11-05 - Authorized admin CRUD and history-preserving deletion
+
+### Summary
+
+- Add paginated/searchable create/read/update/delete endpoints for users, business applications, posts, reports and support tickets. Validate inputs, exclude private fields, record admin actions and reject stale edits.
+- Reuse verification, password hashing, post approval/deletion and support reply flows. Archive records instead of destroying history; block deletion of self/admin accounts or unresolved operational records. Deleted accounts lose password/Google login and session access. Hide archived applications/users from existing portal lists/metrics and prevent replies to archived tickets.
+
+### Files changed
+
+- `src/modules/portal/admin.js`, `repository.js`, `routes.js`.
+- `src/modules/auth/repository.js`, `routes.js`, `src/modules/community/repository.js`.
+- `tests/admin-crud.test.js`, `docs/ADMIN_CRUD.md`; matching FE forms/tests and the product decision are in GoMate-FE.
+
+### Verification
+
+- `node --test tests/admin-crud.test.js tests/portal.test.js tests/portal-authority.test.js tests/business-campaign-control.test.js tests/business-events.test.js tests/auth.test.js`: Passed, 29 tests.
+- `node --test tests/admin-crud.test.js`: Passed after adding explicit pagination coverage; verifies all five resource types, authorization, private fields, duplicate emails, literal search, conflict checks, archival and session invalidation.
+- FE `node tests/admin-crud.web.cjs`: Passed real-browser CRUD/approval/support flows with an isolated MongoDB instance. FE typecheck, lint and web export passed; Expo doctor reports existing patch mismatches.
+- Existing FE business-controls browser regression reached and passed admin post deletion, then failed at its final wallet-refresh toast expectation; the unchanged wallet refresh handler does not emit that toast.
+- `git diff --check`: Passed. No real database, credentials or dependencies changed.
+
+### Remaining work
+
+- No archive restore endpoint; unique account emails/business ownership remain reserved after archival. Account emails and business verification identity stay immutable. Published post edits remain in the existing activity lifecycle. See `ADMIN_CRUD.md` for payloads and restrictions.
+
 ## 2026-11-01 - Business-created employees without consent or admin approval
 
 ### Summary

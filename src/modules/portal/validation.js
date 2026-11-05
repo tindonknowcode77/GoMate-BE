@@ -10,7 +10,7 @@ export function text(value, max, optional = false) {
   if (typeof value !== 'string' || !value.trim() || value.trim().length > max) throw new HttpError(400, 'Missing or invalid text')
   return value.trim()
 }
-export function version(value) { if (!Number.isInteger(value) || value < 0) throw new HttpError(400, 'Provide the current version'); return value }
+export function version(value) { if (!Number.isSafeInteger(value) || value < 0) throw new HttpError(400, 'Provide the current version'); return value }
 export function email(value) {
   const result = text(value, 254).toLowerCase()
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(result)) throw new HttpError(400, 'Invalid email')

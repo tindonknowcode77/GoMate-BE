@@ -91,7 +91,7 @@ export function createAuthRouter(repository, config, verifyGoogle = createGoogle
     const { email, password } = credentials(req.body)
     const user = await repository.findUserByEmail(email)
     const valid = await verifyPassword(password, user?.password_hash ?? dummyPasswordHash)
-    if (!user?.password_hash || !valid) throw new HttpError(401, 'Invalid email or password')
+    if (!user?.password_hash || !valid || user.deletedAt) throw new HttpError(401, 'Invalid email or password')
     await issueSession(user, res, rememberMe)
   })
 
@@ -111,6 +111,7 @@ export function createAuthRouter(repository, config, verifyGoogle = createGoogle
       if (error.code === 11000) throw new HttpError(409, 'Email already registered. Sign in using your existing method.')
       throw error
     }
+    if (user.deletedAt) throw new HttpError(401, 'Account unavailable')
     await issueSession(user, res, rememberMe)
   })
 

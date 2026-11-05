@@ -94,7 +94,7 @@ export function createCommunityRepository(db) {
       const [rating, completed] = await Promise.all([db.collection('activity_ratings').aggregate([{ $match: { targetUserId: userId, score: { $gte: 1, $lte: 5 } } }, { $group: { _id: null, average: { $avg: '$score' }, count: { $sum: 1 } } }]).toArray(), db.collection('activities').countDocuments({ hostId: userId, status: 'completed' })])
       return { average: rating[0]?.average ?? null, count: rating[0]?.count ?? 0, completedActivities: completed }
     },
-    async moderationQueue() { return db.collection('reports').find({}, { projection: { _id: 0, key: 0 } }).sort({ createdAt: -1 }).limit(200).toArray() },
+    async moderationQueue() { return db.collection('reports').find({ deletedAt: { $exists: false } }, { projection: { _id: 0, key: 0 } }).sort({ createdAt: -1 }).limit(200).toArray() },
     async moderate(id, actorId, status, hideActivity) {
       let row = await db.collection('reports').findOneAndUpdate({ id, status: 'pending' }, { $set: { status, hideActivity, resolvedBy: actorId, resolvedAt: new Date() } }, { returnDocument: 'after' })
       if (!row) row = await db.collection('reports').findOne({ id, status, hideActivity, resolvedBy: actorId })

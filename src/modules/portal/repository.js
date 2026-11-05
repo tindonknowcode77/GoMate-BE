@@ -1,4 +1,5 @@
 import { createPostLifecycle } from './post-lifecycle.js'
+import { createAdminRepository } from './admin.js'
 import { createBusinessAudience } from '../../common/business-audience.js'
 import { createBusinessOperations } from './operations.js'
 import { randomUUID } from 'node:crypto'
@@ -18,6 +19,7 @@ export function createPortalRepository(db) {
     total: await collection.countDocuments(filter),
   })
   return {
+    admin: createAdminRepository(db),
     operations: createBusinessOperations(db),
     postLifecycle: lifecycle.command,
     async me(id) {
@@ -51,7 +53,7 @@ export function createPortalRepository(db) {
       if (!row) { if (supplementalId) await db.collection('business_verification_files').deleteOne({ id: supplementalId, ownerId }); throw new HttpError(409, 'Hồ sơ đã thay đổi. Tải lại trước khi gửi lại.') }
       return row
     },
-    async applications(offset) { const result=await page(applications,{},offset);return {...result,items:result.items.map(row=>({...row,version:row.version ?? 0}))} },
+    async applications(offset) { const result=await page(applications,{status:{$ne:'deleted'}},offset);return {...result,items:result.items.map(row=>({...row,version:row.version ?? 0}))} },
     async document(id, actorId, reviewer, kind) {
       const row = await applications.findOne({ id, ...(!reviewer ? { ownerId: actorId } : {}) })
       if (!row) throw new HttpError(404, 'Application not found')
@@ -77,7 +79,8 @@ export function createPortalRepository(db) {
       return row
     },
     async access(id) {
-      const user = await users.findOne({ id }, { projection: { role: 1 } })
+      const user = await users.findOne({ id, deletedAt: { $exists: false } }, { projection: { role: 1 } })
+      if (!user) throw new HttpError(401, 'Account not found')
       if (user?.role === 'admin') return user.role
       if (await applications.findOne({ ownerId: id, status: 'approved' })) return 'business'
       const grants = await db.collection('business_staff').find({ userId: id, status: 'approved', $or: [{ provisionedAt: { $ne: null } }, { acceptedAt: { $ne: null } }] }).toArray()
@@ -166,8 +169,9 @@ export function createPortalRepository(db) {
       for (const row of result.items) if(row.groups?.length) {row.groups=row.groups.filter(group=>group.activityId===selected.get(row.id));row.activityId=row.groups[0]?.activityId}
       return result
     },
-    async users(offset) {
-      const result = await page(users, {}, offset, { _id: 0, id: 1, name: 1, email: 1, role: 1, email_verified: 1, subscription: 1, created_at: 1 })
+    async users(offset, q = '') {
+      const pattern = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const result = await page(users, { deletedAt: { $exists: false }, ...(q ? { $or: [{ name: { $regex: pattern, $options: 'i' } }, { email: { $regex: pattern, $options: 'i' } }] } : {}) }, offset, { _id: 0, id: 1, name: 1, email: 1, role: 1, email_verified: 1, subscription: 1, created_at: 1 })
       const approved = await applications.find({ ownerId: { $in: result.items.map(user => user.id) }, status: 'approved' }, { projection: { ownerId: 1 } }).toArray()
       const businesses = new Set(approved.map(item => item.ownerId))
       return { ...result, items: result.items.map(user => ({ ...user, effectiveRole: user.role === 'admin' ? user.role : businesses.has(user.id) ? 'business' : 'user' })) }
@@ -175,15 +179,15 @@ export function createPortalRepository(db) {
     async setRole(id, role, actorId) {
       if (!['user', 'admin'].includes(role)) throw new HttpError(400, 'Invalid role')
       if (id === actorId) throw new HttpError(409, 'You cannot change your own role')
-      const row = await users.findOneAndUpdate({ id }, {
+      const row = await users.findOneAndUpdate({ id, deletedAt: { $exists: false } }, {
         $set: { role, updated_at: new Date(), roleUpdatedBy: actorId, roleUpdatedAt: new Date() },
-        $inc: { credential_version: 1 },
+        $inc: { credential_version: 1, adminVersion: 1 },
       }, { returnDocument: 'after', projection: { _id: 0, id: 1, role: 1 } })
       if (!row) throw new HttpError(404, 'User not found')
       return row
     },
     async subscription(id, value, actorId) {
-      const row = await users.findOneAndUpdate({ id }, { $set: { subscription: { ...value, updatedBy: actorId, updatedAt: new Date() } } }, { returnDocument: 'after', projection: { _id: 0, id: 1, subscription: 1 } })
+      const row = await users.findOneAndUpdate({ id, deletedAt: { $exists: false } }, { $set: { subscription: { ...value, updatedBy: actorId, updatedAt: new Date() } }, $inc: { adminVersion: 1 } }, { returnDocument: 'after', projection: { _id: 0, id: 1, subscription: 1 } })
       if (!row) throw new HttpError(404, 'User not found')
       return row
     },
@@ -193,18 +197,18 @@ export function createPortalRepository(db) {
       const { _id, ...result } = row
       return result
     },
-    tickets: (ownerId, offset) => page(tickets, ownerId ? { ownerId } : {}, offset),
+    tickets: (ownerId, offset) => page(tickets, { deletedAt: { $exists: false }, ...(ownerId ? { ownerId } : {}) }, offset),
     async reply(id, ownerId, actorId, message, status) {
-      const row = await tickets.findOneAndUpdate({ id, ...(ownerId ? { ownerId } : {}), 'messages.99': { $exists: false } }, {
+      const row = await tickets.findOneAndUpdate({ id, deletedAt: { $exists: false }, ...(ownerId ? { ownerId } : {}), 'messages.99': { $exists: false } }, {
         $push: { messages: { id: randomUUID(), authorId: actorId, text: message, createdAt: new Date() } },
-        $set: { status, updatedAt: new Date() },
+        $set: { status, updatedAt: new Date() }, $inc: { adminVersion: 1 },
       }, { returnDocument: 'after', projection: publicRow })
       if (!row) throw new HttpError(404, 'Ticket not found or message limit reached')
       return row
     },
     async metrics(role, id) {
       if (role === 'business') return { posts: await posts.countDocuments({ ownerId: id }), pendingPosts: await posts.countDocuments({ ownerId: id, status: 'pending' }), approvedPosts: await posts.countDocuments({ ownerId: id, status: 'approved' }) }
-      return { approvedPosts: await posts.countDocuments({ status: 'approved' }), users: await users.countDocuments(), pendingBusinesses: await applications.countDocuments({ status: 'pending' }), pendingPosts: await posts.countDocuments({ status: 'pending' }), openTickets: await tickets.countDocuments({ status: 'open' }), openReports: await db.collection('reports').countDocuments({ status: 'pending' }) }
+      return { approvedPosts: await posts.countDocuments({ status: 'approved' }), users: await users.countDocuments({ deletedAt: { $exists: false } }), pendingBusinesses: await applications.countDocuments({ status: 'pending' }), pendingPosts: await posts.countDocuments({ status: 'pending' }), openTickets: await tickets.countDocuments({ status: 'open' }), openReports: await db.collection('reports').countDocuments({ status: 'pending' }) }
     },
   }
 }
