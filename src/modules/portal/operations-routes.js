@@ -11,6 +11,12 @@ export function createBusinessOperationsRouter(auth) {
   const writes = rateLimit({ windowMs: 60000, limit: 60, keyGenerator: req => req.auth.user.id, standardHeaders: 'draft-8', legacyHeaders: false })
   const json = express.json({ limit: '128kb' })
   router.get('/wallet', allow('business'), async (req, res) => { res.set('Cache-Control', 'no-store'); res.json(await repo.wallet(req.auth.user.id)) })
+  router.put('/wallet/bank-account', allow('business'), writes, json, async (req, res) => {
+    res.json({ bankAccount: await repo.saveBankAccount(req.auth.user.id, req.body || {}) })
+  })
+  router.post('/wallet/payouts', allow('business'), writes, json, async (req, res) => {
+    res.status(201).json(await repo.requestPayout(req.auth.user.id, req.body || {}))
+  })
   const offset = req => { const page = Number(req.query.page ?? 1); if (Object.keys(req.query).some(key => key !== 'page') || !Number.isInteger(page) || page < 1 || page > 500) throw new HttpError(400, 'Invalid page'); return (page - 1) * 20 }
   router.get('/locations', allow('business', 'business-staff'), async (req, res) => res.json(await repo.listLocations(req.auth.user.id, offset(req))))
   router.post('/locations', allow('business'), writes, json, async (req, res) => res.status(201).json(await repo.saveLocation(req.auth.user.id, null, null, locationFields(req.body))))

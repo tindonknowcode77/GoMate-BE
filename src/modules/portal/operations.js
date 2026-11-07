@@ -14,6 +14,7 @@ function buildAttendanceRoster(row) {
 }
 export function createBusinessOperations(db) {
   const locations = db.collection('business_locations'), staff = db.collection('business_staff'), activities = db.collection('activities')
+  const bankAccounts = db.collection('business_bank_accounts'), payoutsCol = db.collection('business_payouts')
   const community = createCommunityRepository(db), repository = createActivityRepository(db)
   const notify = (userId, key, title, text, actorId) => community.notify(userId, { key, type: 'business-update', title, text, actorId })
   const page = async (collection, query, offset) => ({ items: await collection.find(query, { projection: view }).sort({ createdAt: -1, id: 1 }).skip(offset).limit(20).toArray(), total: await collection.countDocuments(query) })
@@ -51,7 +52,93 @@ export function createBusinessOperations(db) {
     assigned,
     async wallet(ownerId) {
       if (!await verified(ownerId)) throw new HttpError(403, 'Verified business required')
-      return businessWallet(await activities.find({ hostId: ownerId, organizerType: 'business' }, { projection: { id: 1, title: 1, businessGroupName: 1, status: 1, businessReceipts: 1, joinRequests: 1, attendance: 1 } }).toArray())
+      const base = businessWallet(await activities.find({ hostId: ownerId, organizerType: 'business' }, { projection: { id: 1, title: 1, businessGroupName: 1, status: 1, businessReceipts: 1, joinRequests: 1, attendance: 1 } }).toArray())
+      const [bankAccount, payouts] = await Promise.all([
+        bankAccounts.findOne({ ownerId }, { projection: view }),
+        payoutsCol.find({ ownerId }, { projection: view }).sort({ createdAt: -1 }).limit(50).toArray(),
+      ])
+      const paidOutAmount = payouts
+        .filter(p => ['pending', 'completed'].includes(p.status))
+        .reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
+      const withdrawableAmount = Math.max(0, base.eligiblePayoutAmount - paidOutAmount)
+      return {
+        ...base,
+        bankAccount: bankAccount || null,
+        payouts,
+        paidOutAmount,
+        withdrawableAmount,
+      }
+    },
+    async saveBankAccount(ownerId, { bankId, accountNo, accountName, branch = '' } = {}) {
+      if (!await verified(ownerId)) throw new HttpError(403, 'Verified business required')
+      const cleanBankId = String(bankId || '').trim().toUpperCase()
+      const cleanAccountNo = String(accountNo || '').replace(/\s+/g, '')
+      const cleanAccountName = String(accountName || '').trim().toUpperCase()
+      const cleanBranch = String(branch || '').trim().slice(0, 120)
+      if (!cleanBankId || cleanBankId.length > 20) throw new HttpError(400, 'Vui lòng chọn hoặc nhập mã ngân hàng hợp lệ.')
+      if (!/^\d{6,25}$/.test(cleanAccountNo)) throw new HttpError(400, 'Số tài khoản ngân hàng phải gồm từ 6 đến 25 chữ số.')
+      if (!cleanAccountName || cleanAccountName.length < 3 || cleanAccountName.length > 120) throw new HttpError(400, 'Vui lòng nhập tên chủ tài khoản thụ hưởng hợp lệ.')
+      const now = new Date()
+      const record = {
+        ownerId,
+        bankId: cleanBankId,
+        accountNo: cleanAccountNo,
+        accountName: cleanAccountName,
+        branch: cleanBranch,
+        updatedAt: now,
+      }
+      await bankAccounts.updateOne({ ownerId }, { $set: record, $setOnInsert: { createdAt: now } }, { upsert: true })
+      return record
+    },
+    async requestPayout(ownerId, { amount, bankId, accountNo, accountName, note = '' } = {}) {
+      if (!await verified(ownerId)) throw new HttpError(403, 'Verified business required')
+      if (bankId && accountNo && accountName) {
+        await this.saveBankAccount(ownerId, { bankId, accountNo, accountName })
+      }
+      const currentWallet = await this.wallet(ownerId)
+      const targetBank = currentWallet.bankAccount
+      if (!targetBank || !targetBank.accountNo || !targetBank.accountName) {
+        throw new HttpError(400, 'Vui lòng cài đặt tài khoản ngân hàng thụ hưởng trước khi yêu cầu giải ngân.')
+      }
+      const maxWithdrawable = currentWallet.withdrawableAmount
+      if (maxWithdrawable <= 0) {
+        throw new HttpError(400, 'Hiện chưa có số dư khả dụng đủ điều kiện giải ngân (cần sự kiện hoàn tất).')
+      }
+      const requestedAmount = amount !== undefined && amount !== null && amount !== '' ? Number(amount) : maxWithdrawable
+      if (!Number.isSafeInteger(requestedAmount) || requestedAmount <= 0 || requestedAmount > maxWithdrawable) {
+        throw new HttpError(400, `Số tiền yêu cầu giải ngân không hợp lệ (tối đa ${maxWithdrawable.toLocaleString('vi-VN')}đ).`)
+      }
+      const now = new Date()
+      const referenceCode = `PO${Math.floor(100000 + Math.random() * 900000)}`
+      const payout = {
+        id: randomUUID(),
+        ownerId,
+        referenceCode,
+        amount: requestedAmount,
+        bankAccount: {
+          bankId: targetBank.bankId,
+          accountNo: targetBank.accountNo,
+          accountName: targetBank.accountName,
+          branch: targetBank.branch || '',
+        },
+        note: String(note || 'Giải ngân 90% doanh thu cọc sự kiện hoàn tất').trim().slice(0, 250),
+        status: 'completed',
+        createdAt: now,
+        processedAt: now,
+      }
+      await payoutsCol.insertOne(payout)
+      await notify(
+        ownerId,
+        `business-payout:${payout.id}`,
+        'Giải ngân doanh thu thành công',
+        `Đã chuyển ${requestedAmount.toLocaleString('vi-VN')}đ (${referenceCode}) về ${targetBank.bankId} · ${targetBank.accountNo}`,
+        ownerId
+      ).catch(() => {})
+      const { _id, ...cleanPayout } = payout
+      return {
+        payout: cleanPayout,
+        wallet: await this.wallet(ownerId),
+      }
     },
     async listLocations(ownerId, offset) {
       if (await verified(ownerId)) return page(locations, { ownerId }, offset)

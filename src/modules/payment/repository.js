@@ -57,16 +57,118 @@ export function createPaymentRepository(db, community) {
     async listUserPayments(userId, { page = 1, limit = 20 } = {}) {
       const skip = (page - 1) * limit
       const query = { userId }
-      const [items, total] = await Promise.all([
+      const [rawItems, total, allUserPayments] = await Promise.all([
         payments.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).toArray(),
         payments.countDocuments(query),
+        payments.find(query).toArray(),
       ])
+
+      const activityIds = [...new Set( allUserPayments.map(p => p.activityId).filter(Boolean) )]
+      const activityRows = activityIds.length
+        ? await activities.find({ id: { $in: activityIds } }, { projection: { id: 1, status: 1, title: 1, startsAt: 1 } }).toArray()
+        : []
+      const activityMap = new Map(activityRows.map(a => [a.id, a]))
+
+      const enrich = (p) => {
+        const act = p.activityId ? activityMap.get(p.activityId) : null
+        const activityStatus = act?.status || null
+        const refundEligible = p.status === 'paid' && (
+          p.type === 'wallet_topup' ||
+          ['cancelled', 'expired', 'published'].includes(activityStatus)
+        )
+        return {
+          ...p,
+          activityStatus,
+          refundEligible,
+        }
+      }
+
+      const items = rawItems.map(enrich)
+      const enrichedAll = allUserPayments.map(enrich)
+
+      const summary = {
+        totalPaid: enrichedAll.filter(p => p.status === 'paid').reduce((s, p) => s + (p.amount || 0), 0),
+        refundableAmount: enrichedAll.filter(p => p.refundEligible).reduce((s, p) => s + (p.amount || 0), 0),
+        refundedAmount: enrichedAll.filter(p => p.status === 'refunded').reduce((s, p) => s + (p.amount || 0), 0),
+        pendingCount: enrichedAll.filter(p => p.status === 'pending').length,
+      }
+
       return {
         items,
+        summary,
         total,
         page,
         limit,
         hasMore: skip + items.length < total,
+      }
+    },
+
+    async refundPayment(id, userId, { bankId = 'BIDV', accountNo = '', accountName = '', reason = '' } = {}) {
+      const payment = await payments.findOne({ id })
+      if (!payment) throw new HttpError(404, 'Không tìm thấy giao dịch.')
+      if (payment.userId !== userId) throw new HttpError(403, 'Không có quyền yêu cầu hoàn tiền cho giao dịch này.')
+      if (payment.status === 'refunded') return payment
+      if (payment.status !== 'paid') throw new HttpError(400, 'Chỉ giao dịch đã thanh toán mới có thể hoàn tiền.')
+
+      if (payment.activityId) {
+        const activity = await activities.findOne({ id: payment.activityId })
+        if (activity && ['in-progress', 'completed'].includes(activity.status)) {
+          throw new HttpError(409, 'Hoạt động đang diễn ra hoặc đã hoàn thành, không thể hoàn tiền cọc tự động.')
+        }
+      }
+
+      const now = new Date()
+      const refundCode = `RF${Math.floor(100000 + Math.random() * 900000)}`
+      const refundInfo = {
+        refundCode,
+        bankId: String(bankId || 'BIDV').trim().toUpperCase(),
+        accountNo: String(accountNo || '').trim(),
+        accountName: String(accountName || '').trim().toUpperCase(),
+        reason: String(reason || 'Hoàn trả tiền cọc theo yêu cầu').trim(),
+        refundedAt: now,
+      }
+
+      await payments.updateOne(
+        { id: payment.id },
+        {
+          $set: {
+            status: 'refunded',
+            refundedAt: now,
+            refundInfo,
+            updatedAt: now,
+          },
+        }
+      )
+
+      if (payment.activityId) {
+        const activity = await activities.findOne({ id: payment.activityId })
+        if (activity) {
+          const updatedReceipts = (activity.businessReceipts ?? []).map(r =>
+            r.userId === payment.userId ? { ...r, status: 'refunded', refundedAt: now, refundCode } : r
+          )
+          await activities.updateOne(
+            { id: activity.id },
+            { $set: { businessReceipts: updatedReceipts, updatedAt: now } }
+          )
+        }
+      }
+
+      if (community?.notify) {
+        await community.notify(payment.userId, {
+          key: `deposit-refunded:${payment.id}:${refundCode}`,
+          type: 'activity',
+          title: 'Đã hoàn tiền cọc thành công',
+          text: `Đã hoàn ${payment.amount.toLocaleString('vi-VN')}đ (${refundCode}) về tài khoản ${refundInfo.bankId} ${refundInfo.accountNo || ''}`.trim(),
+          activityId: payment.activityId,
+          actorId: payment.userId,
+        }).catch(() => {})
+      }
+
+      return {
+        ...payment,
+        status: 'refunded',
+        refundedAt: now,
+        refundInfo,
       }
     },
 

@@ -204,6 +204,94 @@ test('VietQR payment module and QR scanning flow', async (t) => {
       const data = await res.json()
       assert.equal(data.payment.status, 'paid')
     })
+
+    await t.test('GET /api/payments/history returns user payment history and summary', async () => {
+      const res = await fetch(`${base}/payments/history`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      assert.equal(res.status, 200)
+      const data = await res.json()
+      assert.equal(data.total, 1)
+      assert.equal(data.items[0].id, paymentId)
+      assert.equal(data.summary.totalPaid, 50000)
+      assert.equal(data.items[0].refundEligible, true)
+    })
+
+    await t.test('Business owner can configure bank account and request payout when activity completes', async () => {
+      // Mark host as verified business and complete activity
+      await db.collection('users').updateOne({ id: host.id }, { $set: { email_verified: true } })
+      await db.collection('business_applications').insertOne({
+        id: 'biz-app-1',
+        ownerId: host.id,
+        status: 'approved',
+        company: 'GoMate Partner Studio',
+      })
+      await db.collection('activities').updateOne({ id: activity.id }, { $set: { status: 'completed' } })
+
+      const hostToken = newToken()
+      await authRepo.createSession({
+        tokenHash: hashToken(hostToken),
+        userId: host.id,
+        expiresAt: new Date(Date.now() + 86400000),
+      })
+
+      const saveBankRes = await fetch(`${base}/portal/wallet/bank-account`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${hostToken}`,
+        },
+        body: JSON.stringify({
+          bankId: 'BIDV',
+          accountNo: '8876191441',
+          accountName: 'NGUYEN NGOC TIN',
+          branch: 'CN TP.HCM',
+        }),
+      })
+      assert.equal(saveBankRes.status, 200)
+      const savedBank = await saveBankRes.json()
+      assert.equal(savedBank.bankAccount.accountNo, '8876191441')
+
+      const payoutRes = await fetch(`${base}/portal/wallet/payouts`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${hostToken}`,
+        },
+        body: JSON.stringify({
+          amount: 45000,
+          note: 'Rút doanh thu sự kiện hoàn tất',
+        }),
+      })
+      assert.equal(payoutRes.status, 201)
+      const payoutData = await payoutRes.json()
+      assert.equal(payoutData.payout.amount, 45000)
+      assert.equal(payoutData.payout.status, 'completed')
+      assert.match(payoutData.payout.referenceCode, /^PO\d{6}$/)
+      assert.equal(payoutData.wallet.paidOutAmount, 45000)
+      assert.equal(payoutData.wallet.withdrawableAmount, 0)
+    })
+
+    await t.test('POST /api/payments/:id/refund refunds deposit when activity is cancelled', async () => {
+      await db.collection('activities').updateOne({ id: activity.id }, { $set: { status: 'cancelled' } })
+      const refundRes = await fetch(`${base}/payments/${paymentId}/refund`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          bankId: 'BIDV',
+          accountNo: '8876191441',
+          accountName: 'NGUYEN NGOC TIN',
+          reason: 'Sự kiện bị hủy',
+        }),
+      })
+      assert.equal(refundRes.status, 200)
+      const refundData = await refundRes.json()
+      assert.equal(refundData.payment.status, 'refunded')
+      assert.match(refundData.payment.refundInfo.refundCode, /^RF\d{6}$/)
+    })
   } finally {
     server.close()
     await client.close()

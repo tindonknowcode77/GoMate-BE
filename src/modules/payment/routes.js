@@ -150,6 +150,14 @@ export function createPaymentRouter(paymentRepo, authRepo, activityRepo, config)
     })
   })
 
+  // 2.5 Get user's payment & wallet history
+  router.get('/history', authenticate(authRepo), async (req, res) => {
+    const page = Math.max(1, Number(req.query.page) || 1)
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20))
+    const result = await paymentRepo.listUserPayments(req.auth.user.id, { page, limit })
+    res.json(result)
+  })
+
   // 3. Status polling endpoint (can be polled every 2-3s from frontend while showing QR)
   router.get('/:id/status', async (req, res) => {
     const payment = await paymentRepo.findPaymentById(req.params.id)
@@ -188,6 +196,22 @@ export function createPaymentRouter(paymentRepo, authRepo, activityRepo, config)
     res.json({
       message: 'Xác nhận thanh toán thành công.',
       payment: confirmed,
+    })
+  })
+
+  // 5.5 Refund payment / Withdraw refundable deposit
+  router.post('/:id/refund', authenticate(authRepo), async (req, res) => {
+    const { bankId, accountNo, accountName, reason } = req.body || {}
+    const refunded = await paymentRepo.refundPayment(req.params.id, req.auth.user.id, {
+      bankId,
+      accountNo,
+      accountName,
+      reason,
+    })
+
+    res.json({
+      message: 'Hoàn tiền cọc thành công.',
+      payment: refunded,
     })
   })
 
