@@ -34,9 +34,9 @@ export function createBusinessOperations(db) {
     const members = (row.joinRequests ?? []).filter(item => item.status === 'approved')
     const receipts = row.businessReceipts ?? []
     return { id: row.id, ownerId: row.hostId, version: row.version, name: row.businessGroupName || row.title, campaignTitle: row.businessCampaignTitle || row.title, promotionalPostTitle: row.businessCampaignTitle || row.title, promotionalPostId: row.businessPostId,
-      status: row.status, startsAt: row.startsAt, endsAt: row.endsAt, locationId: row.businessLocationId || '', location: row.location, meetingPoint: row.meetingPoint, maxParticipants: row.maxParticipants, memberCount: row.memberCount, estimatedCost: row.estimatedCost, depositAmount: row.depositAmount || 0,
+      status: row.status, startsAt: row.startsAt, endsAt: row.endsAt, locationId: row.businessLocationId || '', location: row.location, meetingPoint: row.meetingPoint, maxParticipants: row.maxParticipants, memberCount: row.memberCount, estimatedCost: row.estimatedCost, depositAmount: row.depositAmount || 0, autoApproveMembers: row.autoApproveMembers === true,
       managers: await staff.find({ownerId:row.hostId,groupIds:row.id,status:'approved',$or:[{provisionedAt:{$ne:null}},{acceptedAt:{$ne:null}}]},{projection:{_id:0,userId:1,name:1,title:1}}).toArray(), attendance: row.attendance?.length ? row.attendance : buildAttendanceRoster(row), readiness: activityReadiness(row), itineraryConfirmed: Boolean(row.scheduleConfirmedAt), scheduleConfirmedAt: row.scheduleConfirmedAt,
-      depositMembers: members.map(member => { const receipt = receipts.find(item => item.userId === member.userId); return { id: member.userId, name: member.name, amount: receipt?.amount ?? row.depositAmount ?? 0, status: receipt?.status || (row.depositAmount ? 'pending' : 'not-required'), paidAt: receipt?.paidAt ?? null } }),
+      depositMembers: members.map(member => { const receipt = receipts.find(item => item.userId === member.userId); return { id: member.userId, name: member.name, amount: receipt?.status === 'paid' ? receipt.amount : row.depositAmount ?? 0, status: receipt?.status === 'paid' ? 'paid' : row.depositAmount ? 'pending' : 'not-required', paidAt: receipt?.paidAt ?? null } }),
       itinerary: (row.itinerary ?? []).map(item => ({ ...item, locationId: row.businessPlanLocations?.[item.id] || '', location: item.place, notes: item.note })), notifications: row.businessOffers ?? [], requests: (row.joinRequests ?? []).filter(item => item.status === 'pending') }
   }
   async function change(row, actorId, version, patch, type) {
@@ -164,6 +164,18 @@ export function createBusinessOperations(db) {
       return { items: await Promise.all(rows.map(groupView)), total: await activities.countDocuments(query) }
     },
     async getGroup(userId, id) { return groupView(await group(userId, id)) },
+    async saveSettings(userId, id, version, data) {
+      const row = await group(userId, id)
+      if (row.hostId !== userId) throw new HttpError(403, 'Chỉ chủ doanh nghiệp được thay đổi cài đặt nhóm.')
+      if (row.status !== 'published' || new Date(row.startsAt) <= new Date()) throw new HttpError(409, 'Chỉ thay đổi cài đặt trước khi nhóm bắt đầu.')
+      if (data.depositAmount !== undefined && data.depositAmount > row.estimatedCost) throw new HttpError(400, 'Tiền cọc không được vượt chi phí mỗi người.')
+      const patch = {}
+      if (data.autoApproveMembers !== undefined) patch.autoApproveMembers = data.autoApproveMembers
+      if (data.depositAmount !== undefined) { patch.depositAmount = data.depositAmount; patch.business = { ...row.business, depositAmount: data.depositAmount }; patch.scheduleConfirmedAt = null; patch.scheduleConfirmedBy = null }
+      const result = await change(row, userId, version, patch, 'business-settings-updated')
+      if (data.depositAmount !== undefined && data.depositAmount !== row.depositAmount) await db.collection('payments').updateMany({ activityId: id, type: 'activity_deposit', status: 'pending', amount: { $ne: data.depositAmount } }, { $set: { status: 'cancelled', cancellationReason: 'deposit-changed', updatedAt: new Date() } })
+      return result
+    },
     async savePlan(userId, id, version, itinerary) {
       const row = await group(userId, id)
       if (!['published', 'in-progress'].includes(row.status)) throw new HttpError(409, 'Group is closed')

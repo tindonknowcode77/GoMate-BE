@@ -299,7 +299,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
       if (!canParticipate(previous.participantPreferences, await authRepository.getProfile(req.auth.user.id))) throw new HttpError(403, 'Hồ sơ chưa đáp ứng điều kiện hoạt động.', 'PROFILE_REQUIREMENTS_NOT_MET')
     }
     const row = await repository.decideInvitation(previous, invitation, req.body.status)
-    if (!row) throw new HttpError(409, 'Lời mời không còn khả dụng, nhóm đã đủ chỗ hoặc có thay đổi. Nhóm phải chừa ít nhất một chỗ cho thành viên bên ngoài. Hãy tải lại hoặc nhờ host tăng sức chứa.')
+    if (!row) throw new HttpError(409, 'Lời mời không còn khả dụng, hoạt động đã đủ chỗ hoặc đã thay đổi. Hãy tải lại hoặc nhờ host tăng sức chứa.')
     await authRepository.community?.notify(row.hostId, { key: 'invitation-decision:' + invitation.id, type: 'activity', title: req.body.status === 'accepted' ? 'Bạn bè đã đồng ý tham gia' : 'Bạn bè đã từ chối lời mời', text: req.auth.user.name + ' · ' + row.title, activityId: row.id, actorId: req.auth.user.id })
     res.json({ activity: publicActivity(row) })
   })
@@ -319,7 +319,8 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
       if (current?.registrationDeadline && current.registrationDeadline <= new Date()) throw new HttpError(409, 'Đã hết hạn đăng ký.', 'REGISTRATION_CLOSED')
       throw new HttpError(409, 'Hoạt động đã thay đổi hoặc không còn nhận đăng ký. Hãy tải lại.', 'ACTIVITY_UNAVAILABLE')
     }
-    await authRepository.community?.notify(activity.hostId, { key: `join:${request.id}`, type: 'activity', title: 'Yêu cầu tham gia mới', text: `${req.auth.user.name} muốn tham gia ${activity.title}`, activityId: activity.id, actorId: req.auth.user.id })
+    await authRepository.community?.notify(activity.hostId, { key: `join:${request.id}`, type: 'activity', title: request.status === 'approved' ? 'Thành viên mới tham gia' : 'Yêu cầu tham gia mới', text: `${req.auth.user.name} · ${activity.title}`, activityId: activity.id, actorId: req.auth.user.id })
+    if (request.status === 'approved') await authRepository.community?.notify(req.auth.user.id, { key: `decision:${request.id}:approved`, type: 'activity', title: 'Yêu cầu đã được duyệt', text: activity.title, activityId: activity.id, actorId: activity.hostId })
     res.status(201).json({ request })
   })
   router.delete('/:id/join-requests/me', writes, async (req, res) => {
@@ -359,11 +360,11 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   })
   router.patch('/:id/plan', writes, express.json({ limit: '5mb' }), async (req, res) => {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).some(key => ![...planKeys, 'version'].includes(key)) || !planKeys.some(key => Object.hasOwn(req.body, key))) throw new HttpError(400, 'Invalid plan update')
-    const previous = await find(req.params.id, req.auth.user.id)
+    const previous = await find(req.params.id, req.auth.user.id, true)
     if (req.body.version !== (previous.version ?? 0)) throw new HttpError(409, 'Kế hoạch đã thay đổi. Tải lại trước khi lưu.')
     let row = await repository.savePlan(previous, planningFields(req.body, previous))
     if (!row) throw new HttpError(409, 'Hoạt động đã kết thúc hoặc kế hoạch đã thay đổi')
-    row = await repository.lifecycle(row, req.auth.user.id, {}, event(req, 'plan-updated')) || row
+    row = await repository.lifecycle(row, previous.hostId, {}, event(req, 'plan-updated')) || row
     await notifyMembers(row, req, `plan:${row.id}:${row.version}`, 'Host đã cập nhật kế hoạch')
     res.json({ activity: publicActivity(row) })
   })

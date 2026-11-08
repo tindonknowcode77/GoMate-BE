@@ -10,7 +10,7 @@ import { adminText, adminId, adminQuery, adminPostFields, adminApplicationFields
 
 const collections = { users: 'users', businesses: 'business_applications', posts: 'business_posts', reports: 'reports', tickets: 'support_tickets' }
 const userProjection = { _id: 0, id: 1, name: 1, email: 1, role: 1, subscription: 1, email_verified: 1, created_at: 1, adminVersion: 1 }
-const projection = { _id: 0, document: 0, lifecycleTasks: 0, key: 0 }
+const projection = { _id: 0, document: 0, lifecycleTasks: 0, contentSync: 0, key: 0 }
 const revision = row => row.adminVersion ?? 0
 const matchRevision = value => value === 0 ? { $in: [null, 0] } : value
 
@@ -40,6 +40,14 @@ export function createAdminRepository(db) {
       const searchFields = { users: ['name', 'email'], businesses: ['company', 'representativeEmail'], posts: ['title', 'businessName'], reports: ['reason', 'detail', 'activityId'], tickets: ['subject', 'ownerId'] }
       if (q) { const pattern = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); filter.$or = searchFields[kind].map(key => ({ [key]: { $regex: pattern, $options: 'i' } })) }
       const items = await collection(kind).find(filter, { projection: kind === 'users' ? userProjection : projection }).sort({ createdAt: -1, created_at: -1, id: 1 }).skip((page - 1) * 20).limit(20).toArray()
+      if (kind === 'users') {
+        const ids = items.map(item => item.id)
+        const businesses = new Set((await db.collection('business_applications').find({ ownerId: { $in: ids }, status: 'approved' }, { projection: { ownerId: 1 } }).toArray()).map(row => row.ownerId))
+        const grants = await db.collection('business_staff').find({ userId: { $in: ids }, status: 'approved', $or: [{ provisionedAt: { $ne: null } }, { acceptedAt: { $ne: null } }] }, { projection: { userId: 1, ownerId: 1 } }).toArray()
+        const owners = new Set((await db.collection('business_applications').find({ ownerId: { $in: grants.map(row => row.ownerId) }, status: 'approved' }, { projection: { ownerId: 1 } }).toArray()).map(row => row.ownerId))
+        const staff = new Set(grants.filter(row => owners.has(row.ownerId)).map(row => row.userId))
+        for (const row of items) row.effectiveRole = row.role === 'admin' ? 'admin' : businesses.has(row.id) ? 'business' : staff.has(row.id) ? 'business-staff' : row.role || 'user'
+      }
       return { items: items.map(row => ({ ...row, adminVersion: revision(row), ...(['businesses', 'posts'].includes(kind) ? { version: row.version ?? 0 } : {}) })), total: await collection(kind).countDocuments(filter) }
     },
     async createUser(body, actorId) {

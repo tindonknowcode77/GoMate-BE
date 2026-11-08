@@ -51,6 +51,11 @@ export function createPortalRouter(auth) {
     res.status(201).json(await repo.createPost(req.auth.user.id, postFields(req.body)))
   })
   router.put('/posts/:id', allow('business'), writes, json, async (req, res) => { res.json(await repo.editPost(req.params.id, req.auth.user.id, version(req.body.version), postFields(req.body))) })
+  router.patch('/posts/:id/details', allow('business'), writes, json, async (req, res) => {
+    fields(req.body, ['version', 'title', 'copy', 'discountPercent', 'offer', 'offerTerms'])
+    if (!Number.isInteger(req.body.discountPercent) || req.body.discountPercent < 0 || req.body.discountPercent > 100) throw new HttpError(400, 'Giảm giá phải là số nguyên từ 0 đến 100.')
+    res.json(await repo.editBasicPost(req.params.id, req.auth.user.id, version(req.body.version), { title: text(req.body.title, 120), copy: text(req.body.copy, 3000), discountPercent: req.body.discountPercent, offer: text(req.body.offer, 200, true), offerTerms: text(req.body.offerTerms, 500, true) }))
+  })
   router.delete('/posts/:id', allow('business'), writes, json, async (req, res) => { fields(req.body, ['version']); res.json(await repo.withdrawPost(req.params.id, req.auth.user.id, version(req.body.version))) })
   router.patch('/posts/:id', allow('admin'), writes, json, async (req, res) => {
     fields(req.body, ['status', 'reviewNote', 'version'])

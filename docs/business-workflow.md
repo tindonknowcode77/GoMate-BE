@@ -1,5 +1,11 @@
 # Business web API
 
+## Group settings and basic post edits
+
+- `PATCH /groups/:id/settings` is owner-only and accepts the current `version` plus `autoApproveMembers` (boolean) and/or `depositAmount` (integer VND, 0 through estimatedCost). Only upcoming published groups can change settings. Automatic approval applies to future/repeated requests, leaves the existing pending queue for manual review and still enforces eligibility, audience assignment, deadlines and capacity atomically.
+- Paid deposit receipts retain their original amount. Unpaid members use the latest group price; pending orders for an obsolete amount are cancelled. Cancelled or outdated quotes cannot be confirmed. The live activity is the canonical source of deposit pricing for post/feed reads.
+- `PATCH /posts/:id/details` accepts `version`, `title`, `copy`, `discountPercent` (integer 0–100), `offer` and `offerTerms`. Only the verified owner may edit pending, rejected or approved posts. Status and review records remain unchanged; basic edits cannot alter groups, publication state, membership or receipts. Approved edits persist a revisioned sync task and update associated activity content; background reconciliation completes interrupted syncs and older retries cannot overwrite newer content.
+
 All endpoints below use `/api/portal`, require a GoMate bearer token and enforce permissions on the server. Clients must send the latest integer `version` on updates, reviews and withdrawals; stale writes return 409. Legacy applications/posts without a stored version are exposed as version 0. Lists use `?page=1`, with 20 items per page.
 
 ## Registration and review

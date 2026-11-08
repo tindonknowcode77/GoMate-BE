@@ -24,6 +24,13 @@ export function createBusinessOperationsRouter(auth) {
   router.delete('/locations/:id', allow('business'), writes, json, async (req, res) => { fields(req.body, ['version']); res.json(await repo.deleteLocation(req.auth.user.id, req.params.id, version(req.body.version))) })
   router.get('/groups', allow('business', 'business-staff'), async (req, res) => res.json(await repo.listGroups(req.auth.user.id, offset(req))))
   router.get('/groups/:id', allow('business', 'business-staff'), async (req, res) => res.json(await repo.getGroup(req.auth.user.id, req.params.id)))
+  router.patch('/groups/:id/settings', allow('business'), writes, json, async (req, res) => {
+    fields(req.body, ['version', 'autoApproveMembers', 'depositAmount'])
+    if (req.body.autoApproveMembers === undefined && req.body.depositAmount === undefined) throw new HttpError(400, 'Chọn thông tin cần cập nhật.')
+    if (req.body.autoApproveMembers !== undefined && typeof req.body.autoApproveMembers !== 'boolean') throw new HttpError(400, 'Tự động duyệt phải là boolean.')
+    if (req.body.depositAmount !== undefined && (!Number.isSafeInteger(req.body.depositAmount) || req.body.depositAmount < 0)) throw new HttpError(400, 'Tiền cọc phải là số nguyên không âm.')
+    res.json(await repo.saveSettings(req.auth.user.id, req.params.id, version(req.body.version), req.body))
+  })
   router.put('/groups/:id/plan', allow('business', 'business-staff'), writes, json, async (req, res) => { fields(req.body, ['version', 'itinerary']); res.json(await repo.savePlan(req.auth.user.id, req.params.id, version(req.body.version), req.body.itinerary)) })
   router.patch('/groups/:id/deposits/:userId', allow('business', 'business-staff'), writes, json, async (req, res) => {
     fields(req.body, ['version', 'status']); if (!['paid', 'pending'].includes(req.body.status)) throw new HttpError(400, 'Invalid deposit status')

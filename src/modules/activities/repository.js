@@ -71,21 +71,25 @@ export function createActivityRepository(db) {
     async submitJoinRequest(id, user, version) {
       const target = await activities.findOne({ id }); if (target && !await audience.canView(target, user.id)) return null
       const now = new Date()
-      const request = { id: randomUUID(), userId: user.id, name: user.name, status: 'pending', createdAt: now, updatedAt: now }
+      const autoApprove = target?.organizerType === 'business' && target.autoApproveMembers === true
+      const policy = target?.autoApproveMembers === true ? true : { $ne: true }
+      const request = { id: randomUUID(), userId: user.id, name: user.name, status: autoApprove ? 'approved' : 'pending', createdAt: now, updatedAt: now }
       const row = await activities.findOneAndUpdate({ id, status: 'published', startsAt: { $gt: now }, hostId: { $ne: user.id },
+        autoApproveMembers: policy,
         ...(version !== undefined ? { version } : {}),
         $or: [{ registrationDeadline: null }, { registrationDeadline: { $gt: now } }],
         joinRequests: { $not: { $elemMatch: { userId: user.id } } },
         $expr: { $and: [{ $lt: ['$memberCount', '$maxParticipants'] }, { $lt: [{ $size: { $ifNull: ['$joinRequests', []] } }, 5000] }] },
-      }, { $push: { joinRequests: request }, $set: { updatedAt: now }, $inc: { version: 1 } }, { returnDocument: 'after' })
+      }, { $push: { joinRequests: request }, $set: { updatedAt: now, ...(autoApprove ? { scheduleConfirmedAt: null, scheduleConfirmedBy: null } : {}) }, $inc: { version: 1, ...(autoApprove ? { memberCount: 1 } : {}) } }, { returnDocument: 'after' })
       if (row) return request
       // Reuse the user's existing entry after cancellation/rejection; never create duplicate membership.
       const retry = await activities.findOneAndUpdate({ id, status: 'published', startsAt: { $gt: now }, hostId: { $ne: user.id },
+        autoApproveMembers: policy,
         ...(version !== undefined ? { version } : {}),
         $or: [{ registrationDeadline: null }, { registrationDeadline: { $gt: now } }],
         joinRequests: { $elemMatch: { userId: user.id, status: { $in: ['cancelled', 'rejected', 'left', 'removed'] } } },
         $expr: { $lt: ['$memberCount', '$maxParticipants'] },
-      }, { $set: { 'joinRequests.$': request, updatedAt: now }, $inc: { version: 1 } }, { returnDocument: 'after' })
+      }, { $set: { 'joinRequests.$': request, updatedAt: now, ...(autoApprove ? { scheduleConfirmedAt: null, scheduleConfirmedBy: null } : {}) }, $inc: { version: 1, ...(autoApprove ? { memberCount: 1 } : {}) } }, { returnDocument: 'after' })
       return retry ? request : null
     },
     async changeJoinRequest(id, { userId, hostId, requestId, status, version }) {
@@ -105,7 +109,7 @@ export function createActivityRepository(db) {
       const now = new Date()
       if (!hostAction && actorId !== userId) return null
       return activities.findOneAndUpdate({ id, status: 'published', startsAt: { $gt: now },
-        hostId: hostAction ? { $eq: actorId, $ne: userId } : { $ne: userId },
+        hostId: { $ne: userId },
         memberCount: { $gt: 1 },
         joinRequests: { $elemMatch: { userId, status: 'approved' } },
       }, { $set: { 'joinRequests.$.status': hostAction ? 'removed' : 'left',

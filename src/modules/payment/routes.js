@@ -188,6 +188,7 @@ export function createPaymentRouter(paymentRepo, authRepo, activityRepo, config)
     const payment = await paymentRepo.findPaymentById(req.params.id)
     if (!payment) throw new HttpError(404, 'Không tìm thấy giao dịch.')
 
+    if (payment.userId !== req.auth.user.id && !['admin', 'staff'].includes(req.auth.user.role)) throw new HttpError(403, 'Không có quyền xác nhận giao dịch này.')
     const confirmed = await paymentRepo.confirmPayment(payment.id, {
       confirmedBy: req.auth.user.id,
       method: 'vietqr-manual-confirm',

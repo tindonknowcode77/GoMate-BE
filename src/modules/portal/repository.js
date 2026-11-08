@@ -1,4 +1,5 @@
 import { createPostLifecycle } from './post-lifecycle.js'
+import { createPostDetails } from './post-details.js'
 import { createAdminRepository } from './admin.js'
 import { createBusinessAudience } from '../../common/business-audience.js'
 import { createBusinessOperations } from './operations.js'
@@ -7,10 +8,11 @@ import { HttpError } from '../../common/http-error.js'
 import { createCommunityRepository } from '../community/repository.js'
 import { activityFields } from '../activities/validation.js'
 
-const publicRow = { _id: 0, document: 0, lifecycleTasks: 0 }
+const publicRow = { _id: 0, document: 0, lifecycleTasks: 0, contentSync: 0 }
 export function createPortalRepository(db) {
   const community = createCommunityRepository(db)
   const lifecycle = createPostLifecycle(db), audience = createBusinessAudience(db)
+  const details = createPostDetails(db)
   const notify = (userId, key, title, text, actorId) => community.notify(userId, { key, type: 'business-update', title, text, actorId })
   const applications = db.collection('business_applications'), posts = db.collection('business_posts')
   const users = db.collection('users'), tickets = db.collection('support_tickets')
@@ -19,6 +21,7 @@ export function createPortalRepository(db) {
     total: await collection.countDocuments(filter),
   })
   return {
+    editBasicPost: details.edit,
     admin: createAdminRepository(db),
     operations: createBusinessOperations(db),
     postLifecycle: lifecycle.command,
@@ -86,7 +89,7 @@ export function createPortalRepository(db) {
       const grants = await db.collection('business_staff').find({ userId: id, status: 'approved', $or: [{ provisionedAt: { $ne: null } }, { acceptedAt: { $ne: null } }] }).toArray()
       return grants.length && await applications.findOne({ ownerId: { $in: grants.map(grant => grant.ownerId) }, status: 'approved' }) ? 'business-staff' : 'user'
     },
-    async posts(ownerId,offset) { const result=await page(posts,{...(ownerId?{ownerId}:{}),status:{$ne:'deleted'}},offset);return {...result,items:result.items.map(row=>({...row,version:row.version ?? 0}))} },
+    async posts(ownerId,offset) { const result=await page(posts,{...(ownerId?{ownerId}:{}),status:{$ne:'deleted'}},offset);return {...result,items:await details.hydrate(result.items.map(row=>({...row,version:row.version ?? 0})))} },
     async createPost(ownerId, data) {
       const user = await users.findOne({ id: ownerId })
       if (data.premium && !(user?.subscription?.plan === 'plus' && user.subscription.status === 'active')) throw new HttpError(403, 'An active Plus plan is required for premium styling')
@@ -156,6 +159,7 @@ export function createPortalRepository(db) {
       return row
     },
     async reconcilePublications() {
+      for (const row of await posts.find({ contentSync: { $exists: true } }).limit(100).toArray()) await details.reconcile(row)
       for (const pending of await posts.find({ 'lifecycleTasks.0': { $exists: true } }).limit(100).toArray()) await lifecycle.reconcile(pending)
       const staged = await db.collection('activities').find({ status: 'pending-review' }, { projection: { id: 1, businessPostId: 1 } }).limit(500).toArray()
       for (const activity of staged) if (await posts.findOne({ id: activity.businessPostId, status: 'approved' })) await db.collection('activities').updateOne({ id: activity.id, status: 'pending-review' }, { $set: { status: 'published' } })
@@ -165,9 +169,9 @@ export function createPortalRepository(db) {
       const campaigns = await posts.find({ status:'approved', 'groups.0': { $exists:true } }, { projection:{id:1,groups:1} }).toArray()
       const selected = new Map()
       for (const campaign of campaigns) { const id = await audience.choose(userId,campaign.id); if(campaign.groups.some(group=>group.activityId===id&&!group.state) && await db.collection('activities').findOne({id,status:{$nin:['deleted','cancelled','pending-review']},businessRevoked:{$ne:true}},{projection:{id:1}})) selected.set(campaign.id,id) }
-      const result = await page(posts, { status:'approved', $or:[{'groups.0':{$exists:false}},{id:{$in:[...selected.keys()]}}] }, offset, { _id:0, reviewedBy:0, reviewNote:0, reviewedAt:0, history:0, publishLeaseUntil:0, lifecycleTasks:0 })
+      const result = await page(posts, { status:'approved', $or:[{'groups.0':{$exists:false}},{id:{$in:[...selected.keys()]}}] }, offset, { _id:0, reviewedBy:0, reviewNote:0, reviewedAt:0, history:0, publishLeaseUntil:0, lifecycleTasks:0, contentSync:0 })
       for (const row of result.items) if(row.groups?.length) {row.groups=row.groups.filter(group=>group.activityId===selected.get(row.id));row.activityId=row.groups[0]?.activityId}
-      return result
+      return { ...result, items: await details.hydrate(result.items) }
     },
     async users(offset, q = '') {
       const pattern = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

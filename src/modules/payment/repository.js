@@ -65,7 +65,7 @@ export function createPaymentRepository(db, community) {
 
       const activityIds = [...new Set( allUserPayments.map(p => p.activityId).filter(Boolean) )]
       const activityRows = activityIds.length
-        ? await activities.find({ id: { $in: activityIds } }, { projection: { id: 1, status: 1, title: 1, startsAt: 1 } }).toArray()
+        ? await activities.find({ id: { $in: activityIds } }, { projection: { id: 1, status: 1, title: 1, startsAt: 1, joinRequests: 1 } }).toArray()
         : []
       const activityMap = new Map(activityRows.map(a => [a.id, a]))
 
@@ -73,7 +73,7 @@ export function createPaymentRepository(db, community) {
         const act = p.activityId ? activityMap.get(p.activityId) : null
         const activityStatus = act?.status || null
         const refundEligible = p.status === 'paid' && (
-          p.type === 'wallet_topup' ||
+          p.type === 'wallet_topup' || Boolean(act?.joinRequests?.some(item => item.userId === userId && item.status !== 'approved')) ||
           ['cancelled', 'expired', 'published'].includes(activityStatus)
         )
         return {
@@ -112,7 +112,7 @@ export function createPaymentRepository(db, community) {
 
       if (payment.activityId) {
         const activity = await activities.findOne({ id: payment.activityId })
-        if (activity && ['in-progress', 'completed'].includes(activity.status)) {
+        if (activity && ['in-progress', 'completed'].includes(activity.status) && !activity.joinRequests?.some(item => item.userId === userId && item.status !== 'approved')) {
           throw new HttpError(409, 'Hoạt động đang diễn ra hoặc đã hoàn thành, không thể hoàn tiền cọc tự động.')
         }
       }
@@ -148,7 +148,7 @@ export function createPaymentRepository(db, community) {
           )
           await activities.updateOne(
             { id: activity.id },
-            { $set: { businessReceipts: updatedReceipts, updatedAt: now } }
+            { $set: { businessReceipts: updatedReceipts, ...(activity.status === 'published' ? { scheduleConfirmedAt: null, scheduleConfirmedBy: null } : {}), updatedAt: now } }
           )
         }
       }
@@ -181,9 +181,15 @@ export function createPaymentRepository(db, community) {
       if (!payment) throw new HttpError(404, 'Không tìm thấy thông tin giao dịch.')
       if (payment.status === 'paid') return payment // Idempotent
 
+      if (payment.status !== 'pending') throw new HttpError(409, 'Giao dịch không còn hiệu lực. Vui lòng tạo lại mã thanh toán.')
+      if (payment.type === 'activity_deposit' && payment.activityId) {
+        const current = await activities.findOne({ id: payment.activityId })
+        if (current && payment.amount !== (current.depositAmount ?? current.business?.depositAmount ?? 0)) throw new HttpError(409, 'Mức cọc đã thay đổi. Vui lòng tạo lại mã thanh toán.')
+      }
+
       const now = new Date()
-      await payments.updateOne(
-        { id: payment.id },
+      const confirmed = await payments.updateOne(
+        { id: payment.id, status: 'pending' },
         {
           $set: {
             status: 'paid',
@@ -194,6 +200,12 @@ export function createPaymentRepository(db, community) {
           },
         }
       )
+
+      if (!confirmed.matchedCount) {
+        const latest = await payments.findOne({ id: payment.id })
+        if (latest?.status === 'paid') return latest
+        throw new HttpError(409, 'Giao dịch đã thay đổi. Vui lòng tải lại.')
+      }
 
       payment.status = 'paid'
       payment.paidAt = now

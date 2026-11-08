@@ -1,5 +1,30 @@
 # Development log
 
+## 2026-11-09 - Business auto-approval, deposit edits and post details
+
+### Summary
+
+- Add owner-only, versioned group settings for automatic membership approval and deposit amounts before a published group's start. Keep existing audience, profile, deadline and atomic capacity guards on join requests; accepted requests notify the member and host.
+- Preserve paid receipt amounts, display current prices for unpaid members, cancel obsolete pending payment orders and reject confirmations of cancelled or outdated quotes.
+- Add a strict basic-post PATCH endpoint that retains moderation status and audit history. Persist revisioned content-sync work with the post and reconcile activity content after interruption without touching membership, lifecycle or deposit records. Feed/post reads hydrate deposit prices from published activities.
+- Return effective business/staff roles in admin account lists and hide internal synchronization work from public/admin responses.
+
+### Files changed
+
+- `src/modules/portal/{admin.js,operations-routes.js,operations.js,post-details.js,repository.js,routes.js}`.
+- `src/modules/activities/{repository.js,routes.js}`, `src/modules/payment/repository.js`.
+- `tests/business-settings.test.js`; portal API and development documentation.
+
+### Verification
+
+- `npm.cmd test`: 141 existing tests passed.
+- `node --test tests/business-settings.test.js`: Passed ownership/type/amount checks, stale writes, automatic vs manual requests, concurrent capacity, preservation of paid receipts, stale payment rejection, approved-post editing and interrupted/out-of-order synchronization recovery.
+- Paired frontend admin/campaign browser regressions and portal reliability browser test: Passed using isolated MongoDB and real HTTP APIs.
+
+### Remaining work
+
+- Settings apply before group start; enabling automatic approval does not process the pre-existing pending queue. No production data migration is required; the new policy defaults to manual approval.
+
 ## 2026-11-05 - Harden admin input validation and revision checks
 
 ### Summary
