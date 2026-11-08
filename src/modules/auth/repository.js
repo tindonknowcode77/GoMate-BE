@@ -1,10 +1,12 @@
 import { createPaymentRepository } from '../payment/repository.js'
+import { createFinanceRepository } from '../payment/finance.js'
 import { createPortalRepository } from '../portal/repository.js'
 import { createDraftRepository } from '../drafts/repository.js'
 import { randomUUID } from 'node:crypto'
 import { verifyPassword } from './password.js'
 import { createCommunityRepository } from '../community/repository.js'
 import { HttpError } from '../../common/http-error.js'
+import { isStaffAccount } from '../../common/business-staff-access.js'
 
 export function createAuthRepository(db) {
   const users = db.collection('users')
@@ -12,9 +14,11 @@ export function createAuthRepository(db) {
   const community = createCommunityRepository(db)
   return {
     community,
+    finance: createFinanceRepository(db),
     portal: createPortalRepository(db),
     drafts: createDraftRepository(db),
     payments: createPaymentRepository(db, community),
+    isStaffAccount: userId => isStaffAccount(db, userId),
     async createUser({ email, name, passwordHash }) {
       const user = { id: randomUUID(), email, name, password_hash: passwordHash, email_verified: false, created_at: new Date() }
       await users.insertOne(user)

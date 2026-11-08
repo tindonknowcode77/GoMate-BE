@@ -60,8 +60,9 @@ test('business settings enforce owner access, atomic auto approval, current depo
   assert.equal(group.depositMembers.find(row => row.id === users[2].id).status, 'paid')
   assert.equal((await db.collection('payments').findOne({ id: 'pending-settings' })).status, 'cancelled')
   const payments = createPaymentRepository(db)
-  await assert.rejects(() => payments.confirmPayment('pending-settings'), error => error.status === 409)
-  assert.equal((await payments.confirmPayment('paid-settings')).amount, 50000)
+  await assert.rejects(() => payments.confirmPayment('pending-settings'), error => error.status === 400)
+  await assert.rejects(() => payments.confirmPayment('paid-settings'), error => error.status === 400)
+  assert.equal((await payments.findPaymentById('paid-settings')).verification, undefined)
   assert.equal(ok(await call(0, '/portal/posts')).items[0].groups[0].depositAmount, 70000)
   const details = { version: post.version, title: 'Edited approved workshop', copy: 'New public copy', discountPercent: 15, offer: 'Coffee', offerTerms: 'One per member' }
   ok(await call(6, `/portal/posts/${post.id}/details`, 'PATCH', details), 404)

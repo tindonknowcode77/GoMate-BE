@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto'
 // VietQR / NAPAS 247 EMVCo QR Code generator
 
 export const BANK_BINS = {
@@ -100,7 +101,7 @@ export function buildVietQrImageUrl({ bankId = 'MB', accountNo, template = 'comp
  * Generates an order memo code for bank transfers (e.g. GM718293)
  */
 export function generateOrderCode() {
-  const digits = Math.floor(100000 + Math.random() * 900000)
+  const digits = randomInt(100000000000, 1000000000000)
   return `GM${digits}`
 }
 

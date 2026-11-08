@@ -248,8 +248,11 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     approved.sort((a, b) => a.updatedAt - b.updatedAt || a.userId.localeCompare(b.userId))
     const receipts = new Map((activity.businessReceipts ?? []).map(item => [item.userId, item]))
     const depositAmount = activity.organizerType === 'business' ? (activity.depositAmount ?? activity.business?.depositAmount ?? 0) : 0
+    const staffMembers = ((await repository.listAssignedStaff?.(activity)) ?? []).filter(item => item.userId !== activity.hostId)
+    const staffIds = new Set(staffMembers.map(item => item.userId))
     const items = [{ userId: activity.hostId, name: activity.hostName, role: 'host' },
-      ...approved.map(item => ({ userId: item.userId, name: item.name, role: 'member', ...(depositAmount > 0 ? { depositAmount, depositStatus: receipts.get(item.userId)?.status || 'pending' } : {}) }))]
+      ...staffMembers.map(item => ({ userId: item.userId, name: item.name, role: 'staff', title: item.title || 'Nhân sự quản lý' })),
+      ...approved.filter(item => !staffIds.has(item.userId)).map(item => ({ userId: item.userId, name: item.name, role: 'member', ...(depositAmount > 0 ? { depositAmount, depositStatus: receipts.get(item.userId)?.status || 'pending' } : {}) }))]
     const paged = await Promise.all(items.slice((page - 1) * limit, page * limit).map(async item => {
       const user = await authRepository.getProfile(item.userId)
       return { ...item, name: user?.name ?? item.name, avatarUrl: user?.avatar_url ?? null }
@@ -307,6 +310,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   router.delete('/:id/members/:userId', writes, (req, res) => removeMember(req, res, true))
   router.post('/:id/join-requests', writes, express.json({ limit: '16kb' }), async (req, res) => {
     if (req.body !== undefined && (!req.body || Array.isArray(req.body) || typeof req.body !== 'object' || Object.keys(req.body).length)) throw new HttpError(400, 'Join request body must be empty')
+    if (await repository.isStaffAccount?.(req.auth.user.id)) throw new HttpError(403, 'Tài khoản nhân sự doanh nghiệp chỉ dùng để quản lý các nhóm được phân công, không thể tham gia hoạt động khác.')
     const activity = await find(req.params.id)
     if (await authRepository.community?.blocked(req.auth.user.id, activity.hostId)) throw new HttpError(403, 'Không thể tham gia hoạt động của tài khoản đã chặn')
     if (activity.hostId === req.auth.user.id) throw new HttpError(403, 'Host cannot request to join their own activity')
@@ -369,6 +373,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     res.json({ activity: publicActivity(row) })
   })
   router.post('/', writes, express.json({ limit: '86mb' }), async (req, res) => {
+    if (await repository.isStaffAccount?.(req.auth.user.id)) throw new HttpError(403, 'Tài khoản nhân sự doanh nghiệp không thể tạo bài đăng hoạt động cá nhân.')
     const fields = activityFields(req.body)
     if (fields.organizerType === 'business') throw new HttpError(403, 'Bài đăng doanh nghiệp chỉ được tạo qua nền tảng website dành cho doanh nghiệp.')
     if (fields.financialConfig && fields.financialConfig.treasurerUserId !== req.auth.user.id) throw new HttpError(400, 'Treasurer must be the activity host')

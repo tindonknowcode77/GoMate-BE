@@ -4,7 +4,7 @@ import { createCommunityRepository } from '../community/repository.js'
 import { createActivityRepository } from '../activities/repository.js'
 import { activityReadiness } from '../../common/activity-readiness.js'
 import { planningFields } from '../../common/activity-plan.js'
-import { businessWallet } from './wallet.js'
+import { createFinanceRepository } from '../payment/finance.js'
 
 const view = { _id: 0 }
 function buildAttendanceRoster(row) {
@@ -14,9 +14,9 @@ function buildAttendanceRoster(row) {
 }
 export function createBusinessOperations(db) {
   const locations = db.collection('business_locations'), staff = db.collection('business_staff'), activities = db.collection('activities')
-  const bankAccounts = db.collection('business_bank_accounts'), payoutsCol = db.collection('business_payouts')
+  const bankAccounts = db.collection('business_bank_accounts'), finance = createFinanceRepository(db)
   const community = createCommunityRepository(db), repository = createActivityRepository(db)
-  const notify = (userId, key, title, text, actorId) => community.notify(userId, { key, type: 'business-update', title, text, actorId })
+  const notify = (userId, key, title, text, actorId, activityId) => community.notify(userId, { key, type: 'business-update', title, text, actorId, ...(activityId ? { activityId } : {}) })
   const page = async (collection, query, offset) => ({ items: await collection.find(query, { projection: view }).sort({ createdAt: -1, id: 1 }).skip(offset).limit(20).toArray(), total: await collection.countDocuments(query) })
   const verified = ownerId => db.collection('business_applications').findOne({ ownerId, status: 'approved' }, { projection: { id: 1 } })
   async function assigned(userId) {
@@ -50,25 +50,7 @@ export function createBusinessOperations(db) {
   }
   return {
     assigned,
-    async wallet(ownerId) {
-      if (!await verified(ownerId)) throw new HttpError(403, 'Verified business required')
-      const base = businessWallet(await activities.find({ hostId: ownerId, organizerType: 'business' }, { projection: { id: 1, title: 1, businessGroupName: 1, status: 1, businessReceipts: 1, joinRequests: 1, attendance: 1 } }).toArray())
-      const [bankAccount, payouts] = await Promise.all([
-        bankAccounts.findOne({ ownerId }, { projection: view }),
-        payoutsCol.find({ ownerId }, { projection: view }).sort({ createdAt: -1 }).limit(50).toArray(),
-      ])
-      const paidOutAmount = payouts
-        .filter(p => ['pending', 'completed'].includes(p.status))
-        .reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
-      const withdrawableAmount = Math.max(0, base.eligiblePayoutAmount - paidOutAmount)
-      return {
-        ...base,
-        bankAccount: bankAccount || null,
-        payouts,
-        paidOutAmount,
-        withdrawableAmount,
-      }
-    },
+    async wallet(ownerId) { return finance.businessWallet(ownerId) },
     async saveBankAccount(ownerId, { bankId, accountNo, accountName, branch = '' } = {}) {
       if (!await verified(ownerId)) throw new HttpError(403, 'Verified business required')
       const cleanBankId = String(bankId || '').trim().toUpperCase()
@@ -90,56 +72,7 @@ export function createBusinessOperations(db) {
       await bankAccounts.updateOne({ ownerId }, { $set: record, $setOnInsert: { createdAt: now } }, { upsert: true })
       return record
     },
-    async requestPayout(ownerId, { amount, bankId, accountNo, accountName, note = '' } = {}) {
-      if (!await verified(ownerId)) throw new HttpError(403, 'Verified business required')
-      if (bankId && accountNo && accountName) {
-        await this.saveBankAccount(ownerId, { bankId, accountNo, accountName })
-      }
-      const currentWallet = await this.wallet(ownerId)
-      const targetBank = currentWallet.bankAccount
-      if (!targetBank || !targetBank.accountNo || !targetBank.accountName) {
-        throw new HttpError(400, 'Vui lòng cài đặt tài khoản ngân hàng thụ hưởng trước khi yêu cầu giải ngân.')
-      }
-      const maxWithdrawable = currentWallet.withdrawableAmount
-      if (maxWithdrawable <= 0) {
-        throw new HttpError(400, 'Hiện chưa có số dư khả dụng đủ điều kiện giải ngân (cần sự kiện hoàn tất).')
-      }
-      const requestedAmount = amount !== undefined && amount !== null && amount !== '' ? Number(amount) : maxWithdrawable
-      if (!Number.isSafeInteger(requestedAmount) || requestedAmount <= 0 || requestedAmount > maxWithdrawable) {
-        throw new HttpError(400, `Số tiền yêu cầu giải ngân không hợp lệ (tối đa ${maxWithdrawable.toLocaleString('vi-VN')}đ).`)
-      }
-      const now = new Date()
-      const referenceCode = `PO${Math.floor(100000 + Math.random() * 900000)}`
-      const payout = {
-        id: randomUUID(),
-        ownerId,
-        referenceCode,
-        amount: requestedAmount,
-        bankAccount: {
-          bankId: targetBank.bankId,
-          accountNo: targetBank.accountNo,
-          accountName: targetBank.accountName,
-          branch: targetBank.branch || '',
-        },
-        note: String(note || 'Giải ngân 90% doanh thu cọc sự kiện hoàn tất').trim().slice(0, 250),
-        status: 'completed',
-        createdAt: now,
-        processedAt: now,
-      }
-      await payoutsCol.insertOne(payout)
-      await notify(
-        ownerId,
-        `business-payout:${payout.id}`,
-        'Giải ngân doanh thu thành công',
-        `Đã chuyển ${requestedAmount.toLocaleString('vi-VN')}đ (${referenceCode}) về ${targetBank.bankId} · ${targetBank.accountNo}`,
-        ownerId
-      ).catch(() => {})
-      const { _id, ...cleanPayout } = payout
-      return {
-        payout: cleanPayout,
-        wallet: await this.wallet(ownerId),
-      }
-    },
+    async requestPayout(ownerId, body) { return finance.requestPayout(ownerId, body) },
     async listLocations(ownerId, offset) {
       if (await verified(ownerId)) return page(locations, { ownerId }, offset)
       const grants = await assigned(ownerId)
@@ -173,7 +106,7 @@ export function createBusinessOperations(db) {
       if (data.autoApproveMembers !== undefined) patch.autoApproveMembers = data.autoApproveMembers
       if (data.depositAmount !== undefined) { patch.depositAmount = data.depositAmount; patch.business = { ...row.business, depositAmount: data.depositAmount }; patch.scheduleConfirmedAt = null; patch.scheduleConfirmedBy = null }
       const result = await change(row, userId, version, patch, 'business-settings-updated')
-      if (data.depositAmount !== undefined && data.depositAmount !== row.depositAmount) await db.collection('payments').updateMany({ activityId: id, type: 'activity_deposit', status: 'pending', amount: { $ne: data.depositAmount } }, { $set: { status: 'cancelled', cancellationReason: 'deposit-changed', updatedAt: new Date() } })
+      if (data.depositAmount !== undefined && data.depositAmount !== row.depositAmount) await db.collection('payments').updateMany({ activityId: id, type: 'activity_deposit', status: 'pending', amount: { $ne: data.depositAmount } }, { $set: { status: 'cancelled', cancellationReason: 'deposit-changed', updatedAt: new Date() }, $unset: { activeKey: '' } })
       return result
     },
     async savePlan(userId, id, version, itinerary) {
@@ -274,7 +207,7 @@ export function createBusinessOperations(db) {
         catch (error) { if (error.code === 11000) throw new HttpError(409, 'Email already registered'); throw error }
       }
       const business = await db.collection('business_applications').findOne({ ownerId, status: 'approved' }, { projection: { company: 1 } })
-      const assignedGroups = await activities.find({ id: { $in: data.groupIds }, hostId: ownerId }, { projection: { title: 1 } }).toArray()
+      const assignedGroups = await activities.find({ id: { $in: data.groupIds }, hostId: ownerId }, { projection: { id: 1, title: 1 } }).toArray()
       const now = new Date()
       const row = { ...data, businessName: business.company, groupNames: assignedGroups.map(item => item.title), id: id || randomUUID(), ownerId, userId: user.id, status: 'approved', provisionedAt: previous?.provisionedAt || now, acceptedAt: previous?.acceptedAt || null, version: (previous?.version ?? 0) + 1, updatedAt: now }
       try {
@@ -286,7 +219,9 @@ export function createBusinessOperations(db) {
         if (error.code === 11000) throw new HttpError(409, 'Employee already belongs to this business')
         throw error
       }
-      await notify(user.id, 'business-staff:' + row.id + ':' + row.version, 'Phân công nhân viên doanh nghiệp', 'Bạn có thể quản lý ngay các nhóm được doanh nghiệp phân công.', ownerId)
+      await notify(user.id, 'business-staff:' + row.id + ':' + row.version, 'Phân công nhân viên doanh nghiệp', assignedGroups.length ? 'Bạn được phân công quản lý: ' + assignedGroups.map(item => item.title).join(', ') : 'Bạn có thể quản lý ngay các nhóm được doanh nghiệp phân công.', ownerId, assignedGroups[0]?.id)
+      if (createdUser) await community.notify(user.id, { key: 'staff-welcome:' + row.id, type: 'activity', title: 'Tài khoản Nhân sự doanh nghiệp (' + business.company + ')', text: assignedGroups.length ? 'Bạn đã được cấp tài khoản nhân sự và phân công quản lý: ' + assignedGroups.map(item => item.title).join(', ') : 'Tài khoản nhân sự của bạn tại ' + business.company + ' đã sẵn sàng trên ứng dụng GoMate.', ...(assignedGroups[0]?.id ? { activityId: assignedGroups[0].id } : {}), actorId: ownerId })
+      for (const item of assignedGroups.filter(group => !previous?.groupIds?.includes(group.id))) await community.notify(user.id, { key: 'staff-assigned:' + row.id + ':' + item.id + ':' + row.version, type: 'activity', title: 'Bạn được phân công quản lý nhóm', text: item.title + ' · ' + business.company, activityId: item.id, actorId: ownerId })
       return row
     },
     async removeStaff(ownerId, id, version) {

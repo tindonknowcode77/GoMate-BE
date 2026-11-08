@@ -43,6 +43,7 @@ export function readConfig(env = process.env) {
     vietqrAccountNo: env.VIETQR_ACCOUNT_NO?.trim() || '0901234567',
     vietqrAccountName: env.VIETQR_ACCOUNT_NAME?.trim() || 'CONG TY GOMATE',
     vietqrTemplate: env.VIETQR_TEMPLATE?.trim() || 'compact2',
+    paymentWebhookSecret: env.PAYMENT_WEBHOOK_SECRET?.trim() || '',
     sessionTtlHours,
     rememberSessionTtlHours,
     trustProxyHops,

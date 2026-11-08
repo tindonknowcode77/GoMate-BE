@@ -3,7 +3,7 @@ import { syncActivityMessages, closedRequests } from './chat-events.js'
 import { randomUUID } from 'node:crypto'
 import { publicActivity } from './validation.js'
 import { createCommunityRepository } from '../community/repository.js'
-import { staffGroupScope, isAssignedStaff } from '../../common/business-staff-access.js'
+import { staffGroupScope, isAssignedStaff, isStaffAccount, listAssignedStaff } from '../../common/business-staff-access.js'
 
 export function createActivityRepository(db) {
   const activities = db.collection('activities')
@@ -22,6 +22,8 @@ export function createActivityRepository(db) {
   return {
     canViewBusinessGroup: audience.canView,
     isAssignedStaff: (userId, activityId) => isAssignedStaff(db, userId, activityId),
+    isStaffAccount: userId => isStaffAccount(db, userId),
+    listAssignedStaff: activity => listAssignedStaff(db, activity),
     async create(fields, host) {
       const now = new Date()
       const { initialMembers = [], initialFriendIds: _initialFriendIds, ...stored } = fields
@@ -46,7 +48,7 @@ export function createActivityRepository(db) {
     async counts(userId) {
       const upcoming = { status: 'published', startsAt: { $gt: new Date() } }
       const pending = await activities.countDocuments({ ...upcoming, joinRequests: { $elemMatch: { userId, status: 'pending' } } })
-      const owned = await activities.find({ ...upcoming, hostId: userId }, { projection: { joinRequests: 1 } }).toArray()
+      const owned = await activities.find({ ...upcoming, $or: [{ hostId: userId }, await staffGroupScope(db, userId)] }, { projection: { joinRequests: 1 } }).toArray()
       return { pending, hostRequests: owned.reduce((total, row) => total + (row.joinRequests ?? []).filter(item => item.status === 'pending').length, 0) }
     },
     async participating(userId, { page, limit, status }, requests = false) {
@@ -171,6 +173,7 @@ export function createActivityRepository(db) {
       return { items: rows.map(publicActivity), total, page, limit, hasMore: page * limit < total }
     },
     async search(options, userId, profile = {}) {
+      if (await isStaffAccount(db, userId)) return { items: [], page: options.page, limit: options.limit, total: 0, hasMore: false }
       const excluded = await community.blockedIds(userId)
       const match = { status: 'published', startsAt: { $gt: new Date() }, hostId: { $nin: [userId, ...excluded] },
         $expr: { $lt: ['$memberCount', '$maxParticipants'] },

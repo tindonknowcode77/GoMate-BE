@@ -13,7 +13,7 @@ test('VietQR payment module and QR scanning flow', async (t) => {
   // 1. Test VietQR standard generator
   await t.test('generates valid VietQR EMVCo string and QR image URL', () => {
     const orderCode = generateOrderCode()
-    assert.match(orderCode, /^GM\d{6}$/)
+    assert.match(orderCode, /^GM\d{12}$/)
 
     const payload = buildVietQrPayload({
       bankBin: '970422',
@@ -58,6 +58,7 @@ test('VietQR payment module and QR scanning flow', async (t) => {
   const activityRepo = createActivityRepository(db)
   const config = readConfig({
     PORT: 3001,
+    PAYMENT_WEBHOOK_SECRET: 's'.repeat(32),
     VIETQR_BANK_ID: 'MB',
     VIETQR_ACCOUNT_NO: '0901234567',
     VIETQR_ACCOUNT_NAME: 'CONG TY GOMATE',
@@ -83,6 +84,7 @@ test('VietQR payment module and QR scanning flow', async (t) => {
     const tokenHash = hashToken(token)
     await authRepo.createSession({ tokenHash, userId: member.id, expiresAt: new Date(Date.now() + 86400000) })
 
+    await db.collection('business_applications').insertOne({ id: 'initial-biz', ownerId: host.id, status: 'approved' })
     // Create activity with deposit required
     const activity = await activityRepo.create({
       organizerType: 'business',
@@ -102,6 +104,7 @@ test('VietQR payment module and QR scanning flow', async (t) => {
       { id: activity.id },
       {
         $set: {
+          status: 'published', memberCount: 2,
           joinRequests: [
             { id: 'req-1', userId: member.id, name: member.name, status: 'approved', createdAt: new Date() },
           ],
@@ -132,7 +135,7 @@ test('VietQR payment module and QR scanning flow', async (t) => {
       assert.equal(data.payment.status, 'pending')
       assert.ok(data.payment.qrPayload.startsWith('000201010212'))
       assert.ok(data.payment.qrImageUrl.includes('vietqr.io'))
-      assert.match(data.payment.orderCode, /^GM\d{6}$/)
+      assert.match(data.payment.orderCode, /^GM\d{12}$/)
       assert.equal(data.payment.bank.accountNo, '0901234567')
 
       paymentId = data.payment.id
@@ -140,7 +143,7 @@ test('VietQR payment module and QR scanning flow', async (t) => {
     })
 
     await t.test('GET /api/payments/:id/status polls status', async () => {
-      const res = await fetch(`${base}/payments/${paymentId}/status`)
+      const res = await fetch(`${base}/payments/${paymentId}/status`, { headers: { Authorization: `Bearer ${token}` } })
       assert.equal(res.status, 200)
       const data = await res.json()
       assert.equal(data.status, 'pending')
@@ -162,11 +165,12 @@ test('VietQR payment module and QR scanning flow', async (t) => {
     await t.test('POST /api/payments/webhook confirms payment via bank transfer memo', async () => {
       const res = await fetch(`${base}/payments/webhook`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-gomate-webhook-secret': 's'.repeat(32) },
         body: JSON.stringify({
           description: `CHUYEN TIEN ${orderCode} COC GOMATE`,
           amount: 50000,
           transactionRef: 'FT2412345678',
+          direction: 'in', accountNo: '0901234567',
         }),
       })
 
@@ -220,12 +224,6 @@ test('VietQR payment module and QR scanning flow', async (t) => {
     await t.test('Business owner can configure bank account and request payout when activity completes', async () => {
       // Mark host as verified business and complete activity
       await db.collection('users').updateOne({ id: host.id }, { $set: { email_verified: true } })
-      await db.collection('business_applications').insertOne({
-        id: 'biz-app-1',
-        ownerId: host.id,
-        status: 'approved',
-        company: 'GoMate Partner Studio',
-      })
       await db.collection('activities').updateOne({ id: activity.id }, { $set: { status: 'completed' } })
 
       const hostToken = newToken()
@@ -260,16 +258,12 @@ test('VietQR payment module and QR scanning flow', async (t) => {
         },
         body: JSON.stringify({
           amount: 45000,
+          activityId: activity.id, clientRequestId: 'early-payout-attempt',
           note: 'Rút doanh thu sự kiện hoàn tất',
         }),
       })
-      assert.equal(payoutRes.status, 201)
-      const payoutData = await payoutRes.json()
-      assert.equal(payoutData.payout.amount, 45000)
-      assert.equal(payoutData.payout.status, 'completed')
-      assert.match(payoutData.payout.referenceCode, /^PO\d{6}$/)
-      assert.equal(payoutData.wallet.paidOutAmount, 45000)
-      assert.equal(payoutData.wallet.withdrawableAmount, 0)
+      assert.equal(payoutRes.status, 409)
+      assert.equal((await authRepo.finance.businessWallet(host.id)).paidOutAmount, 0)
     })
 
     await t.test('POST /api/payments/:id/refund refunds deposit when activity is cancelled', async () => {
@@ -289,8 +283,9 @@ test('VietQR payment module and QR scanning flow', async (t) => {
       })
       assert.equal(refundRes.status, 200)
       const refundData = await refundRes.json()
-      assert.equal(refundData.payment.status, 'refunded')
-      assert.match(refundData.payment.refundInfo.refundCode, /^RF\d{6}$/)
+      assert.equal(refundData.payment.status, 'paid')
+      assert.equal(refundData.payment.refundRequest.status, 'pending')
+      assert.equal(refundData.payment.financeState, 'refund_requested')
     })
   } finally {
     server.close()

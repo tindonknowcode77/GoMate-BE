@@ -96,7 +96,7 @@ export function createProfileRouter(repository, config, storage = createAvatarSt
     res.type('image/webp').send(data)
   })
   router.use(authenticate(repository))
-  router.get('/me', async (req, res) => res.json({ profile: profile(await repository.getProfile(req.auth.user.id)) }))
+  router.get('/me', async (req, res) => { const user = await repository.getProfile(req.auth.user.id); const isStaff = Boolean(user?.businessManagedBy) || Boolean(await repository.isStaffAccount?.(req.auth.user.id)); res.json({ profile: { ...profile(user), ...(isStaff ? { isStaff: true } : {}) } }) })
   router.get('/:id', async (req, res) => {
     if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) throw new HttpError(404, 'Profile not found')
     if (await repository.community?.blocked(req.auth.user.id, req.params.id)) throw new HttpError(403, 'Không thể xem hồ sơ của tài khoản đã chặn')

@@ -23,6 +23,12 @@ test('one server serves the SPA, assets and API without masking missing endpoint
       assert.match(await response.text(), /GoMate/)
       assert.equal(response.headers.get('cache-control'), 'no-cache')
       assert.ok(!response.headers.get('content-security-policy').includes('upgrade-insecure-requests'))
+      const csp = response.headers.get('content-security-policy')
+      const images = csp.split(';').find(directive => directive.trim().startsWith('img-src ')).trim().split(/\s+/).slice(1)
+      assert.ok(images.includes('https://img.vietqr.io'), 'VietQR payment images must be allowed on SPA pages')
+      assert.ok(!images.includes('*') && !images.includes('https:'), 'image permissions must remain restricted to named sources')
+      const scripts = csp.split(';').find(directive => directive.trim().startsWith('script-src '))
+      assert.ok(!scripts.includes('img.vietqr.io'), 'VietQR only needs image permission')
     }
     const asset = await fetch(`${base}/assets/app.js`)
     assert.equal(asset.status, 200)

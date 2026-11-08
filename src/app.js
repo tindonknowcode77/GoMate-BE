@@ -33,7 +33,7 @@ export function createApp(config = readConfig(), { authRepository, activityRepos
       'frame-src': ["'self'", 'https://accounts.google.com/gsi/'],
       'connect-src': ["'self'", 'https://accounts.google.com/gsi/'],
       'media-src': ["'self'", 'blob:'],
-      'img-src': ["'self'", 'data:', 'blob:', 'https://res.cloudinary.com', 'https://images.unsplash.com', 'https://randomuser.me', 'https://tile.openstreetmap.org'],
+      'img-src': ["'self'", 'data:', 'blob:', 'https://res.cloudinary.com', 'https://images.unsplash.com', 'https://randomuser.me', 'https://tile.openstreetmap.org', 'https://img.vietqr.io'],
       'style-src': ["'self'", "'unsafe-inline'", 'https://accounts.google.com/gsi/style'],
     } },
   }))

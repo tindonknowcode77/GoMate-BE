@@ -1,254 +1,85 @@
+import { timingSafeEqual } from 'node:crypto'
 import { Router } from 'express'
+import { rateLimit } from 'express-rate-limit'
 import { authenticate } from '../../middlewares/authenticate.js'
 import { HttpError } from '../../common/http-error.js'
+import { fields } from '../portal/validation.js'
 import { buildVietQrImageUrl, buildVietQrPayload, generateOrderCode, getBankBin } from './vietqr.js'
 
 export function createPaymentRouter(paymentRepo, authRepo, activityRepo, config) {
-  const router = Router()
-
-  const bankConfig = {
-    bankId: config.vietqrBankId || 'MB',
-    bankBin: config.vietqrBankBin || getBankBin(config.vietqrBankId || 'MB'),
-    accountNo: config.vietqrAccountNo || '0901234567',
-    accountName: config.vietqrAccountName || 'CONG TY GOMATE',
-    template: config.vietqrTemplate || 'compact2',
-  }
-
-  // 1. Create QR Payment for Activity Deposit / Fee
-  router.post('/create-qr', authenticate(authRepo), async (req, res) => {
-    const { type = 'activity_deposit', activityId, amount } = req.body || {}
-    const user = req.auth.user
-
-    if (!['activity_deposit', 'activity_fee', 'plus_subscription', 'wallet_topup'].includes(type)) {
-      throw new HttpError(400, 'Loại thanh toán không hợp lệ.')
-    }
-
-    let finalAmount = Number(amount) || 0
-    let activityTitle = ''
-    let activity = null
-
-    if (type === 'activity_deposit' || type === 'activity_fee') {
-      if (!activityId) throw new HttpError(400, 'Thiếu activityId cho giao dịch này.')
-      activity = await activityRepo.get(activityId)
-      if (!activity) throw new HttpError(404, 'Không tìm thấy hoạt động.')
-
-      activityTitle = activity.title
-
-      if (type === 'activity_deposit') {
-        const requiredDeposit = activity.depositAmount ?? activity.business?.depositAmount ?? 0
-        if (requiredDeposit <= 0) {
-          throw new HttpError(400, 'Hoạt động này không yêu cầu tiền cọc.')
-        }
-
-        // Check if member is approved
-        const joinRequest = (activity.joinRequests ?? []).find(item => item.userId === user.id)
-        if (!joinRequest || joinRequest.status !== 'approved') {
-          throw new HttpError(403, 'Chỉ thành viên đã được duyệt tham gia mới có thể thanh toán cọc.')
-        }
-
-        // Check if member already paid
-        const alreadyPaid = (activity.businessReceipts ?? []).some(
-          receipt => receipt.userId === user.id && receipt.status === 'paid'
-        )
-        if (alreadyPaid) {
-          throw new HttpError(409, 'Bạn đã thanh toán tiền cọc cho hoạt động này rồi.')
-        }
-
-        finalAmount = requiredDeposit
-      } else if (type === 'activity_fee') {
-        finalAmount = finalAmount || activity.estimatedCost || 0
-      }
-    }
-
-    if (finalAmount <= 0) {
-      throw new HttpError(400, 'Số tiền thanh toán phải lớn hơn 0.')
-    }
-
-    // Check if user already has an active pending payment for this exact purpose
-    const pending = await paymentRepo.findPendingPayment({
-      userId: user.id,
-      activityId,
-      type,
-    })
-
-    if (pending && pending.amount === finalAmount) {
-      return res.json({ payment: pending })
-    }
-
-    const orderCode = generateOrderCode()
-    const description = `${orderCode} COC GOMATE`
-
-    const qrPayload = buildVietQrPayload({
-      bankBin: bankConfig.bankBin,
-      accountNo: bankConfig.accountNo,
-      amount: finalAmount,
-      description,
-    })
-
-    const qrImageUrl = buildVietQrImageUrl({
-      bankId: bankConfig.bankId,
-      accountNo: bankConfig.accountNo,
-      template: bankConfig.template,
-      amount: finalAmount,
-      description,
-      accountName: bankConfig.accountName,
-    })
-
-    const payment = await paymentRepo.createPayment({
-      userId: user.id,
-      userName: user.name,
-      type,
-      activityId,
-      activityTitle,
-      amount: finalAmount,
-      description,
-      orderCode,
-      bank: {
-        bankId: bankConfig.bankId,
-        bankBin: bankConfig.bankBin,
-        accountNo: bankConfig.accountNo,
-        accountName: bankConfig.accountName,
-      },
-      qrPayload,
-      qrImageUrl,
-    })
-
-    res.status(201).json({ payment })
-  })
-
-  // 2. Get user's payment status for an activity
-  router.get('/activity/:activityId/me', authenticate(authRepo), async (req, res) => {
-    const { activityId } = req.params
-    const user = req.auth.user
-
-    const activity = await activityRepo.get(activityId)
-    if (!activity) throw new HttpError(404, 'Không tìm thấy hoạt động.')
-
-    const depositAmount = activity.depositAmount ?? activity.business?.depositAmount ?? 0
-    const receipt = (activity.businessReceipts ?? []).find(r => r.userId === user.id)
-    const isPaid = receipt?.status === 'paid'
-
-    const pendingPayment = isPaid ? null : await paymentRepo.findPendingPayment({
-      userId: user.id,
-      activityId,
-      type: 'activity_deposit',
-    })
-
-    res.json({
-      activityId,
-      activityTitle: activity.title,
-      depositRequired: depositAmount > 0,
-      depositAmount,
-      isPaid,
-      receipt: receipt || null,
-      pendingPayment: pendingPayment || null,
-      bankInfo: {
-        bankId: bankConfig.bankId,
-        accountNo: bankConfig.accountNo,
-        accountName: bankConfig.accountName,
-      },
-    })
-  })
-
-  // 2.5 Get user's payment & wallet history
-  router.get('/history', authenticate(authRepo), async (req, res) => {
-    const page = Math.max(1, Number(req.query.page) || 1)
-    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20))
-    const result = await paymentRepo.listUserPayments(req.auth.user.id, { page, limit })
-    res.json(result)
-  })
-
-  // 3. Status polling endpoint (can be polled every 2-3s from frontend while showing QR)
-  router.get('/:id/status', async (req, res) => {
-    const payment = await paymentRepo.findPaymentById(req.params.id)
-    if (!payment) throw new HttpError(404, 'Không tìm thấy giao dịch.')
-
-    res.json({
-      id: payment.id,
-      orderCode: payment.orderCode,
-      status: payment.status,
-      amount: payment.amount,
-      paidAt: payment.paidAt,
-    })
-  })
-
-  // 4. Get payment details
-  router.get('/:id', authenticate(authRepo), async (req, res) => {
-    const payment = await paymentRepo.findPaymentById(req.params.id)
-    if (!payment) throw new HttpError(404, 'Không tìm thấy giao dịch.')
-    if (payment.userId !== req.auth.user.id && req.auth.user.role !== 'admin') {
-      throw new HttpError(403, 'Không có quyền xem giao dịch này.')
-    }
-
-    res.json({ payment })
-  })
-
-  // 5. Confirm payment (User "Tôi đã chuyển khoản" / Staff / Test simulation)
-  router.post('/:id/confirm', authenticate(authRepo), async (req, res) => {
-    const payment = await paymentRepo.findPaymentById(req.params.id)
-    if (!payment) throw new HttpError(404, 'Không tìm thấy giao dịch.')
-
-    if (payment.userId !== req.auth.user.id && !['admin', 'staff'].includes(req.auth.user.role)) throw new HttpError(403, 'Không có quyền xác nhận giao dịch này.')
-    const confirmed = await paymentRepo.confirmPayment(payment.id, {
-      confirmedBy: req.auth.user.id,
-      method: 'vietqr-manual-confirm',
-    })
-
-    res.json({
-      message: 'Xác nhận thanh toán thành công.',
-      payment: confirmed,
-    })
-  })
-
-  // 5.5 Refund payment / Withdraw refundable deposit
-  router.post('/:id/refund', authenticate(authRepo), async (req, res) => {
-    const { bankId, accountNo, accountName, reason } = req.body || {}
-    const refunded = await paymentRepo.refundPayment(req.params.id, req.auth.user.id, {
-      bankId,
-      accountNo,
-      accountName,
-      reason,
-    })
-
-    res.json({
-      message: 'Hoàn tiền cọc thành công.',
-      payment: refunded,
-    })
-  })
-
-  // 6. Webhook for automatic bank transaction sync
+  const router = Router(), auth = authenticate(authRepo)
+  const writes = rateLimit({ windowMs: 60000, limit: 30, keyGenerator: req => req.auth.user.id, standardHeaders: 'draft-8', legacyHeaders: false })
+  const bank = { bankId: config.vietqrBankId, bankBin: config.vietqrBankBin || getBankBin(config.vietqrBankId), accountNo: config.vietqrAccountNo, accountName: config.vietqrAccountName }
   router.post('/webhook', async (req, res) => {
+    const secret = config.paymentWebhookSecret
+    if (!secret || secret.length < 32) throw new HttpError(503, 'Chưa cấu hình webhook ngân hàng an toàn.')
+    const supplied = req.get('x-gomate-webhook-secret') || ''
+    if (Buffer.byteLength(supplied) !== Buffer.byteLength(secret) || !timingSafeEqual(Buffer.from(supplied), Buffer.from(secret))) throw new HttpError(401, 'Webhook không được xác thực.')
     const body = req.body || {}
-    // Supports various webhook payloads (e.g. { content, description, orderCode, amount, transactionRef })
-    const memo = String(body.content || body.description || body.orderCode || body.addInfo || body.memo || '').toUpperCase()
-    const match = memo.match(/GM\d{6}/)
-    const orderCode = match ? match[0] : null
-
-    if (!orderCode) {
-      return res.status(200).json({ status: 'ignored', message: 'No valid order code found in memo.' })
-    }
-
-    try {
-      const confirmed = await paymentRepo.confirmPayment(orderCode, {
-        transactionRef: body.transactionRef || body.reference || body.id || null,
-        confirmedBy: 'bank-webhook',
-        method: 'vietqr-webhook',
-      })
-      return res.json({ status: 'ok', payment: confirmed })
-    } catch (error) {
-      if (error.status === 404) {
-        return res.status(200).json({ status: 'ignored', message: 'Order code not found in database.' })
-      }
-      throw error
-    }
+    if (body.direction !== 'in' || String(body.accountNo || '') !== bank.accountNo) throw new HttpError(400, 'Webhook phải là tiền vào đúng tài khoản thụ hưởng.')
+    const memo = String(body.content || body.description || body.orderCode || '').toUpperCase()
+    const orderCode = memo.match(/\bGM(?:\d{12}|\d{6})\b/)?.[0]
+    const payment = orderCode ? await paymentRepo.findPaymentByOrderCode(orderCode) : null
+    const result = await paymentRepo.recordIncoming(payment?.id || null, { amount: body.amount, transactionRef: body.transactionRef, confirmedBy: 'bank-webhook', method: 'bank-webhook' })
+    res.json({ status: result.unmatched ? 'unmatched' : 'ok', ...(result.unmatched ? { eventId: result.eventId } : { payment: result }) })
   })
-
-  // 7. Cancel pending payment
-  router.delete('/:id', authenticate(authRepo), async (req, res) => {
-    const payment = await paymentRepo.cancelPayment(req.params.id, req.auth.user.id)
-    res.json({ message: 'Đã hủy giao dịch.', payment })
+  router.post('/create-qr', auth, writes, async (req, res) => {
+    fields(req.body, ['type', 'activityId', 'amount'])
+    if ((req.body.type || 'activity_deposit') !== 'activity_deposit') throw new HttpError(400, 'Hiện chỉ nhận cọc cho hoạt động; chưa hỗ trợ nạp ví hoặc thu phí tùy ý.')
+    if (typeof req.body.activityId !== 'string' || !req.body.activityId) throw new HttpError(400, 'Thiếu hoạt động thanh toán.')
+    const activity = await activityRepo.get(req.body.activityId), user = req.auth.user
+    if (!activity || activity.organizerType !== 'business' || activity.businessRevoked || activity.status !== 'published' || new Date(activity.startsAt) <= new Date() || activity.registrationDeadline && new Date(activity.registrationDeadline) <= new Date()) throw new HttpError(409, 'Hoạt động không còn nhận tiền cọc.')
+    if (await authRepo.portal.access(activity.hostId) !== 'business') throw new HttpError(409, 'Doanh nghiệp chưa được xác minh.')
+    if (!activity.joinRequests?.some(member => member.userId === user.id && member.status === 'approved')) throw new HttpError(403, 'Chỉ thành viên đã duyệt mới được thanh toán.')
+    if (activity.businessReceipts?.some(receipt => receipt.userId === user.id && receipt.status === 'paid' && receipt.verified)) throw new HttpError(409, 'Bạn đã thanh toán cọc cho hoạt động này.')
+    const amount = activity.depositAmount ?? activity.business?.depositAmount ?? 0
+    if (!Number.isSafeInteger(amount) || amount <= 0 || amount > 1000000000) throw new HttpError(400, 'Mức cọc không hợp lệ hoặc không yêu cầu cọc.')
+    const pending = await paymentRepo.findPendingPayment({ userId: user.id, activityId: activity.id, type: 'activity_deposit' })
+    if (pending && pending.amount === amount) return res.json({ payment: pending })
+    if (pending) await paymentRepo.cancelPayment(pending.id, user.id)
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const orderCode = generateOrderCode(), description = `${orderCode} COC GOMATE`
+      try {
+        const payment = await paymentRepo.createPayment({ userId: user.id, userName: user.name, type: 'activity_deposit', activityId: activity.id, activityTitle: activity.title, amount, description, orderCode, bank, qrPayload: buildVietQrPayload({ ...bank, amount, description }), qrImageUrl: buildVietQrImageUrl({ ...bank, amount, description, template: config.vietqrTemplate }) })
+        if (payment.status !== 'pending') throw new HttpError(409, 'Giao dịch trước đang được xử lý. Hãy kiểm tra ví.')
+        return res.status(201).json({ payment })
+      } catch (error) { if (error.code !== 11000) throw error }
+    }
+    throw new HttpError(409, 'Không tạo được mã thanh toán duy nhất. Vui lòng thử lại.')
   })
-
+  router.get('/wallet', auth, async (req, res) => { res.set('Cache-Control', 'no-store'); res.json(await authRepo.finance.userWallet(req.auth.user.id)) })
+  router.put('/wallet/bank-account', auth, writes, async (req, res) => { fields(req.body, ['bankId', 'accountNo', 'accountName', 'branch']); res.json({ bankAccount: await authRepo.finance.saveUserBank(req.auth.user.id, req.body) }) })
+  router.get('/history', auth, async (req, res) => {
+    const page = Number(req.query.page || 1), limit = Number(req.query.limit || 20)
+    if (Object.keys(req.query).some(key => !['page', 'limit'].includes(key)) || !Number.isInteger(page) || page < 1 || page > 10000 || !Number.isInteger(limit) || limit < 1 || limit > 50) throw new HttpError(400, 'Phân trang không hợp lệ.')
+    res.set('Cache-Control', 'no-store'); res.json(await paymentRepo.listUserPayments(req.auth.user.id, { page, limit }))
+  })
+  router.get('/activity/:activityId/me', auth, async (req, res) => {
+    const activity = await activityRepo.get(req.params.activityId)
+    if (!activity) throw new HttpError(404, 'Không tìm thấy hoạt động.')
+    const receipt = activity.businessReceipts?.find(receipt => receipt.userId === req.auth.user.id && receipt.status === 'paid' && receipt.verified)
+    const pending = receipt ? null : await paymentRepo.findPendingPayment({ userId: req.auth.user.id, activityId: activity.id, type: 'activity_deposit' })
+    res.json({ activityId: activity.id, activityTitle: activity.title, depositRequired: (activity.depositAmount || 0) > 0, depositAmount: activity.depositAmount || 0, isPaid: Boolean(receipt), receipt: receipt || null, pendingPayment: pending, bankInfo: bank })
+  })
+  router.get('/:id/status', auth, async (req, res) => {
+    const payment = await paymentRepo.findPaymentById(req.params.id)
+    if (!payment || payment.userId !== req.auth.user.id && req.auth.user.role !== 'admin') throw new HttpError(404, 'Không tìm thấy giao dịch của bạn.')
+    res.json({ id: payment.id, orderCode: payment.orderCode, status: payment.status, verified: Boolean(payment.verification), amount: payment.amount, paidAt: payment.paidAt, refundOnly: Boolean(payment.refundOnly) })
+  })
+  router.get('/:id', auth, async (req, res) => {
+    const payment = await paymentRepo.findPaymentById(req.params.id)
+    if (!payment || payment.userId !== req.auth.user.id && req.auth.user.role !== 'admin') throw new HttpError(404, 'Không tìm thấy giao dịch của bạn.')
+    res.json({ payment: await authRepo.finance.enrich(payment) })
+  })
+  router.post('/:id/confirm', auth, writes, async (req, res) => {
+    fields(req.body || {}, [])
+    res.json({ message: 'Đã báo chuyển khoản. Chờ ngân hàng hoặc admin đối soát.', payment: await paymentRepo.reportPayment(req.params.id, req.auth.user.id) })
+  })
+  router.post('/:id/refund', auth, writes, async (req, res) => {
+    fields(req.body, ['bankId', 'accountNo', 'accountName', 'reason'])
+    res.json({ message: 'Đã gửi yêu cầu hoàn tiền, đang chờ admin.', payment: await paymentRepo.refundPayment(req.params.id, req.auth.user.id, req.body) })
+  })
+  router.post('/:id/participation', auth, writes, async (req, res) => { fields(req.body, ['status', 'note']); res.json(await authRepo.finance.confirmParticipation(req.params.id, req.auth.user.id, req.body.status, req.body.note)) })
+  router.delete('/:id', auth, writes, async (req, res) => res.json({ payment: await paymentRepo.cancelPayment(req.params.id, req.auth.user.id) }))
   return router
 }
-

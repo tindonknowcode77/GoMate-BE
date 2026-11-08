@@ -24,7 +24,16 @@ const authRepository = createAuthRepository(client.db())
 const activityRepository = createActivityRepository(client.db())
 const chatRepository = createChatRepository(client.db())
 const scheduler = createActivityScheduler(client.db(), authRepository.community)
-const reconcileActivities = () => authRepository.portal.reconcilePublications().then(() => scheduler.tick()).catch(error => console.error('Activity schedule check failed:', error.message))
+let reconciling = false
+const reconcileActivities = async () => {
+  if (reconciling) return
+  reconciling = true
+  try {
+    for (const [name, task] of [['finance', () => authRepository.payments.reconcile()], ['publication', () => authRepository.portal.reconcilePublications()], ['activity', () => scheduler.tick()]]) {
+      try { await task() } catch (error) { console.error(`${name} reconciliation failed:`, error.message) }
+    }
+  } finally { reconciling = false }
+}
 await reconcileActivities()
 const scheduleTimer = setInterval(reconcileActivities, 30000)
 scheduleTimer.unref()

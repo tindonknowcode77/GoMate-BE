@@ -1,5 +1,51 @@
 # Development log
 
+## 2026-11-09 - Verified escrow, user refund accounts and admin finance operations
+
+### Summary
+
+- Replace unsafe payment self-confirmation and simulated automatic refunds/payouts with verified incoming bank events, a CAS-versioned per-activity ledger, saved member refund accounts and admin evidence/review routes.
+- Freeze original schedules/policy, hold money at least 48 hours, require independent participant evidence/admin verification, reserve payouts atomically, and block pending/approved payouts on claims. Late cancellations/no-shows are reviewed rather than automatically forfeited.
+- Separate admin approval, transfer locking and bank-proof completion; unknown bank outcomes stay locked. Preserve immutable recipients, globally deduplicate incoming/outgoing references, record real extra/stale/wrong-amount transfers as refund-only funds, retain unmatched money, and recover interrupted writes using durable bank events and pending refund mirrors.
+- Keep legacy manual receipts and simulated payouts out of verified balances. Make payment status private, disable arbitrary wallet top-ups, and require a trusted webhook secret, correct transfer direction and configured beneficiary account.
+
+### Files changed
+
+- `src/modules/payment/{policy,finance,finance-routes,repository,routes,vietqr}.js`.
+- `src/modules/auth/repository.js`, `src/modules/portal/{operations,operations-routes,routes}.js`, `src/database/mongo.js`, `src/server.js`, `src/config/env.js`, `.env.example`.
+- `tests/finance.test.js`, `tests/payment.test.js`, `tests/business-settings.test.js`, `tests/business-workflow.test.js`, `docs/PAYMENT_FLOW.md`.
+
+### Verification
+
+- `npm test`: 164/164 passed, including the new adverse finance tests and updated secure payment contracts.
+- `node --test tests/finance.test.js`: 22/22 passed, covering 21 scenarios including concurrent credits/payouts/refunds, bank-transfer locks, immutable accounts, hold bypass attempts, deleted events, idempotency, recovery, authorization and accounting totals.
+- FE Chromium `tests/finance.web.cjs`: Passed against isolated real Express/MongoDB, including lost-response retry after the server committed the payout. Mobile/desktop user, merchant and admin workflows passed; no real banking occurred.
+- FE portal reliability and business campaign control browser regressions passed. `git diff --check`: Passed.
+
+### Remaining work
+
+- Real outgoing bank transfers remain manual; admin records proof after execution. Configure a trusted incoming provider adapter and secret to enable automatic bank reconciliation. Saved recipient accounts are not verified through an account-ownership API. Deployment steps, legacy reconciliation and support handling after payout are in `docs/PAYMENT_FLOW.md`.
+
+## 2026-11-09 - Allow VietQR payment images through CSP
+
+### Summary
+
+- Add only `https://img.vietqr.io` to Helmet's image-source allowlist so the payment modal can display generated VietQR image URLs. Keep script permissions and the rest of the policy unchanged.
+
+### Files changed
+
+- `src/app.js`, `tests/app.test.js`, `docs/DEVELOPMENT_LOG.md`.
+
+### Verification
+
+- `node --test tests/app.test.js tests/payment.test.js`: All 16 tests passed, including CSP headers, QR generation and payment flows.
+- Chromium against the real Express CSP: A generated VietQR URL loaded successfully with a locally intercepted PNG, with no VietQR CSP violation. This check did not contact the bank or verify live provider availability.
+- `git diff --check`: Passed.
+
+### Remaining work
+
+- Restart a backend running without watch, then reload the page so its HTML receives the updated CSP header.
+
 ## 2026-11-09 - Business auto-approval, deposit edits and post details
 
 ### Summary

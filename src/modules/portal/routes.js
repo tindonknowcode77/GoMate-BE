@@ -1,4 +1,5 @@
 import { verificationDocument } from './documents.js'
+import { createFinanceRouter } from '../payment/finance-routes.js'
 import { createAdminRouter } from './admin.js'
 import { businessIndustries } from './business-options.js'
 import { applicationFields, postFields, version } from './validation.js'
@@ -27,6 +28,7 @@ export function createPortalRouter(auth) {
   const writes = rateLimit({ windowMs: 60000, limit: 30, keyGenerator: req => req.auth.user.id, standardHeaders: 'draft-8', legacyHeaders: false })
   const json = express.json({ limit: '32kb' })
   router.use('/admin', createAdminRouter(auth, writes))
+  router.use('/finance', createFinanceRouter(auth, writes))
   const offset = req => { const page = Number(req.query.page ?? 1); if (!Number.isInteger(page) || page < 1 || page > 10000) throw new HttpError(400, 'Invalid page'); return (page - 1) * 20 }
   router.get('/me', async (req, res) => res.json({ ...await repo.me(req.auth.user.id), role: req.portalRole }))
   router.get('/feed', async (req, res) => res.json(await repo.feed(offset(req), req.auth.user.id)))
