@@ -89,13 +89,31 @@ export function createFinanceRepository(db) {
   }
   async function enrich(payment) {
     const { escrow, lot } = await refundContext(payment, payment.userId)
-    const activity = payment.activityId ? await activities.findOne({ id: payment.activityId }, { projection: { status: 1, title: 1, startsAt: 1, businessRevoked: 1 } }) : null
-    const early = Boolean(lot?.cancelBefore && new Date(lot.cancelBefore) > new Date())
-    const fullRefund = lot?.refundOnly || !activity || activity.businessRevoked || ['cancelled', 'expired', 'deleted'].includes(activity?.status) || early
+    const activity = payment.activityId ? await activities.findOne({ id: payment.activityId }, { projection: { status: 1, title: 1, startsAt: 1, businessRevoked: 1, lastPlanUpdatedAt: 1 } }) : null
+    const effectiveCancelAt = lot?.leftAt ? new Date(lot.leftAt) : new Date()
+    const early = Boolean(lot?.cancelBefore && new Date(lot.cancelBefore) > effectiveCancelAt)
+    const planChangedLate = Boolean(activity?.lastPlanUpdatedAt && lot?.verifiedAt && new Date(activity.lastPlanUpdatedAt) > new Date(lot.verifiedAt) && (!lot.cancelBefore || new Date(activity.lastPlanUpdatedAt) >= new Date(lot.cancelBefore)))
+    const fullRefund = lot?.refundOnly || lot?.removedByHost || lot?.leftEarly || planChangedLate || !activity || activity.businessRevoked || ['cancelled', 'expired', 'deleted'].includes(activity?.status) || early
     return { ...clean(payment), activityStatus: activity?.status || null, financeState: lot?.state || (payment.status === 'paid' ? 'unreconciled' : null), refundEligible: Boolean(lot && ['held', 'disputed', 'payout_reserved'].includes(lot.state)), refundPolicy: fullRefund ? 'full_refund' : 'manual_review', refundAmount: lot?.amount || 0, refundRequest: lot?.refund || null, participantConfirmation: lot?.confirmation || null, canConfirmAttendance: Boolean(lot && ['held', 'payout_reserved'].includes(lot.state) && !lot.refundOnly && activity && new Date(lot.startsAt || activity.startsAt) <= new Date()), payout: escrow?.payouts.find(payout => payout.lotIds.includes(payment.id)) || null }
   }
   return {
     policy, synchronizePayment, enrich,
+    async onMemberRemoved(activityId, userId, hostAction, at = new Date()) {
+      await db.collection('payments').updateMany({ activityId, userId, type: 'activity_deposit', status: 'pending' }, { $set: { status: 'cancelled', cancellationReason: hostAction ? 'removed-by-host' : 'member-left', updatedAt: at }, $unset: { activeKey: '' } })
+      await db.collection('payments').updateMany({ activityId, userId, type: 'activity_deposit', status: 'paid' }, { $unset: { activeKey: '' } })
+      const row = await escrows.findOne({ _id: activityId })
+      if (!row?.lots?.some(lot => lot.userId === userId && lot.state === 'held')) return
+      await mutate(activityId, draft => {
+        for (const lot of draft.lots.filter(item => item.userId === userId && item.state === 'held')) {
+          lot.leftAt = at
+          const early = Boolean(lot.cancelBefore && new Date(lot.cancelBefore) > at)
+          if (hostAction) { lot.removedByHost = true; lot.refundOnly = true }
+          else if (early) { lot.leftEarly = true; lot.refundOnly = true }
+        }
+        draft.settlement = { status: 'waiting' }
+        draft.audit.push(entry(userId, hostAction ? 'member-removed' : 'member-left', { userId, hostAction }))
+      })
+    },
     async reconcile() {
       for (const payment of await payments.find({ verification: { $exists: true }, financeSynced: { $ne: true } }).limit(100).toArray()) await synchronizePayment(payment)
       for (const escrow of await escrows.find({ refundMirrorPending: true }).limit(100).toArray()) await mirrorRefunds(escrow)
@@ -123,14 +141,26 @@ export function createFinanceRepository(db) {
           payout.status = 'blocked'; payout.reviewNote = 'Phát sinh yêu cầu hoàn tiền.'
           for (const item of draft.lots.filter(item => item.payoutId === payout.id && item.state === 'payout_reserved')) { item.state = 'held'; delete item.payoutId }
         }
-        const full = current.refundOnly || !activity || activity.businessRevoked || ['cancelled', 'expired', 'deleted'].includes(activity?.status) || current.cancelBefore && new Date(current.cancelBefore) > new Date()
+        const effectiveCancelAt = current.leftAt ? new Date(current.leftAt) : new Date()
+        const planChangedLate = Boolean(activity?.lastPlanUpdatedAt && current.verifiedAt && new Date(activity.lastPlanUpdatedAt) > new Date(current.verifiedAt) && (!current.cancelBefore || new Date(activity.lastPlanUpdatedAt) >= new Date(current.cancelBefore)))
+        const full = current.refundOnly || current.removedByHost || current.leftEarly || planChangedLate || !activity || activity.businessRevoked || ['cancelled', 'expired', 'deleted'].includes(activity?.status) || current.cancelBefore && new Date(current.cancelBefore) > effectiveCancelAt
         current.refund = { id: randomUUID(), status: 'pending', amount: current.amount, reason, bankAccount, policy: full ? 'full_refund' : 'manual_review', requestedAt: new Date() }
         current.state = 'refund_requested'; draft.settlement = { status: 'waiting' }
         draft.audit.push(entry(userId, 'refund-requested', { paymentId, amount: current.amount }))
         return current.refund
       })
       // A refund request also gives up the seat before the event starts.
-      if (payment.activityId) await activities.updateOne({ id: payment.activityId, status: 'published', startsAt: { $gt: new Date() }, memberCount: { $gt: 0 }, joinRequests: { $elemMatch: { userId, status: 'approved' } } }, { $set: { 'joinRequests.$.status': 'left', 'joinRequests.$.updatedAt': new Date(), scheduleConfirmedAt: null }, $inc: { memberCount: -1, version: 1 } })
+      if (payment.activityId) {
+        const now = new Date()
+        await payments.updateOne({ id: paymentId }, { $unset: { activeKey: '' } })
+        const left = await activities.findOneAndUpdate({ id: payment.activityId, status: 'published', startsAt: { $gt: now }, memberCount: { $gt: 0 }, joinRequests: { $elemMatch: { userId, status: 'approved' } } }, {
+          $set: { 'joinRequests.$.status': 'left', 'joinRequests.$.updatedAt': now, scheduleConfirmedAt: null, scheduleConfirmedBy: null, updatedAt: now },
+          $pull: { businessReceipts: { userId } },
+          $push: { updates: { id: randomUUID(), type: 'note', actorId: userId, text: 'Một thành viên đã rút cọc và rời nhóm.', createdAt: now } },
+          $inc: { memberCount: -1, version: 1 },
+        }, { returnDocument: 'after' })
+        if (left?.hostId) await notify(left.hostId, `refund-left:${result.id}`, 'Thành viên rút cọc và rời nhóm', `${left.title} cần kiểm tra lại danh sách và chốt lịch.`, left.id)
+      }
       await notify(userId, `refund:${result.id}`, 'Đã tiếp nhận yêu cầu hoàn cọc', 'Đang chờ admin duyệt; chưa chuyển tiền.')
       return enrich(await payments.findOne({ id: paymentId }))
     },
@@ -249,13 +279,23 @@ export function createFinanceRepository(db) {
       await notify(payment.userId, `refund:${result.id}:${result.status}`, result.status === 'completed' ? 'Đã ghi nhận chuyển tiền hoàn cọc' : 'Yêu cầu hoàn cọc đã được cập nhật', note)
       return result
     },
-    async resolveDispute(actorId, activityId, paymentId, note) {
+    async resolveDispute(actorId, activityId, paymentId, note, outcome = 'release') {
       await admin(actorId); text(note, 'Kết quả xử lý khiếu nại', 15, 1000)
+      if (!['release', 'refund'].includes(outcome)) throw new HttpError(400, 'Thao tác xử lý khiếu nại không hợp lệ.')
+      const bankAccount = outcome === 'refund' ? clean(await banks.findOne({ _id: (await payments.findOne({ id: paymentId }))?.userId })) : null
       return mutate(activityId, draft => {
         const lot = draft.lots.find(lot => lot.paymentId === paymentId)
         if (!lot || lot.state !== 'disputed' || actorId === lot.userId || actorId === draft.ownerId) throw new HttpError(409, 'Không thể đóng khiếu nại này.')
-        lot.state = 'held'; lot.confirmation.resolvedBy = actorId; lot.confirmation.resolution = note
-        draft.audit.push(entry(actorId, 'dispute-resolved', { paymentId, note })); return lot.confirmation
+        lot.confirmation = { ...lot.confirmation, resolvedBy: actorId, resolution: note, outcome }
+        if (outcome === 'refund') {
+          lot.refundOnly = true
+          lot.state = 'refund_approved'
+          lot.refund = { id: lot.refund?.id || randomUUID(), status: 'approved', amount: lot.amount, reason: lot.confirmation?.note || note, bankAccount: lot.refund?.bankAccount || bankAccount || null, policy: 'full_refund', requestedAt: lot.refund?.requestedAt || new Date(), approvedBy: actorId, approvedAt: new Date(), reviewNote: note }
+        } else {
+          lot.state = 'held'
+        }
+        draft.settlement = { status: 'waiting' }
+        draft.audit.push(entry(actorId, 'dispute-resolved', { paymentId, note, outcome })); return lot.confirmation
       })
     },
     async reviewPayout(actorId, activityId, payoutId, body) {

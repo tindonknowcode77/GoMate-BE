@@ -20,6 +20,7 @@ export function createPostLifecycle(db) {
       settled=updated; break
     }
     if (!settled) throw new HttpError(409, 'Nhóm vừa thay đổi. Vui lòng thử lại.')
+    await db.collection('finance_escrows').updateOne({ _id: id }, { $set: { 'lots.$[lot].refundOnly': true, 'settlement.status': 'waiting', updatedAt: new Date() }, $inc: { version: 1 } }, { arrayFilters: [{ 'lot.state': 'held' }] })
     await syncActivityMessages(db, settled)
     await Promise.all((task.recipients || []).map(userId=>community.notify(userId,{key:'business-group-'+action+':'+id,type:'activity',title:action==='delete'?'Nhóm đã được xóa.':'Nhóm đã được thu hồi.',text:settled.title,activityId:id,actorId})))
   }

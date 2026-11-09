@@ -61,12 +61,12 @@ export function createAdminRepository(db) {
     async deleteUser(id, expected, actorId) {
       const row = await get('users', id)
       if (id === actorId || row.role === 'admin') throw new HttpError(409, 'Không thể xóa chính mình hoặc quản trị viên. Hãy đổi quyền trước.')
-      if (await db.collection('business_applications').findOne({ ownerId: id, status: { $in: ['pending', 'approved'] } }) || await db.collection('activities').findOne({ hostId: id, status: { $nin: ['deleted', 'cancelled', 'completed'] } })) throw new HttpError(409, 'Hãy xử lý hồ sơ doanh nghiệp và hoạt động đang mở trước khi xóa tài khoản.')
+      if (await db.collection('business_applications').findOne({ ownerId: id, status: { $in: ['pending', 'approved'] } }) || await db.collection('activities').findOne({ hostId: id, status: { $nin: ['deleted', 'cancelled', 'completed'] } }) || await db.collection('activities').findOne({ status: { $in: ['published', 'in-progress'] }, joinRequests: { $elemMatch: { userId: id, status: 'approved' } } }) || await db.collection('finance_escrows').findOne({ lots: { $elemMatch: { userId: id, state: { $nin: ['settled', 'refunded'] } } } })) throw new HttpError(409, 'Hãy xử lý hồ sơ doanh nghiệp, tiền cọc ký quỹ và hoạt động đang mở trước khi xóa tài khoản.')
       return update('users', id, expected, { deletedAt: new Date(), deletedBy: actorId }, actorId, { role: { $ne: 'admin' } })
     },
     async deleteBusiness(id, expected, actorId, currentVersion) {
       const row = await get('businesses', id)
-      if (await db.collection('business_posts').findOne({ ownerId: row.ownerId, status: { $in: ['approved', 'publishing', 'pending'] } })) throw new HttpError(409, 'Hãy thu hồi hoặc xóa các bài đăng đang mở trước khi xóa doanh nghiệp.')
+      if (await db.collection('business_posts').findOne({ ownerId: row.ownerId, status: { $in: ['approved', 'publishing', 'pending'] } }) || await db.collection('finance_escrows').findOne({ ownerId: row.ownerId, $or: [{ lots: { $elemMatch: { state: { $nin: ['settled', 'refunded'] } } } }, { payouts: { $elemMatch: { status: { $in: ['pending', 'approved', 'processing'] } } } }] })) throw new HttpError(409, 'Hãy thu hồi các bài đăng đang mở và tất toán hết tiền ký quỹ trước khi xóa doanh nghiệp.')
       return update('businesses', id, expected, { status: 'deleted', deletedAt: new Date(), deletedBy: actorId }, actorId, { version: matchRevision(currentVersion) })
     },
     async createReport(data, actorId) {

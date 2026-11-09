@@ -116,6 +116,7 @@ export function createActivityRepository(db) {
         joinRequests: { $elemMatch: { userId, status: 'approved' } },
       }, { $set: { 'joinRequests.$.status': hostAction ? 'removed' : 'left',
         'joinRequests.$.updatedAt': now, updatedAt: now, scheduleConfirmedAt: null, scheduleConfirmedBy: null },
+        $pull: { businessReceipts: { userId } },
         $inc: { memberCount: -1, version: 1 },
       }, { returnDocument: 'after' })
     },

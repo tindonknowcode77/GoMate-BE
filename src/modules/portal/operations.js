@@ -36,7 +36,7 @@ export function createBusinessOperations(db) {
     return { id: row.id, ownerId: row.hostId, version: row.version, name: row.businessGroupName || row.title, campaignTitle: row.businessCampaignTitle || row.title, promotionalPostTitle: row.businessCampaignTitle || row.title, promotionalPostId: row.businessPostId,
       status: row.status, startsAt: row.startsAt, endsAt: row.endsAt, locationId: row.businessLocationId || '', location: row.location, meetingPoint: row.meetingPoint, maxParticipants: row.maxParticipants, memberCount: row.memberCount, estimatedCost: row.estimatedCost, depositAmount: row.depositAmount || 0, autoApproveMembers: row.autoApproveMembers === true,
       managers: await staff.find({ownerId:row.hostId,groupIds:row.id,status:'approved',$or:[{provisionedAt:{$ne:null}},{acceptedAt:{$ne:null}}]},{projection:{_id:0,userId:1,name:1,title:1}}).toArray(), attendance: row.attendance?.length ? row.attendance : buildAttendanceRoster(row), readiness: activityReadiness(row), itineraryConfirmed: Boolean(row.scheduleConfirmedAt), scheduleConfirmedAt: row.scheduleConfirmedAt,
-      depositMembers: members.map(member => { const receipt = receipts.find(item => item.userId === member.userId); return { id: member.userId, name: member.name, amount: receipt?.status === 'paid' ? receipt.amount : row.depositAmount ?? 0, status: receipt?.status === 'paid' ? 'paid' : row.depositAmount ? 'pending' : 'not-required', paidAt: receipt?.paidAt ?? null } }),
+      depositMembers: members.map(member => { const receipt = receipts.find(item => item.userId === member.userId); return { id: member.userId, name: member.name, amount: receipt?.status === 'paid' ? receipt.amount : row.depositAmount ?? 0, status: receipt?.status === 'paid' ? 'paid' : row.depositAmount ? 'pending' : 'not-required', paidAt: receipt?.paidAt ?? null, verified: Boolean(receipt?.verified) } }),
       itinerary: (row.itinerary ?? []).map(item => ({ ...item, locationId: row.businessPlanLocations?.[item.id] || '', location: item.place, notes: item.note })), notifications: row.businessOffers ?? [], requests: (row.joinRequests ?? []).filter(item => item.status === 'pending') }
   }
   async function change(row, actorId, version, patch, type) {
@@ -102,6 +102,7 @@ export function createBusinessOperations(db) {
       if (row.hostId !== userId) throw new HttpError(403, 'Chỉ chủ doanh nghiệp được thay đổi cài đặt nhóm.')
       if (row.status !== 'published' || new Date(row.startsAt) <= new Date()) throw new HttpError(409, 'Chỉ thay đổi cài đặt trước khi nhóm bắt đầu.')
       if (data.depositAmount !== undefined && data.depositAmount > row.estimatedCost) throw new HttpError(400, 'Tiền cọc không được vượt chi phí mỗi người.')
+      if (data.depositAmount !== undefined && data.depositAmount !== row.depositAmount && (row.businessReceipts?.some(item => item.status === 'paid' && item.verified) || await db.collection('finance_escrows').findOne({ _id: id, 'lots.0': { $exists: true } }))) throw new HttpError(409, 'Không thể thay đổi mức tiền cọc khi đã có thành viên thanh toán cọc xác thực.')
       const patch = {}
       if (data.autoApproveMembers !== undefined) patch.autoApproveMembers = data.autoApproveMembers
       if (data.depositAmount !== undefined) { patch.depositAmount = data.depositAmount; patch.business = { ...row.business, depositAmount: data.depositAmount }; patch.scheduleConfirmedAt = null; patch.scheduleConfirmedBy = null }
@@ -119,12 +120,13 @@ export function createBusinessOperations(db) {
       const normalized = itinerary.map(item => ({ id: typeof item.id==='string' && /^[a-zA-Z0-9_-]{1,100}$/.test(item.id) ? item.id : randomUUID(), date: item.date || date, time: item.time, title: item.title, place: item.location || item.place || '', note: item.notes || item.note || '' }))
       const patch = planningFields({ itinerary: normalized }, row)
       for (const step of patch.itinerary) { const source=itinerary[normalized.findIndex(item=>item.id===step.id)]; if(source?.locationId) {const place=await locations.findOne({id:source.locationId,ownerId:row.hostId});step.place=(place.name+' · '+place.address).slice(0,200);} }
-      return change(row, userId, version, { ...patch, businessPlanLocations:Object.fromEntries(normalized.flatMap((item,index)=>itinerary[index].locationId?[[item.id,itinerary[index].locationId]]:[])), ...(row.status === 'published' ? { scheduleConfirmedAt: null, scheduleConfirmedBy: null } : {}) }, 'business-plan-updated')
+      return change(row, userId, version, { ...patch, lastPlanUpdatedAt: new Date(), businessPlanLocations:Object.fromEntries(normalized.flatMap((item,index)=>itinerary[index].locationId?[[item.id,itinerary[index].locationId]]:[])), ...(row.status === 'published' ? { scheduleConfirmedAt: null, scheduleConfirmedBy: null } : {}) }, 'business-plan-updated')
     },
     async recordDeposit(userId, id, version, memberId, status) {
       const row = await group(userId, id)
       if (!['published', 'in-progress'].includes(row.status) || !row.depositAmount) throw new HttpError(409, 'No deposit to record or group closed')
       if (!row.joinRequests?.some(member => member.userId === memberId && member.status === 'approved')) throw new HttpError(400, 'Only approved members have deposit records')
+      if (status === 'pending' && row.businessReceipts?.some(item => item.userId === memberId && item.status === 'paid' && item.verified)) throw new HttpError(409, 'Không thể hủy trạng thái cọc đã được hệ thống thanh toán xác thực.')
       const receipt = { userId: memberId, status, amount: row.depositAmount, paidAt: status === 'paid' ? new Date() : null, recordedBy: userId, recordedAt: new Date(), method: 'manual' }
       const updated = await change(row, userId, version, { businessReceipts: [...(row.businessReceipts ?? []).filter(item => item.userId !== memberId), receipt], ...(row.status === 'published' && status === 'pending' ? { scheduleConfirmedAt: null, scheduleConfirmedBy: null } : {}) }, 'business-deposit-recorded')
       if (status === 'paid') await community.notify(memberId, { key: 'deposit-confirmed:' + id + ':' + memberId + ':' + updated.version, type: 'activity', title: 'Đã xác nhận tiền cọc', text: row.title + ' · ' + row.depositAmount.toLocaleString('vi-VN') + 'đ', activityId: id, actorId: userId })
@@ -184,8 +186,12 @@ export function createBusinessOperations(db) {
     async attendance(userId, id, version, memberId, status) {
       const row = await group(userId, id)
       const roster = buildAttendanceRoster(row)
-      if (!['published', 'in-progress'].includes(row.status) || !roster.some(item => item.userId === memberId)) throw new HttpError(409, 'Participant not found or group not running')
-      return change(row, userId, version, { attendance: roster.map(item => item.userId === memberId ? { ...item, status, updatedBy: userId, updatedAt: new Date() } : item) }, 'attendance-changed')
+      const correction = row.status === 'completed' && row.autoCompletedAt && Date.now() - new Date(row.autoCompletedAt).getTime() < 86400000
+      if (!['published', 'in-progress'].includes(row.status) && !correction || !roster.some(item => item.userId === memberId)) throw new HttpError(409, 'Participant not found or group not running')
+      if (correction && (roster.find(item => item.userId === memberId)?.status !== 'unmarked' || status === 'unmarked')) throw new HttpError(409, 'Chỉ bổ sung điểm danh còn thiếu sau khi tự kết thúc.')
+      const result = await change(row, userId, version, { attendance: roster.map(item => item.userId === memberId ? { ...item, status, updatedBy: userId, updatedAt: new Date() } : item) }, 'attendance-changed')
+      if (status === 'absent' && memberId !== userId) await community.notify(memberId, { key: `attendance-absent:${id}:${memberId}:${result.version}`, type: 'activity', title: 'Trạng thái điểm danh: Vắng mặt', text: `Bạn được ghi nhận vắng mặt tại ${row.title}. Nếu có nhầm lẫn, hãy phản hồi trong nhóm hoặc gửi khiếu nại trong Ví.`, activityId: id, actorId: userId })
+      return result
     },
     async listStaff(ownerId, offset, reviewing = false) { return page(staff, reviewing ? {} : { ownerId }, offset) },
     async saveStaff(ownerId, id, version, { passwordHash, ...data }) {

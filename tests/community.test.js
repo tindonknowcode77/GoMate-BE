@@ -96,6 +96,8 @@ test('account settings, real notifications, ratings, reporting and bilateral blo
     assert.equal((await req('/friends/requests', 'POST', { userId: users[1].id })).status, 403)
     assert.equal((await req(`/profile/${users[1].id}`)).status, 403)
     assert.equal((await req(`/conversations/${group.id}`, 'GET', undefined, 1)).status, 200)
+    await auth.community.notify(users[1].id, { key: 'activity:block-preserved', type: 'activity', title: 'Cập nhật lịch trình', text: 'Host cập nhật điểm hẹn', activityId: activity.id, actorId: users[0].id })
+    assert.ok((await req('/community/notifications', 'GET', undefined, 1)).body.items.some(item => item.title === 'Cập nhật lịch trình'))
     assert.equal((await req('/community/blocks', 'GET', undefined, 1)).body.items[0].userId, users[0].id)
     assert.equal((await req(`/community/blocks/${users[0].id}`, 'DELETE', undefined, 1)).status, 204)
     assert.equal((await req(`/conversations/${direct.id}`)).status, 200)

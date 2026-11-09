@@ -5,13 +5,23 @@ export function createBusinessAudience(db) {
   const assignments = db.collection('business_audiences'), activities = db.collection('activities')
   async function choose(userId, postId) {
     const existing = await assignments.findOne({ userId, postId })
-    if (existing) return existing.activityId
     const groups = await activities.find({ businessPostId: postId }, { projection: { id: 1, status: 1, businessRevoked: 1, joinRequests: 1 } }).sort({ id: 1 }).toArray()
     const membership = groups.find(row => row.joinRequests?.some(item => item.userId === userId && ['approved', 'pending'].includes(item.status)))
+    if (membership) {
+      if (existing && existing.activityId !== membership.id) await assignments.updateOne({ userId, postId }, { $set: { activityId: membership.id, updatedAt: new Date() } })
+      return membership.id
+    }
     const available = groups.filter(row => !row.businessRevoked && row.status === 'published')
-    if (!membership && !available.length) return null
-    const index = available.length ? createHash('sha256').update(userId + ':' + postId).digest().readUInt32BE(0) % available.length : 0
-    const activityId = membership?.id || available[index].id
+    if (existing) {
+      if (available.some(row => row.id === existing.activityId) || !available.length) return existing.activityId
+      const index = createHash('sha256').update(userId + ':' + postId).digest().readUInt32BE(0) % available.length
+      const nextId = available[index].id
+      await assignments.updateOne({ userId, postId }, { $set: { activityId: nextId, updatedAt: new Date() } })
+      return nextId
+    }
+    if (!available.length) return null
+    const index = createHash('sha256').update(userId + ':' + postId).digest().readUInt32BE(0) % available.length
+    const activityId = available[index].id
     try {
       const row = await assignments.findOneAndUpdate({ userId, postId }, { $setOnInsert: { userId, postId, activityId, createdAt: new Date() } }, { upsert: true, returnDocument: 'after' })
       return row.activityId

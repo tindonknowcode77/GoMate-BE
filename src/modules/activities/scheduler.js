@@ -17,10 +17,11 @@ export function createActivityScheduler(db, community) {
     for (const row of overdue) {
       const expired = row.status === 'published'
       const entry = { id: randomUUID(), type: expired ? 'expired' : 'completed', text: expired ? 'Hoạt động hết hạn mà chưa bắt đầu.' : 'Hoạt động tự kết thúc vì đã hết thời gian.', createdAt: now }
-      await activities.updateOne({ id: row.id, status: row.status, version: row.version ?? { $exists: false }, endsAt: row.endsAt }, {
+      const updated = await activities.updateOne({ id: row.id, status: row.status, version: row.version ?? { $exists: false }, endsAt: row.endsAt }, {
         $set: { status: expired ? 'expired' : 'completed', ...(expired ? { expiredAt: row.endsAt } : { completedAt: row.endsAt }), autoCompletedAt: now, updatedAt: now, joinRequests: closedRequests(row, now) },
         $push: { updates: entry }, $inc: { version: 1 },
       })
+      if (expired && updated.modifiedCount) await db.collection('finance_escrows').updateOne({ _id: row.id }, { $set: { 'lots.$[lot].refundOnly': true, 'settlement.status': 'waiting', updatedAt: now }, $inc: { version: 1 } }, { arrayFilters: [{ 'lot.state': 'held' }] })
     }
     const completed = await activities.find({ status: { $in: ['completed', 'expired'] }, autoCompletedAt: { $exists: true }, autoCompletionNotified: { $ne: true } }).limit(100).toArray()
     for (const row of completed) {

@@ -12,7 +12,8 @@ export function createCommunityRepository(db) {
   async function blockedIds(id) { return (await blocks.find({ $or: [{ ownerId: id }, { targetId: id }] }).toArray()).map(row => row.ownerId === id ? row.targetId : row.ownerId) }
   async function settings(id) { return { ...defaultSettings, ...(await users.findOne({ id }, { projection: { settings: 1 } }))?.settings } }
   async function notify(userId, { key, type, title, text, activityId, conversationId, actorId }) {
-    if (actorId === userId || actorId && await blocked(userId, actorId)) return
+    const social = type === 'message' || type?.startsWith('friend')
+    if (actorId === userId || actorId && social && await blocked(userId, actorId)) return
     const prefs = await settings(userId)
     if (!(type === 'message' ? prefs.notifyMessages : type.startsWith('friend') ? prefs.notifyFriends : prefs.notifyActivity)) return
     try { await notices.updateOne({ userId, key }, { $setOnInsert: { id: randomUUID(), userId, key, type, title, text, activityId, conversationId, actorId, createdAt: new Date(), readAt: null } }, { upsert: true }) }
@@ -33,7 +34,7 @@ export function createCommunityRepository(db) {
     async notify(...args) { try { await notify(...args) } catch { console.warn('Notification storage failed; primary action was preserved') } },
     async saveSettings(id, values) { await users.updateOne({ id }, { $set: Object.fromEntries(Object.entries(values).map(([key, value]) => [`settings.${key}`, value])) }); return settings(id) },
     async notifications(id, page, limit) {
-      const excluded = await blockedIds(id), query = { userId: id, actorId: { $nin: excluded } }
+      const excluded = await blockedIds(id), query = { userId: id, $or: [{ actorId: { $nin: excluded } }, { type: { $nin: ['message', 'friend-request', 'friend-accepted'] } }] }
       const [items, total, unreadCount] = await Promise.all([notices.find(query, { projection: { _id: 0, userId: 0, key: 0 } }).sort({ createdAt: -1, id: -1 }).skip((page - 1) * limit).limit(limit).toArray(), notices.countDocuments(query), notices.countDocuments({ ...query, readAt: null })])
       return { items, total, unreadCount, page, limit, hasMore: page * limit < total }
     },
@@ -68,7 +69,12 @@ export function createCommunityRepository(db) {
       const row = await activity(activityId, userId)
       if (row.status !== 'completed') throw new HttpError(409, 'Chỉ đánh giá sau khi hoạt động kết thúc')
       const attended = new Set((row.attendance ?? []).filter(member => ['present', 'late'].includes(member.status)).map(member => member.userId))
+      if (!attended.has(userId) && row.organizerType === 'business') {
+        const escrow = await db.collection('finance_escrows').findOne({ _id: activityId }, { projection: { lots: 1 } })
+        if (escrow?.lots?.some(lot => lot.userId === userId && ['attended', 'disputed'].includes(lot.confirmation?.status))) attended.add(userId)
+      }
       if (!attended.has(userId)) throw new HttpError(403, 'Bạn cần được host điểm danh có mặt hoặc đến muộn để đánh giá')
+      if (row.organizerType === 'business') attended.add(row.hostId)
       const ids = [row.hostId, ...(row.joinRequests ?? []).filter(member => member.status === 'approved').map(member => member.userId)].filter(id => id !== userId && attended.has(id))
       const people = await users.find({ id: { $in: ids } }, { projection: { _id: 0, id: 1, name: 1, avatar_url: 1 } }).toArray()
       const submitted = await db.collection('rating_submissions').findOne({ activityId, userId }, { projection: { _id: 0, activityId: 0, userId: 0 } })
@@ -99,7 +105,11 @@ export function createCommunityRepository(db) {
       let row = await db.collection('reports').findOneAndUpdate({ id, status: 'pending' }, { $set: { status, hideActivity, resolvedBy: actorId, resolvedAt: new Date() } }, { returnDocument: 'after' })
       if (!row) row = await db.collection('reports').findOne({ id, status, hideActivity, resolvedBy: actorId })
       if (!row) throw new HttpError(409, 'Báo cáo đã được xử lý hoặc không tồn tại')
-      if (hideActivity) await db.collection('activities').updateOne({ id: row.activityId, status: { $ne: 'deleted' } }, { $set: { status: 'deleted', moderatedBy: actorId, deletedAt: new Date() }, $inc: { version: 1 } })
+      if (hideActivity) {
+        const target = await db.collection('activities').findOneAndUpdate({ id: row.activityId, status: { $ne: 'deleted' } }, { $set: { status: 'deleted', businessRevoked: true, scheduleConfirmedAt: null, moderatedBy: actorId, deletedAt: new Date() }, $inc: { version: 1 } }, { returnDocument: 'after' })
+        await db.collection('finance_escrows').updateOne({ _id: row.activityId }, { $set: { 'lots.$[lot].refundOnly': true, 'settlement.status': 'waiting', updatedAt: new Date() }, $inc: { version: 1 } }, { arrayFilters: [{ 'lot.state': 'held' }] })
+        if (target) await Promise.all((target.joinRequests ?? []).filter(member => ['approved', 'pending'].includes(member.status)).map(member => this.notify(member.userId, { key: `moderated:${row.activityId}`, type: 'activity', title: 'Hoạt động đã bị gỡ do vi phạm', text: `${target.title} đã bị gỡ. Bạn có thể yêu cầu hoàn 100% tiền cọc trong Ví.`, activityId: row.activityId, actorId })))
+      }
       await this.notify(row.reporterId, { key: `report:${row.id}`, type: 'activity', title: 'Báo cáo đã được xem xét', text: status === 'resolved' ? 'GoMate đã xử lý báo cáo của bạn.' : 'GoMate đã xem xét báo cáo của bạn.', activityId: row.activityId })
       return { id: row.id, status }
     },

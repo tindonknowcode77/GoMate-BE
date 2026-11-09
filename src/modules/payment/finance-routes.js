@@ -35,8 +35,8 @@ export function createFinanceRouter(auth, writes) {
     res.json(await finance.reviewRefund(req.auth.user.id, req.params.id, req.body))
   })
   router.post('/groups/:id/disputes/:paymentId', writes, async (req, res) => {
-    fields(req.body, ['note'])
-    res.json(await finance.resolveDispute(req.auth.user.id, req.params.id, req.params.paymentId, req.body.note))
+    fields(req.body, ['note', 'outcome'])
+    res.json(await finance.resolveDispute(req.auth.user.id, req.params.id, req.params.paymentId, req.body.note, req.body.outcome || 'release'))
   })
   router.post('/groups/:id/payouts/:payoutId/review', writes, async (req, res) => {
     fields(req.body, ['action', 'note', 'transferRef', 'bankTransferConfirmed', 'bankTransferNotSent'])

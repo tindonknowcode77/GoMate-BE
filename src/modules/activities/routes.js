@@ -212,6 +212,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const entry = event(req, 'attendance-changed', { userId: target.userId, previousStatus: target.status, status: req.body.status })
     const attendance = roster.map(item => item.userId === target.userId ? { ...item, status: req.body.status, updatedAt: entry.createdAt, updatedBy: req.auth.user.id } : item)
     await saveLifecycle(activity, req, { attendance }, entry)
+    if (req.body.status === 'absent' && target.userId !== req.auth.user.id) await authRepository.community?.notify(target.userId, { key: `attendance-absent:${activity.id}:${target.userId}:${entry.id}`, type: 'activity', title: 'Trạng thái điểm danh: Vắng mặt', text: `Bạn được ghi nhận vắng mặt tại ${activity.title}. Nếu có nhầm lẫn, hãy phản hồi trong nhóm hoặc gửi khiếu nại trong Ví.`, activityId: activity.id, actorId: req.auth.user.id })
     res.json({ attendance: attendance.find(item => item.userId === target.userId) })
   })
   router.post('/:id/updates', writes, json, async (req, res) => {
@@ -263,8 +264,22 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const activity = await find(req.params.id, hostAction ? req.auth.user.id : undefined, hostAction)
     const userId = hostAction ? req.params.userId : req.auth.user.id
     if (userId === activity.hostId) throw new HttpError(403, 'Host cannot leave or be removed')
-    if (!activity.joinRequests?.some(item => item.userId === userId && item.status === 'approved')) throw new HttpError(404, 'Approved member not found')
-    if (!await repository.removeMember(activity.id, userId, req.auth.user.id, hostAction)) throw new HttpError(409, 'Membership changed or activity is no longer upcoming and published')
+    const member = activity.joinRequests?.find(item => item.userId === userId && item.status === 'approved')
+    if (!member) throw new HttpError(404, 'Approved member not found')
+    const hadConfirmedSchedule = Boolean(activity.scheduleConfirmedAt)
+    let updated = await repository.removeMember(activity.id, userId, req.auth.user.id, hostAction)
+    if (!updated) throw new HttpError(409, 'Membership changed or activity is no longer upcoming and published')
+    const now = new Date()
+    await authRepository.finance?.onMemberRemoved?.(activity.id, userId, hostAction, now)
+    const text = hostAction
+      ? `Thành viên ${member.name || ''} đã được đưa ra khỏi nhóm.${hadConfirmedSchedule ? ' Lịch trình cần được chốt lại.' : ''}`.trim()
+      : `Thành viên ${member.name || ''} đã rời nhóm.${hadConfirmedSchedule ? ' Lịch trình cần được chốt lại trước khi bắt đầu.' : ''}`.trim()
+    updated = await repository.lifecycle(updated, activity.hostId, {}, event(req, 'note', { text })) || updated
+    if (hostAction) {
+      await authRepository.community?.notify(userId, { key: `member-removed:${activity.id}:${updated.version}`, type: 'activity', title: 'Bạn đã được đưa ra khỏi nhóm', text: activity.title, activityId: activity.id, actorId: req.auth.user.id })
+    } else {
+      await authRepository.community?.notify(activity.hostId, { key: `member-left:${activity.id}:${userId}:${updated.version}`, type: 'activity', title: hadConfirmedSchedule ? 'Thành viên rời nhóm · Cần chốt lịch lại' : 'Thành viên đã rời nhóm', text: `${member.name || 'Thành viên'} · ${activity.title}`, activityId: activity.id, actorId: userId })
+    }
     res.status(204).end()
   }
   router.post('/:id/members/friends', writes, json, async (req, res) => {
