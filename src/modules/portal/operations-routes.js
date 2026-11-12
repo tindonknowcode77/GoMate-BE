@@ -26,11 +26,25 @@ export function createBusinessOperationsRouter(auth) {
   router.get('/groups', allow('business', 'business-staff'), async (req, res) => res.json(await repo.listGroups(req.auth.user.id, offset(req))))
   router.get('/groups/:id', allow('business', 'business-staff'), async (req, res) => res.json(await repo.getGroup(req.auth.user.id, req.params.id)))
   router.patch('/groups/:id/settings', allow('business'), writes, json, async (req, res) => {
-    fields(req.body, ['version', 'autoApproveMembers', 'depositAmount'])
+    fields(req.body, ['version', 'autoApproveMembers', 'depositAmount', 'reason'])
     if (req.body.autoApproveMembers === undefined && req.body.depositAmount === undefined) throw new HttpError(400, 'Chọn thông tin cần cập nhật.')
     if (req.body.autoApproveMembers !== undefined && typeof req.body.autoApproveMembers !== 'boolean') throw new HttpError(400, 'Tự động duyệt phải là boolean.')
     if (req.body.depositAmount !== undefined && (!Number.isSafeInteger(req.body.depositAmount) || req.body.depositAmount < 0)) throw new HttpError(400, 'Tiền cọc phải là số nguyên không âm.')
     res.json(await repo.saveSettings(req.auth.user.id, req.params.id, version(req.body.version), req.body))
+  })
+  router.get('/deposit-changes', allow('admin'), async (_req, res) => res.json(await repo.listDepositChangeRequests()))
+  router.patch('/groups/:id/deposit-change', allow('admin'), writes, json, async (req, res) => {
+    fields(req.body, ['status', 'note'])
+    res.json(await repo.reviewDepositChange(req.auth.user.id, req.params.id, req.body.status, text(req.body.note, 300, true)))
+  })
+  router.delete('/groups/:id/members/:userId', allow('business', 'business-staff'), writes, json, async (req, res) => {
+    fields(req.body || {}, ['version', 'reason'])
+    const ver = req.body?.version !== undefined ? version(req.body.version) : undefined
+    res.json(await repo.kickMember(req.auth.user.id, req.params.id, ver, req.params.userId, text(req.body?.reason, 300, true)))
+  })
+  router.patch('/groups/:id/leave-requests/:requestId', allow('business', 'business-staff'), writes, json, async (req, res) => {
+    fields(req.body, ['version', 'status', 'note'])
+    res.json(await repo.decideLeaveRequest(req.auth.user.id, req.params.id, version(req.body.version), req.params.requestId, req.body.status, text(req.body.note, 300, true)))
   })
   router.put('/groups/:id/plan', allow('business', 'business-staff'), writes, json, async (req, res) => { fields(req.body, ['version', 'itinerary']); res.json(await repo.savePlan(req.auth.user.id, req.params.id, version(req.body.version), req.body.itinerary)) })
   router.patch('/groups/:id/deposits/:userId', allow('business', 'business-staff'), writes, json, async (req, res) => {

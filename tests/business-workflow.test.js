@@ -154,10 +154,15 @@ test('business registration, revisions, multi-group publication, direct employee
     assert.equal(group.depositMembers.length, 1); assert.equal(group.readiness.ready, false)
     expect(await call(0, '/activities/' + id + '/start', 'POST', {}), 409)
     expect(await call(2, path + '/deposits/' + users[1].id, 'PATCH', { version: group.version, status: 'paid' }), 400)
-    group = expect(await call(2, path + '/deposits/' + users[5].id, 'PATCH', { version: group.version, status: 'paid' }))
+    // Staff cannot manually mark paid without verified VietQR payment
+    expect(await call(2, path + '/deposits/' + users[5].id, 'PATCH', { version: group.version, status: 'paid' }), 409)
+    // Member pays via VietQR and auto-confirms
+    const qr = expect(await call(5, '/payments/create-qr', 'POST', { activityId: id }), 201).payment
+    expect(await call(5, '/payments/' + qr.id + '/confirm', 'POST', {}))
+    group = expect(await call(2, path))
     const receipt = (await activities.get(id)).businessReceipts[0]
-    assert.equal(receipt.recordedBy, users[2].id); assert.equal(receipt.method, 'manual'); assert.equal(receipt.amount, 50000)
-    assert.equal(await db.collection('notifications').countDocuments({ userId: users[5].id, title: 'Đã xác nhận tiền cọc', activityId: id }), 1)
+    assert.equal(receipt.method, 'vietqr-auto-confirm'); assert.equal(receipt.amount, 50000)
+    assert.equal(await db.collection('notifications').countDocuments({ userId: users[5].id, title: 'Tiền cọc đã được đối soát', activityId: id }), 1)
     assert.equal(expect(await call(2, '/activities/' + id + '/members')).items.find(item => item.userId === users[5].id)?.depositStatus, 'paid')
     expect(await call(2, path + '/plan', 'PUT', { version: group.version, itinerary: [null] }), 400)
     group = expect(await call(2, path + '/plan', 'PUT', { version: group.version, itinerary: [{ id: 'welcome', time: '09:30', title: 'Welcome', locationId: location.id, location: 'Studio', notes: 'Bring a notebook' }] }))
@@ -208,16 +213,14 @@ test('business registration, revisions, multi-group publication, direct employee
     await auth.portal.reconcilePublications()
     assert.equal((await activities.get(row.id)).status, 'published')
   })
-  await t.test('wallet is owner-only, tenant-scoped and manual receipts cannot become spendable', async () => {
+  await t.test('wallet is owner-only, tenant-scoped and verified VietQR deposits enter escrow safely', async () => {
     const wallet = expect(await call(0, '/portal/wallet'))
     assert.equal(wallet.mode, 'verified-escrow')
-    assert.equal(wallet.recordedAmount, 0)
-    assert.equal(wallet.estimatedFee, 0)
-    assert.equal(wallet.estimatedNet, 0)
+    assert.equal(wallet.recordedAmount, 50000)
     assert.equal(wallet.eligiblePayoutAmount, 0)
-    assert.equal(wallet.groups.length, 0)
+    assert.equal(wallet.groups.length, 1)
     assert.equal(wallet.availableBalance, 0)
-    assert.equal(wallet.escrowHeldAmount, 0)
+    assert.equal(wallet.escrowHeldAmount, 50000)
     assert.equal(expect(await call(1, '/portal/wallet')).recordedAmount, 0)
     expect(await call(2, '/portal/wallet'), 403)
     expect(await call(4, '/portal/wallet'), 403)

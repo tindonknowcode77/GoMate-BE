@@ -37,7 +37,9 @@ export function createBusinessOperations(db) {
       status: row.status, startsAt: row.startsAt, endsAt: row.endsAt, locationId: row.businessLocationId || '', location: row.location, meetingPoint: row.meetingPoint, maxParticipants: row.maxParticipants, memberCount: row.memberCount, estimatedCost: row.estimatedCost, depositAmount: row.depositAmount || 0, autoApproveMembers: row.autoApproveMembers === true,
       managers: await staff.find({ownerId:row.hostId,groupIds:row.id,status:'approved',$or:[{provisionedAt:{$ne:null}},{acceptedAt:{$ne:null}}]},{projection:{_id:0,userId:1,name:1,title:1}}).toArray(), attendance: row.attendance?.length ? row.attendance : buildAttendanceRoster(row), readiness: activityReadiness(row), itineraryConfirmed: Boolean(row.scheduleConfirmedAt), scheduleConfirmedAt: row.scheduleConfirmedAt,
       depositMembers: members.map(member => { const receipt = receipts.find(item => item.userId === member.userId); return { id: member.userId, name: member.name, amount: receipt?.status === 'paid' ? receipt.amount : row.depositAmount ?? 0, status: receipt?.status === 'paid' ? 'paid' : row.depositAmount ? 'pending' : 'not-required', paidAt: receipt?.paidAt ?? null, verified: Boolean(receipt?.verified) } }),
-      itinerary: (row.itinerary ?? []).map(item => ({ ...item, locationId: row.businessPlanLocations?.[item.id] || '', location: item.place, notes: item.note })), notifications: row.businessOffers ?? [], requests: (row.joinRequests ?? []).filter(item => item.status === 'pending') }
+      itinerary: (row.itinerary ?? []).map(item => ({ ...item, locationId: row.businessPlanLocations?.[item.id] || '', location: item.place, notes: item.note })), notifications: row.businessOffers ?? [], requests: (row.joinRequests ?? []).filter(item => item.status === 'pending'),
+      leaveRequests: (row.leaveRequests ?? []).filter(item => item.status === 'pending'),
+      depositChangeRequest: row.depositChangeRequest || null }
   }
   async function change(row, actorId, version, patch, type) {
     if (version !== row.version) throw new HttpError(409, 'Group changed. Reload before saving.')
@@ -80,7 +82,14 @@ export function createBusinessOperations(db) {
     },
     async saveLocation(ownerId, id, version, data) {
       if (!await verified(ownerId)) throw new HttpError(403, 'Verified business required')
-      if (!id) { const row = { ...data, id: randomUUID(), ownerId, version: 1, createdAt: new Date(), updatedAt: new Date() }; await locations.insertOne(row); const { _id, ...result } = row; return result }
+      if (!id) {
+        const norm = s => String(s || '').trim().toLowerCase()
+        const existing = await locations.find({ ownerId }, { projection: { name: 1, address: 1 } }).toArray()
+        if (existing.some(loc => norm(loc.name) === norm(data.name) && norm(loc.address) === norm(data.address))) {
+          throw new HttpError(409, 'Địa điểm có tên và địa chỉ giống hệt đã tồn tại trong thư viện.')
+        }
+        const row = { ...data, id: randomUUID(), ownerId, version: 1, createdAt: new Date(), updatedAt: new Date() }; await locations.insertOne(row); const { _id, ...result } = row; return result
+      }
       const row = await locations.findOneAndUpdate({ id, ownerId, version }, { $set: { ...data, updatedAt: new Date() }, ...(!Number.isFinite(data.latitude)?{$unset:{latitude:'',longitude:''}}:{}), $inc: { version: 1 } }, { returnDocument: 'after', projection: view })
       if (!row) throw new HttpError(409, 'Location not found or changed')
       return row
@@ -102,13 +111,75 @@ export function createBusinessOperations(db) {
       if (row.hostId !== userId) throw new HttpError(403, 'Chỉ chủ doanh nghiệp được thay đổi cài đặt nhóm.')
       if (row.status !== 'published' || new Date(row.startsAt) <= new Date()) throw new HttpError(409, 'Chỉ thay đổi cài đặt trước khi nhóm bắt đầu.')
       if (data.depositAmount !== undefined && data.depositAmount > row.estimatedCost) throw new HttpError(400, 'Tiền cọc không được vượt chi phí mỗi người.')
-      if (data.depositAmount !== undefined && data.depositAmount !== row.depositAmount && (row.businessReceipts?.some(item => item.status === 'paid' && item.verified) || await db.collection('finance_escrows').findOne({ _id: id, 'lots.0': { $exists: true } }))) throw new HttpError(409, 'Không thể thay đổi mức tiền cọc khi đã có thành viên thanh toán cọc xác thực.')
       const patch = {}
       if (data.autoApproveMembers !== undefined) patch.autoApproveMembers = data.autoApproveMembers
-      if (data.depositAmount !== undefined) { patch.depositAmount = data.depositAmount; patch.business = { ...row.business, depositAmount: data.depositAmount }; patch.scheduleConfirmedAt = null; patch.scheduleConfirmedBy = null }
-      const result = await change(row, userId, version, patch, 'business-settings-updated')
-      if (data.depositAmount !== undefined && data.depositAmount !== row.depositAmount) await db.collection('payments').updateMany({ activityId: id, type: 'activity_deposit', status: 'pending', amount: { $ne: data.depositAmount } }, { $set: { status: 'cancelled', cancellationReason: 'deposit-changed', updatedAt: new Date() }, $unset: { activeKey: '' } })
-      return result
+      if (data.depositAmount !== undefined && data.depositAmount !== (row.depositAmount || 0)) {
+        if (row.depositChangeRequest?.status === 'pending') {
+          throw new HttpError(409, 'Đang có yêu cầu thay đổi mức cọc chờ Admin duyệt. Vui lòng đợi xử lý.')
+        }
+        const request = {
+          id: randomUUID(),
+          previousAmount: row.depositAmount || 0,
+          requestedAmount: data.depositAmount,
+          reason: typeof data.reason === 'string' && data.reason.trim() ? data.reason.trim().slice(0, 300) : 'Doanh nghiệp đề xuất cập nhật mức tiền cọc',
+          status: 'pending',
+          requestedBy: userId,
+          requestedAt: new Date(),
+        }
+        patch.depositChangeRequest = request
+        const admins = await db.collection('users').find({ role: 'admin', deletedAt: { $exists: false } }, { projection: { id: 1 } }).toArray()
+        await Promise.all(admins.map(a => notify(a.id, `deposit-change:${id}:${request.id}`, 'Yêu cầu duyệt đổi mức cọc', `${row.title}: ${(row.depositAmount || 0).toLocaleString('vi-VN')}đ → ${data.depositAmount.toLocaleString('vi-VN')}đ`, userId)))
+      }
+      if (!Object.keys(patch).length) return groupView(row)
+      return change(row, userId, version, patch, 'business-settings-updated')
+    },
+    async listDepositChangeRequests() {
+      const rows = await activities.find({ organizerType: 'business', 'depositChangeRequest.status': 'pending' }, { projection: { id: 1, title: 1, businessGroupName: 1, hostId: 1, hostName: 1, depositAmount: 1, depositChangeRequest: 1, businessReceipts: 1, startsAt: 1 } }).sort({ 'depositChangeRequest.requestedAt': -1 }).toArray()
+      return { items: rows.map(r => ({ activityId: r.id, groupName: r.businessGroupName || r.title, hostId: r.hostId, hostName: r.hostName, currentDeposit: r.depositAmount || 0, paidCount: (r.businessReceipts ?? []).filter(x => x.status === 'paid').length, request: r.depositChangeRequest })) }
+    },
+    async reviewDepositChange(adminId, id, status, note = '') {
+      if (!['approved', 'rejected'].includes(status)) throw new HttpError(400, 'Trạng thái duyệt không hợp lệ.')
+      const row = await activities.findOne({ id, organizerType: 'business' })
+      if (!row || row.depositChangeRequest?.status !== 'pending') throw new HttpError(404, 'Không có yêu cầu thay đổi mức cọc đang chờ duyệt.')
+      const now = new Date()
+      const newAmount = row.depositChangeRequest.requestedAmount
+      const oldAmount = row.depositChangeRequest.previousAmount
+      const reviewedReq = { ...row.depositChangeRequest, status, reviewedBy: adminId, reviewedAt: now, reviewNote: String(note || '').trim().slice(0, 300) }
+      if (status === 'rejected') {
+        const updated = await change(row, row.hostId, row.version, { depositChangeRequest: reviewedReq }, 'deposit-change-rejected')
+        await notify(row.hostId, `deposit-change-decided:${id}:${reviewedReq.id}`, 'Yêu cầu đổi mức cọc bị từ chối', `${row.title}${note ? ` · ${note}` : ''}`, adminId)
+        return updated
+      }
+      // Approved: apply new depositAmount for future payments, cancel old pending quotes, preserve paid members
+      const patch = { depositAmount: newAmount, business: { ...row.business, depositAmount: newAmount }, depositChangeRequest: reviewedReq, scheduleConfirmedAt: null, scheduleConfirmedBy: null }
+      const updated = await change(row, row.hostId, row.version, patch, 'deposit-change-approved')
+      if (row.businessPostId) {
+        await db.collection('business_posts').updateOne({ id: row.businessPostId, 'groups.activityId': id }, { $set: { 'groups.$.depositAmount': newAmount } })
+      }
+      await db.collection('payments').updateMany({ activityId: id, type: 'activity_deposit', status: 'pending', amount: { $ne: newAmount } }, { $set: { status: 'cancelled', cancellationReason: 'deposit-changed', updatedAt: now }, $unset: { activeKey: '' } })
+      const paidMembers = (row.businessReceipts ?? []).filter(r => r.status === 'paid')
+      if (paidMembers.length > 0) {
+        const diff = oldAmount - newAmount
+        if (diff > 0) {
+          // Deposit lowered: record refundable excess difference on escrow lots if present
+          const escrow = await db.collection('finance_escrows').findOne({ _id: id })
+          if (escrow) {
+            await db.collection('finance_escrows').updateOne({ _id: id }, { $set: { 'lots.$[elem].adjustedRefundDiff': diff }, $push: { audit: { id: randomUUID(), actorId: adminId, action: 'deposit-decreased-diff-recorded', oldAmount, newAmount, diff, createdAt: now } } }, { arrayFilters: [{ 'elem.state': 'held', 'elem.amount': oldAmount }] })
+          }
+        }
+        await Promise.all(paidMembers.map(m => community.notify(m.userId, {
+          key: `deposit-adjusted:${id}:${reviewedReq.id}`,
+          type: 'activity',
+          title: 'Mức tiền cọc nhóm đã được cập nhật',
+          text: diff > 0
+            ? `${row.title}: mức cọc giảm còn ${newAmount.toLocaleString('vi-VN')}đ. Khoản dư ${diff.toLocaleString('vi-VN')}đ đã được ghi nhận bảo lưu hoàn trả.`
+            : `${row.title}: mức cọc tăng lên ${newAmount.toLocaleString('vi-VN')}đ. Khoản cọc ${oldAmount.toLocaleString('vi-VN')}đ bạn đã đóng vẫn được bảo lưu hợp lệ.`,
+          activityId: id,
+          actorId: adminId,
+        })))
+      }
+      await notify(row.hostId, `deposit-change-decided:${id}:${reviewedReq.id}`, 'Admin đã duyệt đổi mức cọc', `${row.title}: ${oldAmount.toLocaleString('vi-VN')}đ → ${newAmount.toLocaleString('vi-VN')}đ`, adminId)
+      return updated
     },
     async savePlan(userId, id, version, itinerary) {
       const row = await group(userId, id)
@@ -126,11 +197,63 @@ export function createBusinessOperations(db) {
       const row = await group(userId, id)
       if (!['published', 'in-progress'].includes(row.status) || !row.depositAmount) throw new HttpError(409, 'No deposit to record or group closed')
       if (!row.joinRequests?.some(member => member.userId === memberId && member.status === 'approved')) throw new HttpError(400, 'Only approved members have deposit records')
-      if (status === 'pending' && row.businessReceipts?.some(item => item.userId === memberId && item.status === 'paid' && item.verified)) throw new HttpError(409, 'Không thể hủy trạng thái cọc đã được hệ thống thanh toán xác thực.')
-      const receipt = { userId: memberId, status, amount: row.depositAmount, paidAt: status === 'paid' ? new Date() : null, recordedBy: userId, recordedAt: new Date(), method: 'manual' }
+      const verifiedPayment = await db.collection('payments').findOne({ activityId: id, userId: memberId, type: 'activity_deposit', status: 'paid', verification: { $exists: true } })
+      if (status === 'paid' && !verifiedPayment) {
+        throw new HttpError(409, 'Không thể tự đánh dấu đã nhận cọc khi hệ thống chưa ghi nhận giao dịch VietQR hợp lệ từ thành viên.')
+      }
+      if (status === 'pending' && (verifiedPayment || row.businessReceipts?.some(item => item.userId === memberId && item.status === 'paid' && item.verified))) {
+        throw new HttpError(409, 'Không thể hủy trạng thái cọc đã được hệ thống thanh toán xác thực.')
+      }
+      const receipt = { userId: memberId, status, amount: row.depositAmount, paidAt: status === 'paid' ? (verifiedPayment?.paidAt || new Date()) : null, recordedBy: userId, recordedAt: new Date(), method: verifiedPayment ? verifiedPayment.verification.source : 'manual', ...(verifiedPayment ? { paymentId: verifiedPayment.id, orderCode: verifiedPayment.orderCode, verified: true } : {}) }
       const updated = await change(row, userId, version, { businessReceipts: [...(row.businessReceipts ?? []).filter(item => item.userId !== memberId), receipt], ...(row.status === 'published' && status === 'pending' ? { scheduleConfirmedAt: null, scheduleConfirmedBy: null } : {}) }, 'business-deposit-recorded')
       if (status === 'paid') await community.notify(memberId, { key: 'deposit-confirmed:' + id + ':' + memberId + ':' + updated.version, type: 'activity', title: 'Đã xác nhận tiền cọc', text: row.title + ' · ' + row.depositAmount.toLocaleString('vi-VN') + 'đ', activityId: id, actorId: userId })
       return updated
+    },
+    async kickMember(userId, id, version, memberId, reason = '') {
+      const row = await group(userId, id)
+      if (memberId === row.hostId) throw new HttpError(403, 'Không thể xóa người tổ chức.')
+      if (version !== undefined && row.version !== version) throw new HttpError(409, 'Group changed. Reload before saving.')
+      const member = row.joinRequests?.find(item => item.userId === memberId && item.status === 'approved')
+      if (!member) throw new HttpError(404, 'Không tìm thấy thành viên đã duyệt trong nhóm.')
+      const hasPaidDeposit = Boolean(row.businessReceipts?.some(r => r.userId === memberId && r.status === 'paid'))
+      const updated = await repository.removeMember(id, memberId, row.hostId, true)
+      if (!updated) throw new HttpError(409, 'Không thể đưa thành viên ra khỏi nhóm ở trạng thái hiện tại.')
+      const now = new Date()
+      await finance.onMemberRemoved(id, memberId, true, now, { reason })
+      const cleanReason = String(reason || '').trim().slice(0, 300)
+      const noteText = `Thành viên ${member.name || ''} đã được doanh nghiệp đưa ra khỏi nhóm.${cleanReason ? ` Lý do: ${cleanReason}.` : ''}`
+      await repository.lifecycle(updated, row.hostId, {}, { id: randomUUID(), type: 'note', actorId: userId, createdAt: now, text: noteText })
+      await community.notify(memberId, {
+        key: `member-removed:${id}:${updated.version}`,
+        type: 'activity',
+        title: 'Bạn đã được đưa ra khỏi nhóm',
+        text: `${row.title}${hasPaidDeposit ? ' · Tiền cọc của bạn được bảo vệ hoàn 100% trong Ví.' : ''}`,
+        activityId: id,
+        actorId: userId,
+      })
+      return groupView(await repository.get(id))
+    },
+    async decideLeaveRequest(userId, id, version, requestId, status, note = '') {
+      const row = await group(userId, id)
+      if (version !== undefined && row.version !== version) throw new HttpError(409, 'Group changed. Reload before saving.')
+      if (!['approved', 'rejected'].includes(status)) throw new HttpError(400, 'Trạng thái duyệt không hợp lệ.')
+      const reqItem = (row.leaveRequests ?? []).find(item => item.id === requestId && item.status === 'pending')
+      if (!reqItem) throw new HttpError(404, 'Không tìm thấy yêu cầu rời nhóm đang chờ duyệt.')
+      const now = new Date()
+      const cleanNote = String(note || '').trim().slice(0, 300)
+      const updatedLeaveReqs = (row.leaveRequests ?? []).map(item => item.id === requestId ? { ...item, status, reviewedBy: userId, reviewedAt: now, reviewNote: cleanNote } : item)
+      await activities.updateOne({ id, version: row.version }, { $set: { leaveRequests: updatedLeaveReqs, updatedAt: now }, $inc: { version: 1 } })
+      if (status === 'approved') {
+        const removed = await repository.removeMember(id, reqItem.userId, reqItem.userId, false)
+        if (removed) {
+          await finance.onMemberRemoved(id, reqItem.userId, false, now, { approvedByHost: true, reason: reqItem.reason })
+          await repository.lifecycle(removed, row.hostId, {}, { id: randomUUID(), type: 'note', actorId: userId, createdAt: now, text: `Thành viên ${reqItem.name || ''} đã rời nhóm (được Doanh nghiệp chấp thuận). Lý do: ${reqItem.reason}` })
+        }
+        await community.notify(reqItem.userId, { key: `leave-decision:${requestId}:approved`, type: 'activity', title: 'Yêu cầu rời nhóm đã được chấp thuận', text: `${row.title} · Bạn được hoàn 100% tiền cọc trong Ví.`, activityId: id, actorId: userId })
+      } else {
+        await community.notify(reqItem.userId, { key: `leave-decision:${requestId}:rejected`, type: 'activity', title: 'Yêu cầu rời nhóm chưa được chấp thuận', text: `${row.title}${cleanNote ? ` · ${cleanNote}` : ''}`, activityId: id, actorId: userId })
+      }
+      return groupView(await repository.get(id))
     },
     async decideMember(userId, id, version, requestId, status) {
       const row = await group(userId, id)
@@ -145,6 +268,10 @@ export function createBusinessOperations(db) {
       if (!['published', 'in-progress'].includes(row.status)) throw new HttpError(409, 'Group closed')
       const existing = row.businessOffers?.find(item => item.clientId === data.clientId)
       if (existing && (existing.title !== data.title || existing.body !== data.body || existing.expiresAt !== data.expiresAt)) throw new HttpError(409, 'Request ID was already used')
+      const norm = s => String(s || '').trim().toLowerCase()
+      if (!existing && (row.businessOffers ?? []).some(item => norm(item.title) === norm(data.title) && norm(item.body) === norm(data.body))) {
+        throw new HttpError(409, 'Thông báo/Ưu đãi có nội dung giống hệt đã được gửi trước đó.')
+      }
       if (!existing && (row.businessOffers?.length ?? 0) >= 100) throw new HttpError(409, 'Offer limit reached')
       const notice = existing || { ...data, id: randomUUID(), actorId: userId, sentAt: new Date(), recipients: (row.joinRequests ?? []).filter(item => item.status === 'approved').length }
       if (!existing) await change(row, userId, version, { businessOffers: [...(row.businessOffers ?? []), notice] }, 'business-offer')

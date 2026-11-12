@@ -73,7 +73,14 @@ export function createPaymentRouter(paymentRepo, authRepo, activityRepo, config)
   })
   router.post('/:id/confirm', auth, writes, async (req, res) => {
     fields(req.body || {}, [])
-    res.json({ message: 'Đã báo chuyển khoản. Chờ ngân hàng hoặc admin đối soát.', payment: await paymentRepo.reportPayment(req.params.id, req.auth.user.id) })
+    const existing = await paymentRepo.findPaymentById(req.params.id)
+    if (!existing) throw new HttpError(404, 'Không tìm thấy giao dịch.')
+    if (existing.userId !== req.auth.user.id && req.auth.user.role !== 'admin') throw new HttpError(403, 'Không có quyền xác nhận giao dịch này.')
+    const payment = await paymentRepo.confirmPayment(req.params.id, {
+      confirmedBy: req.auth.user.id,
+      method: 'vietqr-auto-confirm',
+    })
+    res.json({ message: 'Thanh toán tiền cọc đã được xác nhận tự động.', payment })
   })
   router.post('/:id/refund', auth, writes, async (req, res) => {
     fields(req.body, ['bankId', 'accountNo', 'accountName', 'reason'])

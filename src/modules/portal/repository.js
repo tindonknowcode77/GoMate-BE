@@ -95,6 +95,11 @@ export function createPortalRepository(db) {
       if (data.premium && !(user?.subscription?.plan === 'plus' && user.subscription.status === 'active')) throw new HttpError(403, 'An active Plus plan is required for premium styling')
       const application = await applications.findOne({ ownerId, status: 'approved' })
       if (!application) throw new HttpError(403, 'A verified business is required')
+      const norm = s => String(s || '').trim().toLowerCase()
+      const existingPosts = await posts.find({ ownerId, status: { $in: ['pending', 'approved', 'publishing'] } }, { projection: { title: 1, copy: 1 } }).toArray()
+      if (existingPosts.some(p => norm(p.title) === norm(data.title) && norm(p.copy) === norm(data.copy))) {
+        throw new HttpError(409, 'Bài đăng có nội dung giống hệt đang chờ duyệt hoặc đã tồn tại. Vui lòng không gửi lặp lại.')
+      }
       for (const group of data.groups ?? []) if(group.locationId) { const place=await db.collection('business_locations').findOne({id:group.locationId,ownerId});if(!place)throw new HttpError(400,'Địa điểm không thuộc doanh nghiệp.');if(Number.isFinite(place.longitude)&&Number.isFinite(place.latitude))group.event.coordinates={type:'Point',coordinates:[place.longitude,place.latitude]}; }
       const groups = data.groups?.map(group => ({ ...group, activityId: randomUUID() }))
       const row = { ...data, ...(groups ? { groups } : {}), id: randomUUID(), ...(data.event ? { activityId: randomUUID() } : {}), ownerId, businessName: application.company, status: 'pending', version: 1, history: [{ type: 'submitted', actorId: ownerId, createdAt: new Date() }], createdAt: new Date(), updatedAt: new Date() }

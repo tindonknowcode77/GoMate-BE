@@ -52,7 +52,7 @@ test('verified escrow: adversarial payments, refunds, disputes and admin settlem
   try {
     let first
     await t.test('policy is explicit, bounded and configurable', () => {
-      assert.equal(financePolicy({}).freeCancellationHours, 24); assert.equal(financePolicy({}).settlementHoldHours, 48)
+      assert.equal(financePolicy({}).freeCancellationHours, 6); assert.equal(financePolicy({}).settlementHoldHours, 48)
       assert.equal(financePolicy({ PAYMENT_SETTLEMENT_HOLD_HOURS: '72' }).settlementHoldHours, 72)
       assert.throws(() => financePolicy({ PAYMENT_SETTLEMENT_HOLD_HOURS: '0' }))
     })
@@ -62,15 +62,18 @@ test('verified escrow: adversarial payments, refunds, disputes and admin settlem
       ok(await call(3, '/payments/create-qr', 'POST', { activityId: first.id }), 403)
       ok(await call(2, '/payments/create-qr', 'POST', { type: 'wallet_topup', amount: 50000 }), 400)
     })
-    await t.test('self-report does not create paid receipts or money; status polling is private', async () => {
-      assert.equal(ok(await call(2, `/payments/${first.payment.id}/confirm`, 'POST', {})).payment.status, 'pending')
+    await t.test('auto-confirm immediately credits verified escrow and status polling is private', async () => {
+      const confirmed = ok(await call(2, `/payments/${first.payment.id}/confirm`, 'POST', {})).payment
+      assert.equal(confirmed.status, 'paid')
+      assert.ok(confirmed.verification)
       ok(await call(null, `/payments/${first.payment.id}/status`), 401)
       ok(await call(3, `/payments/${first.payment.id}/status`), 404)
-      assert.equal((await finance.dashboard(users[0].id)).summary.received, 0)
+      assert.equal((await finance.dashboard(users[0].id)).summary.received, 50000)
       ok(await call(1, '/portal/finance'), 403)
     })
     await t.test('webhooks reject missing secret, wrong direction/account and fractional amounts', async () => {
-      const body = { direction: 'in', accountNo: bank.accountNo, amount: 50000, transactionRef: 'WEBHOOK-0001', content: first.payment.orderCode }
+      const webhookOrder = await make()
+      const body = { direction: 'in', accountNo: bank.accountNo, amount: 50000, transactionRef: 'WEBHOOK-0001', content: webhookOrder.payment.orderCode }
       ok(await call(null, '/payments/webhook', 'POST', body), 401)
       const headers = { 'x-gomate-webhook-secret': secret }
       ok(await call(null, '/payments/webhook', 'POST', { ...body, direction: 'out' }, headers), 400)
@@ -78,9 +81,9 @@ test('verified escrow: adversarial payments, refunds, disputes and admin settlem
       ok(await call(null, '/payments/webhook', 'POST', { ...body, amount: 0.5 }, headers), 400)
       const paid = ok(await call(null, '/payments/webhook', 'POST', body, headers)).payment
       assert.equal(paid.refundOnly, false); assert.ok(paid.verification)
-      assert.equal(ok(await call(2, `/payments/activity/${first.id}/me`)).isPaid, true)
+      assert.equal(ok(await call(2, `/payments/activity/${webhookOrder.id}/me`)).isPaid, true)
       ok(await call(null, '/payments/webhook', 'POST', body, headers))
-      assert.equal((await db.collection('finance_escrows').findOne({ _id: first.id })).lots.length, 1)
+      assert.equal((await db.collection('finance_escrows').findOne({ _id: webhookOrder.id })).lots.length, 1)
     })
     await t.test('same bank reference cannot credit another order; real second transfer is refundable, never extra merchant revenue', async () => {
       const other = await make(3)

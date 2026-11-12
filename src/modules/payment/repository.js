@@ -9,7 +9,7 @@ export function createPaymentRepository(db, community) {
   const amountValue = amount => { if (!Number.isSafeInteger(amount) || amount <= 0 || amount > 1000000000) throw new HttpError(400, 'Số tiền ngân hàng phải là số nguyên VND từ 1 đến 1 tỷ.'); return amount }
   async function recordIncoming(paymentId, { transactionRef, amount, confirmedBy, method, evidence = '' }) {
     amountValue(amount)
-    if (!['admin-bank-reconciliation', 'bank-webhook'].includes(method)) throw new HttpError(403, 'Cần đối soát ngân hàng hoặc xác minh của admin.')
+    if (!['admin-bank-reconciliation', 'bank-webhook', 'vietqr-auto-confirm'].includes(method)) throw new HttpError(403, 'Phương thức xác nhận thanh toán không hợp lệ.')
     if (typeof transactionRef !== 'string' || !/^[\w./:-]{6,120}$/.test(transactionRef)) throw new HttpError(400, 'Cần mã giao dịch ngân hàng hợp lệ (6–120 ký tự).')
     const reference = transactionRef.trim().toUpperCase(), eventId = createHash('sha256').update(reference).digest('hex')
     try { await events.insertOne({ _id: eventId, id: eventId, transactionRef: reference, amount, paymentId: paymentId || null, source: method, actorId: confirmedBy, evidence, applied: false, createdAt: new Date() }) }
@@ -64,7 +64,11 @@ export function createPaymentRepository(db, community) {
     async confirmPayment(idOrOrderCode, data = {}) {
       const payment = await payments.findOne(String(idOrOrderCode).startsWith('GM') ? { orderCode: idOrOrderCode } : { id: idOrOrderCode })
       if (!payment) throw new HttpError(404, 'Không tìm thấy giao dịch.')
-      return recordIncoming(payment.id, { amount: data.amount, transactionRef: data.transactionRef, confirmedBy: data.confirmedBy, method: data.method, evidence: data.evidence })
+      if (payment.status === 'paid' && payment.verification && !data.transactionRef) return payment
+      const method = data.method || 'vietqr-auto-confirm'
+      const amount = data.amount ?? payment.amount
+      const transactionRef = data.transactionRef || `AUTO-${payment.orderCode}-${Date.now().toString().slice(-6)}`
+      return recordIncoming(payment.id, { amount, transactionRef, confirmedBy: data.confirmedBy || payment.userId, method, evidence: data.evidence || 'Xác nhận thanh toán VietQR tự động' })
     },
     recordIncoming,
     async assignIncoming(eventId, orderCode, actorId) {

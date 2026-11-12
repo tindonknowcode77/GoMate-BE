@@ -26,6 +26,16 @@ export function createActivityRepository(db) {
     listAssignedStaff: activity => listAssignedStaff(db, activity),
     async create(fields, host) {
       const now = new Date()
+      const normTitle = String(fields.title || '').trim().toLowerCase()
+      const duplicate = await activities.findOne({
+        hostId: host.id,
+        status: 'published',
+        startsAt: fields.startsAt,
+        createdAt: { $gte: new Date(now.getTime() - 5 * 60 * 1000) },
+      })
+      if (duplicate && String(duplicate.title || '').trim().toLowerCase() === normTitle) {
+        throw new HttpError(409, 'Hoạt động giống hệt vừa được tạo. Vui lòng không bấm gửi nhiều lần.')
+      }
       const { initialMembers = [], initialFriendIds: _initialFriendIds, ...stored } = fields
       const invitations = initialMembers.map(user => ({ id: randomUUID(), userId: user.id, name: user.name, status: 'pending', useReservedSeats: false, createdAt: now, updatedAt: now }))
       const row = { id: randomUUID(), organizerType: 'personal', ...stored, invitations, hostId: host.id, hostName: host.name,
@@ -112,13 +122,29 @@ export function createActivityRepository(db) {
       if (!hostAction && actorId !== userId) return null
       return activities.findOneAndUpdate({ id, status: 'published', startsAt: { $gt: now },
         hostId: { $ne: userId },
-        memberCount: { $gt: 1 },
+        memberCount: { $gte: 1 },
         joinRequests: { $elemMatch: { userId, status: 'approved' } },
       }, { $set: { 'joinRequests.$.status': hostAction ? 'removed' : 'left',
         'joinRequests.$.updatedAt': now, updatedAt: now, scheduleConfirmedAt: null, scheduleConfirmedBy: null },
-        $pull: { businessReceipts: { userId } },
+        $pull: { businessReceipts: { userId }, leaveRequests: { userId, status: 'pending' } },
         $inc: { memberCount: -1, version: 1 },
       }, { returnDocument: 'after' })
+    },
+    async submitLeaveRequest(id, user, reason) {
+      const now = new Date()
+      const request = { id: randomUUID(), userId: user.id, name: user.name, reason, status: 'pending', createdAt: now, updatedAt: now }
+      const row = await activities.findOneAndUpdate(
+        {
+          id,
+          status: 'published',
+          startsAt: { $gt: now },
+          joinRequests: { $elemMatch: { userId: user.id, status: 'approved' } },
+          leaveRequests: { $not: { $elemMatch: { userId: user.id, status: 'pending' } } },
+        },
+        { $push: { leaveRequests: request }, $set: { updatedAt: now }, $inc: { version: 1 } },
+        { returnDocument: 'after' }
+      )
+      return row ? request : null
     },
     async owned(hostId, page, limit) {
       const query = { hostId, status: { $ne: 'deleted' } }

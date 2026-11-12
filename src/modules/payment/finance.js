@@ -93,12 +93,16 @@ export function createFinanceRepository(db) {
     const effectiveCancelAt = lot?.leftAt ? new Date(lot.leftAt) : new Date()
     const early = Boolean(lot?.cancelBefore && new Date(lot.cancelBefore) > effectiveCancelAt)
     const planChangedLate = Boolean(activity?.lastPlanUpdatedAt && lot?.verifiedAt && new Date(activity.lastPlanUpdatedAt) > new Date(lot.verifiedAt) && (!lot.cancelBefore || new Date(activity.lastPlanUpdatedAt) >= new Date(lot.cancelBefore)))
-    const fullRefund = lot?.refundOnly || lot?.removedByHost || lot?.leftEarly || planChangedLate || !activity || activity.businessRevoked || ['cancelled', 'expired', 'deleted'].includes(activity?.status) || early
-    return { ...clean(payment), activityStatus: activity?.status || null, financeState: lot?.state || (payment.status === 'paid' ? 'unreconciled' : null), refundEligible: Boolean(lot && ['held', 'disputed', 'payout_reserved'].includes(lot.state)), refundPolicy: fullRefund ? 'full_refund' : 'manual_review', refundAmount: lot?.amount || 0, refundRequest: lot?.refund || null, participantConfirmation: lot?.confirmation || null, canConfirmAttendance: Boolean(lot && ['held', 'payout_reserved'].includes(lot.state) && !lot.refundOnly && activity && new Date(lot.startsAt || activity.startsAt) <= new Date()), payout: escrow?.payouts.find(payout => payout.lotIds.includes(payment.id)) || null }
+    const penaltyAmount = lot?.penaltyAmount || 0
+    const penaltyPercent = lot?.penaltyPercent || 0
+    const refundableAmount = lot ? Math.max(0, (lot.refundableAmount ?? lot.amount) - (lot.refundableAmount !== undefined ? 0 : penaltyAmount)) : 0
+    const fullRefund = !penaltyPercent && (lot?.refundOnly || lot?.removedByHost || lot?.leftEarly || lot?.approvedLateLeave || planChangedLate || !activity || activity.businessRevoked || ['cancelled', 'expired', 'deleted'].includes(activity?.status) || early)
+    const refundPolicy = penaltyPercent > 0 ? 'partial_refund_80' : fullRefund ? 'full_refund' : 'manual_review'
+    return { ...clean(payment), activityStatus: activity?.status || null, financeState: lot?.state || (payment.status === 'paid' ? 'unreconciled' : null), refundEligible: Boolean(lot && ['held', 'disputed', 'payout_reserved'].includes(lot.state)), refundPolicy, refundAmount: refundableAmount, penaltyAmount, penaltyPercent, leaveReason: lot?.leaveReason || '', refundRequest: lot?.refund || null, participantConfirmation: lot?.confirmation || null, canConfirmAttendance: Boolean(lot && ['held', 'payout_reserved'].includes(lot.state) && !lot.refundOnly && activity && new Date(lot.startsAt || activity.startsAt) <= new Date()), payout: escrow?.payouts.find(payout => payout.lotIds.includes(payment.id)) || null }
   }
   return {
     policy, synchronizePayment, enrich,
-    async onMemberRemoved(activityId, userId, hostAction, at = new Date()) {
+    async onMemberRemoved(activityId, userId, hostAction, at = new Date(), options = {}) {
       await db.collection('payments').updateMany({ activityId, userId, type: 'activity_deposit', status: 'pending' }, { $set: { status: 'cancelled', cancellationReason: hostAction ? 'removed-by-host' : 'member-left', updatedAt: at }, $unset: { activeKey: '' } })
       await db.collection('payments').updateMany({ activityId, userId, type: 'activity_deposit', status: 'paid' }, { $unset: { activeKey: '' } })
       const row = await escrows.findOne({ _id: activityId })
@@ -106,12 +110,22 @@ export function createFinanceRepository(db) {
       await mutate(activityId, draft => {
         for (const lot of draft.lots.filter(item => item.userId === userId && item.state === 'held')) {
           lot.leftAt = at
+          lot.leaveReason = options.reason || lot.leaveReason || ''
           const early = Boolean(lot.cancelBefore && new Date(lot.cancelBefore) > at)
-          if (hostAction) { lot.removedByHost = true; lot.refundOnly = true }
-          else if (early) { lot.leftEarly = true; lot.refundOnly = true }
+          if (hostAction) {
+            lot.removedByHost = true; lot.refundOnly = true; lot.penaltyPercent = 0; lot.penaltyAmount = 0; lot.refundableAmount = lot.amount
+          } else if (early || options.approvedByHost) {
+            lot.leftEarly = true
+            if (options.approvedByHost) lot.approvedLateLeave = true
+            lot.refundOnly = true; lot.penaltyPercent = 0; lot.penaltyAmount = 0; lot.refundableAmount = lot.amount
+          } else {
+            lot.lateLeave = true; lot.refundOnly = true; lot.penaltyPercent = 20
+            lot.penaltyAmount = Math.round(lot.amount * 0.2)
+            lot.refundableAmount = Math.max(0, lot.amount - lot.penaltyAmount)
+          }
         }
         draft.settlement = { status: 'waiting' }
-        draft.audit.push(entry(userId, hostAction ? 'member-removed' : 'member-left', { userId, hostAction }))
+        draft.audit.push(entry(userId, hostAction ? 'member-removed' : 'member-left', { userId, hostAction, approvedByHost: Boolean(options.approvedByHost), reason: options.reason || '' }))
       })
     },
     async reconcile() {
@@ -123,7 +137,7 @@ export function createFinanceRepository(db) {
       const rows = await payments.find({ userId }).sort({ createdAt: -1, id: 1 }).skip((page - 1) * limit).limit(limit).toArray()
       const ledgers = await escrows.find({ 'lots.userId': userId }).toArray(), lots = ledgers.flatMap(ledger => ledger.lots.filter(lot => lot.userId === userId))
       return { items: await Promise.all(rows.map(enrich)), total: await payments.countDocuments({ userId }), page, hasMore: page * limit < await payments.countDocuments({ userId }), bankAccount: clean(await banks.findOne({ _id: userId })), policy,
-        summary: { totalPaid: lots.filter(lot => !['refunded', 'settled'].includes(lot.state)).reduce((sum, lot) => sum + lot.amount, 0), refundableAmount: lots.filter(lot => ['held', 'disputed'].includes(lot.state)).reduce((sum, lot) => sum + lot.amount, 0), refundedAmount: lots.filter(lot => lot.state === 'refunded').reduce((sum, lot) => sum + lot.amount, 0), pendingRefundAmount: lots.filter(lot => ['refund_requested', 'refund_approved'].includes(lot.state)).reduce((sum, lot) => sum + lot.amount, 0) } }
+        summary: { totalPaid: lots.filter(lot => !['refunded', 'settled'].includes(lot.state)).reduce((sum, lot) => sum + lot.amount, 0), refundableAmount: lots.filter(lot => ['held', 'disputed'].includes(lot.state)).reduce((sum, lot) => sum + (lot.refundableAmount ?? lot.amount), 0), refundedAmount: lots.filter(lot => lot.state === 'refunded').reduce((sum, lot) => sum + (lot.refund?.amount ?? lot.amount), 0), pendingRefundAmount: lots.filter(lot => ['refund_requested', 'refund_approved'].includes(lot.state)).reduce((sum, lot) => sum + (lot.refund?.amount ?? lot.amount), 0) } }
     },
     async requestRefund(paymentId, userId, body) {
       const payment = await payments.findOne({ id: paymentId, userId })
@@ -143,10 +157,13 @@ export function createFinanceRepository(db) {
         }
         const effectiveCancelAt = current.leftAt ? new Date(current.leftAt) : new Date()
         const planChangedLate = Boolean(activity?.lastPlanUpdatedAt && current.verifiedAt && new Date(activity.lastPlanUpdatedAt) > new Date(current.verifiedAt) && (!current.cancelBefore || new Date(activity.lastPlanUpdatedAt) >= new Date(current.cancelBefore)))
-        const full = current.refundOnly || current.removedByHost || current.leftEarly || planChangedLate || !activity || activity.businessRevoked || ['cancelled', 'expired', 'deleted'].includes(activity?.status) || current.cancelBefore && new Date(current.cancelBefore) > effectiveCancelAt
-        current.refund = { id: randomUUID(), status: 'pending', amount: current.amount, reason, bankAccount, policy: full ? 'full_refund' : 'manual_review', requestedAt: new Date() }
+        const penaltyAmount = current.penaltyAmount || 0
+        const penaltyPercent = current.penaltyPercent || 0
+        const refundAmount = current.refundableAmount ?? Math.max(0, current.amount - penaltyAmount)
+        const full = !penaltyPercent && (current.refundOnly || current.removedByHost || current.leftEarly || current.approvedLateLeave || planChangedLate || !activity || activity.businessRevoked || ['cancelled', 'expired', 'deleted'].includes(activity?.status) || current.cancelBefore && new Date(current.cancelBefore) > effectiveCancelAt)
+        current.refund = { id: randomUUID(), status: 'pending', amount: refundAmount, penaltyAmount, penaltyPercent, reason, bankAccount, policy: penaltyPercent > 0 ? 'partial_refund_80' : (full ? 'full_refund' : 'manual_review'), requestedAt: new Date() }
         current.state = 'refund_requested'; draft.settlement = { status: 'waiting' }
-        draft.audit.push(entry(userId, 'refund-requested', { paymentId, amount: current.amount }))
+        draft.audit.push(entry(userId, 'refund-requested', { paymentId, amount: refundAmount, penaltyAmount }))
         return current.refund
       })
       // A refund request also gives up the seat before the event starts.
@@ -255,7 +272,7 @@ export function createFinanceRepository(db) {
       if (!lot?.refund) throw new HttpError(404, 'Không có yêu cầu hoàn tiền.')
       if (actorId === lot.userId || actorId === row.ownerId) throw new HttpError(403, 'Không tự xử lý hoàn tiền liên quan đến mình.')
       if (action === 'complete' && !['refund_approved', 'refunded'].includes(lot.state)) throw new HttpError(409, 'Phải duyệt hoàn tiền trước khi ghi nhận chuyển tiền.')
-      const transferRef = action === 'complete' ? await outgoing(body.transferRef, lot.refund.id, lot.amount, actorId) : null
+      const transferRef = action === 'complete' ? await outgoing(body.transferRef, lot.refund.id, lot.refund.amount ?? lot.amount, actorId) : null
       const result = await mutate(keyFor(payment), draft => {
         const current = draft.lots.find(item => item.paymentId === paymentId), request = current.refund
         if (actorId === current.userId) throw new HttpError(403, 'Không tự duyệt hoàn tiền cho mình.')

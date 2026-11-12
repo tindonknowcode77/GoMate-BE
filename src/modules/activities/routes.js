@@ -266,19 +266,32 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     if (userId === activity.hostId) throw new HttpError(403, 'Host cannot leave or be removed')
     const member = activity.joinRequests?.find(item => item.userId === userId && item.status === 'approved')
     if (!member) throw new HttpError(404, 'Approved member not found')
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : ''
+    const now = new Date()
+    const hoursLeft = (new Date(activity.startsAt).getTime() - now.getTime()) / 3600000
+    const hasPaidDeposit = Boolean(activity.businessReceipts?.some(r => r.userId === userId && r.status === 'paid'))
+    if (!hostAction && hoursLeft <= 6) {
+      if (reason.length < 5 || reason.length > 300) {
+        throw new HttpError(400, 'Trong vòng 6 tiếng trước giờ hoạt động, vui lòng nhập lý do rời nhóm (5–300 ký tự).')
+      }
+      if (hasPaidDeposit && body.acceptPenalty !== true) {
+        throw new HttpError(409, 'Trong vòng 6 tiếng sát giờ hoạt động, rời ngay sẽ mất 20% tiền cọc (hoàn 80%) hoặc bạn hãy gửi yêu cầu kèm lý do để Doanh nghiệp duyệt hoàn 100%.', 'LATE_LEAVE_REQUIRES_CONFIRM_OR_APPROVAL')
+      }
+    }
     const hadConfirmedSchedule = Boolean(activity.scheduleConfirmedAt)
     let updated = await repository.removeMember(activity.id, userId, req.auth.user.id, hostAction)
     if (!updated) throw new HttpError(409, 'Membership changed or activity is no longer upcoming and published')
-    const now = new Date()
-    await authRepository.finance?.onMemberRemoved?.(activity.id, userId, hostAction, now)
+    await authRepository.finance?.onMemberRemoved?.(activity.id, userId, hostAction, now, { reason })
+    const noteSuffix = reason ? ` Lý do: ${reason}.` : ''
     const text = hostAction
-      ? `Thành viên ${member.name || ''} đã được đưa ra khỏi nhóm.${hadConfirmedSchedule ? ' Lịch trình cần được chốt lại.' : ''}`.trim()
-      : `Thành viên ${member.name || ''} đã rời nhóm.${hadConfirmedSchedule ? ' Lịch trình cần được chốt lại trước khi bắt đầu.' : ''}`.trim()
+      ? `Thành viên ${member.name || ''} đã được đưa ra khỏi nhóm.${noteSuffix}${hadConfirmedSchedule ? ' Lịch trình cần được chốt lại.' : ''}`.trim()
+      : `Thành viên ${member.name || ''} đã rời nhóm.${noteSuffix}${hadConfirmedSchedule ? ' Lịch trình cần được chốt lại trước khi bắt đầu.' : ''}`.trim()
     updated = await repository.lifecycle(updated, activity.hostId, {}, event(req, 'note', { text })) || updated
     if (hostAction) {
-      await authRepository.community?.notify(userId, { key: `member-removed:${activity.id}:${updated.version}`, type: 'activity', title: 'Bạn đã được đưa ra khỏi nhóm', text: activity.title, activityId: activity.id, actorId: req.auth.user.id })
+      await authRepository.community?.notify(userId, { key: `member-removed:${activity.id}:${updated.version}`, type: 'activity', title: 'Bạn đã được đưa ra khỏi nhóm', text: `${activity.title}${hasPaidDeposit ? ' · Tiền cọc của bạn được bảo vệ hoàn 100% trong Ví.' : ''}`, activityId: activity.id, actorId: req.auth.user.id })
     } else {
-      await authRepository.community?.notify(activity.hostId, { key: `member-left:${activity.id}:${userId}:${updated.version}`, type: 'activity', title: hadConfirmedSchedule ? 'Thành viên rời nhóm · Cần chốt lịch lại' : 'Thành viên đã rời nhóm', text: `${member.name || 'Thành viên'} · ${activity.title}`, activityId: activity.id, actorId: userId })
+      await authRepository.community?.notify(activity.hostId, { key: `member-left:${activity.id}:${userId}:${updated.version}`, type: 'activity', title: hadConfirmedSchedule ? 'Thành viên rời nhóm · Cần chốt lịch lại' : 'Thành viên đã rời nhóm', text: `${member.name || 'Thành viên'} · ${activity.title}${noteSuffix}`, activityId: activity.id, actorId: userId })
     }
     res.status(204).end()
   }
@@ -321,8 +334,19 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     await authRepository.community?.notify(row.hostId, { key: 'invitation-decision:' + invitation.id, type: 'activity', title: req.body.status === 'accepted' ? 'Bạn bè đã đồng ý tham gia' : 'Bạn bè đã từ chối lời mời', text: req.auth.user.name + ' · ' + row.title, activityId: row.id, actorId: req.auth.user.id })
     res.json({ activity: publicActivity(row) })
   })
-  router.delete('/:id/members/me', writes, (req, res) => removeMember(req, res, false))
-  router.delete('/:id/members/:userId', writes, (req, res) => removeMember(req, res, true))
+  router.delete('/:id/members/me', writes, json, (req, res) => removeMember(req, res, false))
+  router.delete('/:id/members/:userId', writes, json, (req, res) => removeMember(req, res, true))
+  router.post('/:id/leave-requests', writes, json, async (req, res) => {
+    const activity = await find(req.params.id)
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : ''
+    if (reason.length < 5 || reason.length > 300) throw new HttpError(400, 'Vui lòng nhập lý do rời nhóm từ 5 đến 300 ký tự.')
+    const member = activity.joinRequests?.find(item => item.userId === req.auth.user.id && item.status === 'approved')
+    if (!member) throw new HttpError(404, 'Chỉ thành viên đã được duyệt mới có thể gửi yêu cầu rời nhóm.')
+    const request = await repository.submitLeaveRequest(activity.id, req.auth.user, reason)
+    if (!request) throw new HttpError(409, 'Bạn đã gửi yêu cầu rời nhóm chờ duyệt hoặc hoạt động không còn mở.')
+    await authRepository.community?.notify(activity.hostId, { key: `leave-request:${request.id}`, type: 'activity', title: 'Yêu cầu rời nhóm sát giờ', text: `${req.auth.user.name} xin rời ${activity.title} · Lý do: ${reason}`, activityId: activity.id, actorId: req.auth.user.id })
+    res.status(201).json({ request })
+  })
   router.post('/:id/join-requests', writes, express.json({ limit: '16kb' }), async (req, res) => {
     if (req.body !== undefined && (!req.body || Array.isArray(req.body) || typeof req.body !== 'object' || Object.keys(req.body).length)) throw new HttpError(400, 'Join request body must be empty')
     if (await repository.isStaffAccount?.(req.auth.user.id)) throw new HttpError(403, 'Tài khoản nhân sự doanh nghiệp chỉ dùng để quản lý các nhóm được phân công, không thể tham gia hoạt động khác.')

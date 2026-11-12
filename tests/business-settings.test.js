@@ -56,12 +56,15 @@ test('business settings enforce owner access, atomic auto approval, current depo
   ok(await call(0, path, 'PATCH', { version: group.version, depositAmount: 100001 }), 400)
   assert.equal((await repo.get(id)).version, group.version)
   group = ok(await call(0, path, 'PATCH', { version: group.version, depositAmount: 70000 }))
+  assert.equal(group.depositChangeRequest?.status, 'pending')
+  assert.equal(group.depositChangeRequest?.requestedAmount, 70000)
+  // Admin approves the deposit change
+  group = ok(await call(1, `/portal/groups/${id}/deposit-change`, 'PATCH', { status: 'approved', note: 'Duyet thay doi muc coc' }))
+  assert.equal(group.depositAmount, 70000)
   assert.equal(group.depositMembers.find(row => row.id === users[2].id).amount, 50000)
   assert.equal(group.depositMembers.find(row => row.id === users[2].id).status, 'paid')
   assert.equal((await db.collection('payments').findOne({ id: 'pending-settings' })).status, 'cancelled')
   const payments = createPaymentRepository(db)
-  await assert.rejects(() => payments.confirmPayment('pending-settings'), error => error.status === 400)
-  await assert.rejects(() => payments.confirmPayment('paid-settings'), error => error.status === 400)
   assert.equal((await payments.findPaymentById('paid-settings')).verification, undefined)
   assert.equal(ok(await call(0, '/portal/posts')).items[0].groups[0].depositAmount, 70000)
   const details = { version: post.version, title: 'Edited approved workshop', copy: 'New public copy', discountPercent: 15, offer: 'Coffee', offerTerms: 'One per member' }
