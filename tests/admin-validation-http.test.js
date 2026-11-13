@@ -55,4 +55,42 @@ test('admin HTTP validation rejects bypasses without writes and handles concurre
   const post = { title: 'Validated', copy: 'Content', border: 'Solid', premium: false, offer: '   ' }
   assert.equal((await request('/admin/posts/post', 'PUT', { version: 1, adminVersion: 0, post })).status, 200)
   assert.equal((await request('/admin/posts/post', 'PUT', { version: 1, adminVersion: 0, post })).status, 409)
+
+  // Older portal bundles sent an empty role on every admin list request.
+  for (const kind of ['users', 'posts', 'businesses', 'reports', 'tickets']) {
+    assert.equal((await request(`/admin/${kind}?page=1&q=&status=&role=`)).status, 200, kind)
+  }
+  assert.equal((await request('/admin/posts?role=admin')).status, 400)
+  for (const query of ['role=unknown', 'role=admin&role=user', 'role[$ne]=user']) assert.equal((await request('/admin/users?' + query)).status, 400)
+
+  await db.collection('users').insertMany([
+    { id: 'employee', role: 'user' }, { id: 'unaccepted', role: 'user' },
+    { id: 'orphan-employee', role: 'user' }, { id: 'internal-staff', role: 'staff' }, { id: 'legacy-user' },
+    ...Array.from({ length: 25 }, (_, i) => ({ id: `plain-${i}`, role: 'user' })),
+  ].map(row => ({ ...row, email: `${row.id}@example.com` })))
+  await db.collection('business_staff').insertMany([
+    { userId: 'employee', ownerId: owner.id, status: 'approved', acceptedAt: new Date() },
+    { userId: 'unaccepted', ownerId: owner.id, status: 'approved' },
+    { userId: 'orphan-employee', ownerId: 'unapproved-owner', status: 'approved', provisionedAt: new Date() },
+    { userId: owner.id, ownerId: owner.id, status: 'approved', provisionedAt: new Date() },
+  ].map(row => ({ ...row, id: `grant-${row.userId}` })))
+  await db.collection('business_applications').insertOne({ id: 'admin-business', ownerId: admin.id, status: 'approved' })
+  for (const [role, expectedId] of [['admin', admin.id], ['business', owner.id], ['business-staff', 'employee'], ['staff', 'internal-staff']]) {
+    const result = await request('/admin/users?role=' + role)
+    assert.equal(result.status, 200)
+    assert.equal(result.body.total, 1, role)
+    assert.deepEqual(result.body.items.map(row => [row.id, row.effectiveRole]), [[expectedId, role]])
+  }
+  const first = (await request('/admin/users?role=user')).body
+  const second = (await request('/admin/users?role=user&page=2')).body
+  assert.equal(first.total, 28)
+  assert.equal(second.total, 28)
+  assert.equal(first.items.length, 20)
+  assert.equal(second.items.length, 8)
+  const ids = new Set([...first.items, ...second.items].map(row => row.id))
+  assert.equal(ids.size, 28)
+  for (const id of ['legacy-user', 'unaccepted', 'orphan-employee']) assert.ok(ids.has(id), id)
+  const searched = await request('/admin/users?role=business&q=Owner')
+  assert.equal(searched.body.total, 1)
+  assert.equal((await request('/admin/users?role=user&q=Owner')).body.total, 0)
 })

@@ -12,6 +12,8 @@ All routes below are under `/api/portal/admin` and require a verified, authentic
 
 Supported kinds and payloads:
 
+User lists accept an optional `role=admin|business|business-staff|staff|user` filter. It matches the displayed `effectiveRole` before pagination and counting: admin takes precedence, followed by approved business ownership, then accepted/provisioned staff membership in an approved business, and finally the stored role (default user). Search combines with this filter. Empty `role=` is accepted on every kind for compatibility with older portal bundles; nonempty roles are valid only for users.
+
 - `users`: create `{name,email,password}` using existing credential validation/hash. New accounts require email verification. Edit `{name,adminVersion}`. Email is immutable; role and subscription changes use existing `/portal/users/:id/role` and `/subscription` PATCH endpoints.
 - `businesses`: create `{ownerId,application}` with the existing application schema, including a validated PDF/PNG/JPEG license. Edit `{company,address,website,representativeName,representativeTitle,representativeEmail,representativePhone,version,adminVersion}`; verified identity fields stay immutable. Delete requires both versions and no pending, approved or publishing posts.
 - `posts`: create `{ownerId,post}` for an approved business using existing post validation. Edit `{post,version,adminVersion}` only while pending/rejected; the lifecycle `version` controls conflicts. Delete requires both versions and reuses the existing group lifecycle.

@@ -11,6 +11,10 @@ test('admin query rejects ambiguous pagination, unknown filters and query inject
   for (const kind of ['businesses', 'posts', 'reports', 'tickets']) bad(() => adminQuery(kind, { status: 'invalid' }))
   assert.deepEqual(adminQuery('posts', { page: '10000', q: '  literal.*  ', status: ' pending ' }), { page: 10000, q: 'literal.*', status: 'pending' })
   assert.deepEqual(adminQuery('users', { q: '   ', status: '' }), { page: 1, q: '', status: '' })
+  assert.deepEqual(adminQuery('posts', { page: '1', q: '', status: '', role: '' }), { page: 1, q: '', status: '' })
+  assert.equal(adminQuery('users', { role: ' business-staff ' }).role, 'business-staff')
+  for (const role of ['unknown', ['admin', 'user'], { $ne: '' }, null]) bad(() => adminQuery('users', { role }))
+  for (const kind of ['posts', 'businesses', 'reports', 'tickets']) bad(() => adminQuery(kind, { role: 'admin' }))
 })
 
 test('admin strings, identifiers and revisions enforce type, bounds and control characters', () => {

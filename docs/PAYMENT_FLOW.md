@@ -2,6 +2,8 @@
 
 ## Cách dùng
 
+- Demo: Admin vào **Tài chính & doanh thu → Xác minh hoạt động → Xác minh ngay (Demo)** và xác nhận biểu mẫu đã điền sẵn. API riêng `POST /api/portal/finance/groups/:id/review-demo` bỏ qua ngày diễn ra, điều kiện hoàn tất và thời gian chờ khi xác minh. Lưu dấu `demo: true` và lịch sử `settlement-demo-approved`; không sửa lịch hoạt động. Sau xác minh demo, khoản cọc đủ điều kiện xuất hiện ngay trong số dư khả dụng và danh sách hoạt động yêu cầu giải ngân của doanh nghiệp; admin có thể duyệt và khóa lệnh chuyển ngay. Các bản ghi đã xác minh demo trước đó cũng được áp dụng. Các chặn khiếu nại/hoàn tiền, hoạt động bị thu hồi, cọc không đủ điều kiện và tự duyệt vẫn áp dụng. Admin tiếp tục ghi nhận chuyển tiền và chứng từ qua các bước giải ngân hiện có.
+
 - Người dùng: **Hồ sơ → Ví & tiền cọc**. Lưu ngân hàng nhận hoàn, xem giao dịch, yêu cầu hoàn cọc, xác nhận tham gia hoặc báo sự cố.
 - Doanh nghiệp: **Ví & đối soát** trong `/portal`. Lưu ngân hàng, xem tiền đang giữ theo hoạt động và gửi yêu cầu giải ngân toàn bộ phần đủ điều kiện của một hoạt động.
 - Admin: **Tài chính & doanh thu** trong `/portal`. Có đối soát tiền vào, xác minh hoạt động, hoàn cọc, giải ngân, khiếu nại và lịch sử xử lý.

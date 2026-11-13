@@ -17,6 +17,12 @@ const matchRevision = value => value === 0 ? { $in: [null, 0] } : value
 export function createAdminRepository(db) {
   const collection = kind => db.collection(collections[kind])
   const audit = (actorId, action) => ({ actorId, action, at: new Date() })
+  async function roleMemberships(ids) {
+    const businesses = new Set(await db.collection('business_applications').distinct('ownerId', { status: 'approved' }))
+    const grants = await db.collection('business_staff').find({ ...(ids ? { userId: { $in: ids } } : {}), status: 'approved', $or: [{ provisionedAt: { $ne: null } }, { acceptedAt: { $ne: null } }] }, { projection: { userId: 1, ownerId: 1 } }).toArray()
+    const staff = new Set(grants.filter(row => businesses.has(row.ownerId)).map(row => row.userId))
+    return { businesses, staff }
+  }
   async function get(kind, id) {
     const row = await collection(kind).findOne({ id, deletedAt: { $exists: false }, ...(['businesses', 'posts'].includes(kind) ? { status: { $ne: 'deleted' } } : {}) }, { projection: kind === 'users' ? userProjection : projection })
     if (!row) throw new HttpError(404, 'Không tìm thấy dữ liệu')
@@ -35,17 +41,21 @@ export function createAdminRepository(db) {
     async recordCreation(kind, id, actorId) {
       await collection(kind).updateOne({ id }, { $push: { adminHistory: audit(actorId, 'create') } })
     },
-    async list(kind, page, q, status) {
+    async list(kind, page, q, status, role = '') {
       const filter = { deletedAt: { $exists: false }, ...(['businesses', 'posts'].includes(kind) ? { status: { $ne: 'deleted' } } : {}), ...(status ? { status } : {}) }
       const searchFields = { users: ['name', 'email'], businesses: ['company', 'representativeEmail'], posts: ['title', 'businessName'], reports: ['reason', 'detail', 'activityId'], tickets: ['subject', 'ownerId'] }
       if (q) { const pattern = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); filter.$or = searchFields[kind].map(key => ({ [key]: { $regex: pattern, $options: 'i' } })) }
+      const memberships = kind === 'users' && role ? await roleMemberships() : null
+      if (memberships) {
+        filter.$expr = { $eq: [{ $switch: { branches: [
+          { case: { $eq: ['$role', 'admin'] }, then: 'admin' },
+          { case: { $in: ['$id', { $literal: [...memberships.businesses] }] }, then: 'business' },
+          { case: { $in: ['$id', { $literal: [...memberships.staff] }] }, then: 'business-staff' },
+        ], default: { $ifNull: ['$role', 'user'] } } }, role] }
+      }
       const items = await collection(kind).find(filter, { projection: kind === 'users' ? userProjection : projection }).sort({ createdAt: -1, created_at: -1, id: 1 }).skip((page - 1) * 20).limit(20).toArray()
       if (kind === 'users') {
-        const ids = items.map(item => item.id)
-        const businesses = new Set((await db.collection('business_applications').find({ ownerId: { $in: ids }, status: 'approved' }, { projection: { ownerId: 1 } }).toArray()).map(row => row.ownerId))
-        const grants = await db.collection('business_staff').find({ userId: { $in: ids }, status: 'approved', $or: [{ provisionedAt: { $ne: null } }, { acceptedAt: { $ne: null } }] }, { projection: { userId: 1, ownerId: 1 } }).toArray()
-        const owners = new Set((await db.collection('business_applications').find({ ownerId: { $in: grants.map(row => row.ownerId) }, status: 'approved' }, { projection: { ownerId: 1 } }).toArray()).map(row => row.ownerId))
-        const staff = new Set(grants.filter(row => owners.has(row.ownerId)).map(row => row.userId))
+        const { businesses, staff } = memberships || await roleMemberships(items.map(item => item.id))
         for (const row of items) row.effectiveRole = row.role === 'admin' ? 'admin' : businesses.has(row.id) ? 'business' : staff.has(row.id) ? 'business-staff' : row.role || 'user'
       }
       return { items: items.map(row => ({ ...row, adminVersion: revision(row), ...(['businesses', 'posts'].includes(kind) ? { version: row.version ?? 0 } : {}) })), total: await collection(kind).countDocuments(filter) }
@@ -87,8 +97,8 @@ export function createAdminRouter(auth, writes) {
   router.param('kind', (req, _res, next, kind) => { if (!Object.hasOwn(collections, kind)) throw new HttpError(404, 'Không tìm thấy mục quản lý'); next() })
   router.param('id', (req, _res, next, id) => { adminId(id); next() })
   router.get('/:kind', async (req, res) => {
-    const { page, q, status } = adminQuery(req.params.kind, req.query)
-    res.json(await admin.list(req.params.kind, page, q, status))
+    const { page, q, status, role } = adminQuery(req.params.kind, req.query)
+    res.json(await admin.list(req.params.kind, page, q, status, role))
   })
   router.get('/:kind/:id', async (req, res) => res.json(await admin.get(req.params.kind, req.params.id)))
   router.post('/:kind', async (req, res) => {

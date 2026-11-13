@@ -1,5 +1,75 @@
 # Development log
 
+## 2026-11-13 - Apply approved demo settlements to the full payout flow
+
+### Summary
+
+- Make an approved `settlement.demo: true` bypass completion and holding dates in shared eligibility checks used by wallets, payout creation and admin payout review. Existing demo approvals qualify automatically.
+- Keep normal settlement review date checks explicit and retain dispute/refund, invalid/revoked activity, balance and payout-state restrictions.
+
+### Files changed
+
+- `src/modules/payment/finance.js`, `docs/PAYMENT_FLOW.md`, `docs/DEVELOPMENT_LOG.md`.
+- Companion frontend merchant wallet copy and expanded `tests/finance-settlement.web.cjs`.
+
+### Verification
+
+- `node --test tests/finance.test.js`: 23/23 passed.
+- Frontend `node tests/finance-settlement.web.cjs`: Passed against isolated Express/MongoDB and Chromium. Two demo-approved groups immediately show 45,000 VND eligible each; browser merchant requests and admin approve/start-transfer/complete calls succeed and total 90,000 VND paid out. Direct assertions cover claim/revocation restrictions and unchanged original schedules. Ordinary hold and authorization cases remain covered.
+- Frontend typecheck, lint and web build passed; existing lint warnings and Expo patch mismatches remain (Expo Doctor 20/21).
+
+### Remaining work
+
+- None for demo withdrawal eligibility.
+
+## 2026-11-13 - Support immediate admin verification for demos
+
+### Summary
+
+- Add admin-only `POST /api/portal/finance/groups/:id/review-demo`, accepting evidence, note and attendance override.
+- Bypass activity completion and waiting dates only for explicit demo reviews. Mark the approved settlement with `demo: true` and record a `settlement-demo-approved` audit event and actor.
+- Retain normal review/payout waiting rules, original schedules, escrow requirements, self-approval restrictions and unresolved claim/refund/active payout checks.
+
+### Files changed
+
+- `src/modules/payment/finance.js`, `src/modules/payment/finance-routes.js`.
+- `docs/PAYMENT_FLOW.md`, `docs/DEVELOPMENT_LOG.md`.
+- Companion frontend UI and `tests/finance-settlement.web.cjs` regression coverage.
+
+### Verification
+
+- `node --test tests/finance.test.js`: 23/23 passed.
+- Frontend `node tests/finance-settlement.web.cjs`: Passed against real isolated Express/MongoDB. Future activities and unexpired holds verify immediately through the demo action; audit metadata and unchanged schedules are asserted. Non-admins, normal-route bypass attempts, repeated approval and unresolved claim/payout/empty escrow cases are rejected.
+- Frontend typecheck, lint and build passed with existing lint warnings; Expo Doctor retains existing patch mismatches (20/21).
+
+### Remaining work
+
+- Demo verification does not bypass payout waiting rules.
+
+## 2026-11-13 - Accept admin role filters and restore merged portal lists
+
+### Summary
+
+- Accept an empty role query on admin list endpoints for compatibility with the merged frontend, restoring requests such as `/admin/posts?page=1&q=&status=&role=`.
+- Validate nonempty role filters for users only. Filter by effective role before pagination and counting, retaining admin, approved business and accepted/provisioned business-staff precedence.
+- Update the frontend to send role only when filtering user accounts.
+
+### Files changed
+
+- `src/modules/portal/admin.js`, `src/modules/portal/admin-validation.js`.
+- `tests/admin-validation.test.js`, `tests/admin-validation-http.test.js`.
+- `docs/ADMIN_CRUD.md`, `docs/DEVELOPMENT_LOG.md`.
+
+### Verification
+
+- `node --test tests/admin-validation.test.js tests/admin-validation-http.test.js tests/admin-crud.test.js`: 6/6 passed. Regression coverage includes empty role on all five list endpoints, malformed/duplicate filters, effective-role precedence, search and pagination across 28 ordinary users.
+- Frontend `node tests/admin-crud.web.cjs`: Passed with isolated Express/MongoDB, covering role filters, CRUD, post approval, reports, support and mobile layout.
+- Frontend typecheck, lint and build passed; lint retains five existing warnings. Expo Doctor retains the existing five patch-version mismatches (20/21 checks passed).
+
+### Remaining work
+
+- None for the admin HTTP 400 fix. Existing frontend lint/Expo warnings remain unrelated.
+
 ## 2026-11-09 - Verified escrow, user refund accounts and admin finance operations
 
 ### Summary

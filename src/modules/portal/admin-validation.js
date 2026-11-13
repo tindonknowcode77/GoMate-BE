@@ -22,13 +22,15 @@ export function adminId(value) {
 }
 
 export function adminQuery(kind, query) {
-  fields(query, ['page', 'q', 'status'])
+  fields(query, ['page', 'q', 'status', 'role'])
   const rawPage = query.page === undefined ? '1' : query.page
   if (typeof rawPage !== 'string' || !/^[1-9]\d{0,4}$/.test(rawPage) || Number(rawPage) > 10000) throw new HttpError(400, 'Trang phải là số nguyên từ 1 đến 10000.')
   const q = adminText(query.q, 'Từ khóa', 120, { optional: true })
   const status = adminText(query.status, 'Trạng thái', 30, { optional: true })
   if (status && !statuses[kind]?.includes(status)) throw new HttpError(400, 'Trạng thái lọc không hợp lệ cho mục này.')
-  return { page: Number(rawPage), q, status }
+  const role = adminText(query.role, 'Vai trò', 30, { optional: true })
+  if (role && (kind !== 'users' || !['admin', 'business', 'business-staff', 'staff', 'user'].includes(role))) throw new HttpError(400, 'Vai trò lọc không hợp lệ cho mục này.')
+  return { page: Number(rawPage), q, status, ...(role ? { role } : {}) }
 }
 
 export function adminPostFields(body) {

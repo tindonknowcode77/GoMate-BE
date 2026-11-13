@@ -39,9 +39,10 @@ export function createFinanceRepository(db) {
     const end = Math.max(+new Date(activity?.endsAt || 0), +new Date(activity?.completedAt || activity?.autoCompletedAt || 0), ...escrow.lots.map(lot => +new Date(lot.endsAt || 0)))
     return new Date(end + Math.max(policy.settlementHoldHours, ...escrow.lots.map(lot => lot.holdHours || 48)) * 3600000)
   }
-  function blockers(escrow, activity) {
-    if (!activity || activity.status !== 'completed' || activity.businessRevoked) return 'Hoạt động chưa hoàn tất hợp lệ.'
-    if (releaseAt(escrow, activity) > new Date()) return 'Chưa hết thời gian giữ cọc sau lịch kết thúc.'
+  function blockers(escrow, activity, { allowDemo = true } = {}) {
+    const demo = allowDemo && escrow.settlement?.status === 'approved' && escrow.settlement.demo === true
+    if (!activity || activity.businessRevoked || (demo ? !['published', 'in-progress', 'completed'].includes(activity.status) : activity.status !== 'completed')) return 'Hoạt động chưa hoàn tất hợp lệ.'
+    if (!demo && releaseAt(escrow, activity) > new Date()) return 'Chưa hết thời gian giữ cọc sau lịch kết thúc.'
     if (escrow.lots.some(lot => ['refund_requested', 'refund_approved', 'disputed'].includes(lot.state))) return 'Còn yêu cầu hoàn tiền hoặc khiếu nại chưa xử lý.'
     return ''
   }
@@ -246,20 +247,26 @@ export function createFinanceRepository(db) {
       })
       return { payout, wallet: await this.businessWallet(ownerId) }
     },
-    async reviewSettlement(actorId, activityId, body) {
+    async reviewSettlement(actorId, activityId, body, { demo = false } = {}) {
       await admin(actorId)
       const evidence = text(body?.evidence, 'Bằng chứng xác minh hoạt động', 10, 2000)
       const note = text(body?.note, 'Kết quả đối soát', 5, 1000)
       return mutate(activityId, (draft, activity) => {
         if (draft.ownerId === actorId) throw new HttpError(403, 'Không tự duyệt hoạt động của mình.')
-        const blocked = blockers(draft, activity); if (blocked) throw new HttpError(409, blocked)
+        if (demo) {
+          if (!activity || activity.businessRevoked || !['published', 'in-progress', 'completed'].includes(activity.status)) throw new HttpError(409, 'Hoạt động không hợp lệ để xác minh demo.')
+          if (draft.lots.some(lot => ['refund_requested', 'refund_approved', 'disputed'].includes(lot.state))) throw new HttpError(409, 'Còn yêu cầu hoàn tiền hoặc khiếu nại chưa xử lý.')
+          if (draft.settlement.status === 'approved') throw new HttpError(409, 'Hoạt động đã được xác minh.')
+        } else {
+          const blocked = blockers(draft, activity, { allowDemo: false }); if (blocked) throw new HttpError(409, blocked)
+        }
         if (draft.payouts.some(payout => ['pending', 'approved', 'processing'].includes(payout.status))) throw new HttpError(409, 'Hoạt động có lệnh giải ngân đang xử lý.')
         const lots = draft.lots.filter(lot => lot.state === 'held' && !lot.refundOnly)
         if (!lots.length) throw new HttpError(409, 'Không có cọc đã đối soát đủ điều kiện.')
         const missing = lots.filter(lot => lot.confirmation?.status !== 'attended')
         const overrideReason = missing.length ? text(body.overrideReason, 'Lý do xác minh thay xác nhận của thành viên', 15, 1000) : ''
-        draft.settlement = { status: 'approved', reviewedBy: actorId, reviewedAt: new Date(), evidence, note, overrideReason, missingConfirmations: missing.map(lot => lot.paymentId) }
-        draft.audit.push(entry(actorId, 'settlement-approved', { evidence, note, overrideReason }))
+        draft.settlement = { status: 'approved', reviewedBy: actorId, reviewedAt: new Date(), evidence, note, overrideReason, missingConfirmations: missing.map(lot => lot.paymentId), ...(demo ? { demo: true } : {}) }
+        draft.audit.push(entry(actorId, demo ? 'settlement-demo-approved' : 'settlement-approved', { evidence, note, overrideReason, ...(demo ? { demo: true } : {}) }))
         return draft.settlement
       })
     },

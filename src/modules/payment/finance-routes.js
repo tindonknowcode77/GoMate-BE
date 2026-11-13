@@ -29,6 +29,10 @@ export function createFinanceRouter(auth, writes) {
     fields(req.body, ['evidence', 'note', 'overrideReason'])
     res.json(await finance.reviewSettlement(req.auth.user.id, req.params.id, req.body))
   })
+  router.post('/groups/:id/review-demo', writes, async (req, res) => {
+    fields(req.body, ['evidence', 'note', 'overrideReason'])
+    res.json(await finance.reviewSettlement(req.auth.user.id, req.params.id, req.body, { demo: true }))
+  })
   router.post('/refunds/:id/review', writes, async (req, res) => {
     fields(req.body, ['action', 'note', 'transferRef', 'bankTransferConfirmed'])
     if (req.body.action === 'complete' && req.body.bankTransferConfirmed !== true) throw new HttpError(400, 'Phải xác nhận đã thực hiện chuyển tiền ngân hàng.')
