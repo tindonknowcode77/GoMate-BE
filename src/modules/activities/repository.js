@@ -1,6 +1,7 @@
 import { createBusinessAudience } from '../../common/business-audience.js'
 import { syncActivityMessages, closedRequests } from './chat-events.js'
 import { randomUUID } from 'node:crypto'
+import { HttpError } from '../../common/http-error.js'
 import { publicActivity } from './validation.js'
 import { createCommunityRepository } from '../community/repository.js'
 import { staffGroupScope, isAssignedStaff, isStaffAccount, listAssignedStaff } from '../../common/business-staff-access.js'

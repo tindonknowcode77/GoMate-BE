@@ -270,6 +270,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const reason = typeof body.reason === 'string' ? body.reason.trim() : ''
     const now = new Date()
     const hoursLeft = (new Date(activity.startsAt).getTime() - now.getTime()) / 3600000
+    if (activity.status !== 'published' || hoursLeft <= 0) throw new HttpError(409, 'Membership changed or activity is no longer upcoming and published')
     const hasPaidDeposit = Boolean(activity.businessReceipts?.some(r => r.userId === userId && r.status === 'paid'))
     if (!hostAction && hoursLeft <= 6) {
       if (reason.length < 5 || reason.length > 300) {

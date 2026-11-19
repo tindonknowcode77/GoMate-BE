@@ -7,24 +7,47 @@ import { credentials } from '../auth/validation.js'
 import { fields, email, phone, version } from './validation.js'
 import { verificationDocument } from './documents.js'
 import { adminText, adminId, adminQuery, adminPostFields, adminApplicationFields } from './admin-validation.js'
+import { createAdminRoles } from './admin-roles.js'
+import { createAdminAnalytics, analyticsQuery } from './admin-analytics.js'
+import { createAdminBusinessHistory, historyQuery } from './admin-business-history.js'
 
 const collections = { users: 'users', businesses: 'business_applications', posts: 'business_posts', reports: 'reports', tickets: 'support_tickets' }
-const userProjection = { _id: 0, id: 1, name: 1, email: 1, role: 1, subscription: 1, email_verified: 1, created_at: 1, adminVersion: 1 }
+const userProjection = { _id: 0, id: 1, name: 1, email: 1, role: 1, adminRoleId: 1, subscription: 1, email_verified: 1, created_at: 1, createdAt: 1, adminVersion: 1, effectiveRole: 1, effectiveRoleName: 1, adminStatus: 1 }
 const projection = { _id: 0, document: 0, lifecycleTasks: 0, contentSync: 0, key: 0 }
 const revision = row => row.adminVersion ?? 0
 const matchRevision = value => value === 0 ? { $in: [null, 0] } : value
 
 export function createAdminRepository(db) {
+  const roleRepository = createAdminRoles(db)
   const collection = kind => db.collection(collections[kind])
   const audit = (actorId, action) => ({ actorId, action, at: new Date() })
   async function roleMemberships(ids) {
-    const businesses = new Set(await db.collection('business_applications').distinct('ownerId', { status: 'approved' }))
+    const businesses = new Set(await db.collection('business_applications').distinct('ownerId', { status: 'approved', deletedAt: { $exists: false } }))
     const grants = await db.collection('business_staff').find({ ...(ids ? { userId: { $in: ids } } : {}), status: 'approved', $or: [{ provisionedAt: { $ne: null } }, { acceptedAt: { $ne: null } }] }, { projection: { userId: 1, ownerId: 1 } }).toArray()
     const staff = new Set(grants.filter(row => businesses.has(row.ownerId)).map(row => row.userId))
-    return { businesses, staff }
+    const hosts = new Set(await db.collection('activities').distinct('hostId', { status: { $ne: 'deleted' }, deletedAt: { $exists: false }, organizerType: { $ne: 'business' }, ...(ids ? { hostId: { $in: ids } } : {}) }))
+    return { businesses, staff, hosts }
+  }
+  async function userStages() {
+    const { businesses, staff, hosts } = await roleMemberships()
+    const roles = await roleRepository.roles()
+    return [{ $set: {
+      effectiveRole: { $switch: { branches: [
+        { case: { $eq: ['$role', 'admin'] }, then: 'admin' },
+        { case: { $in: ['$id', { $literal: [...businesses] }] }, then: 'business' },
+        { case: { $in: ['$id', { $literal: [...staff] }] }, then: 'business-staff' },
+        { case: { $eq: ['$role', 'staff'] }, then: 'staff' },
+        { case: { $in: ['$id', { $literal: [...hosts] }] }, then: 'host' },
+      ], default: { $ifNull: ['$adminRoleId', 'user'] } } },
+      adminStatus: { $cond: [{ $eq: ['$email_verified', true] }, 'active', 'pending'] },
+    } }, { $set: {
+      effectiveRole: { $cond: [{ $eq: ['$effectiveRole', 'member'] }, 'user', '$effectiveRole'] },
+      effectiveRoleName: { $switch: { branches: roles.map(role => ({ case: { $eq: ['$effectiveRole', role.id] }, then: role.name })), default: 'Thành viên' } },
+    } }]
   }
   async function get(kind, id) {
-    const row = await collection(kind).findOne({ id, deletedAt: { $exists: false }, ...(['businesses', 'posts'].includes(kind) ? { status: { $ne: 'deleted' } } : {}) }, { projection: kind === 'users' ? userProjection : projection })
+    const filter = { id, deletedAt: { $exists: false }, ...(['businesses', 'posts'].includes(kind) ? { status: { $ne: 'deleted' } } : {}) }
+    const row = kind === 'users' ? (await collection(kind).aggregate([{ $match: filter }, ...await userStages(), { $project: userProjection }], { maxTimeMS: 10000 }).toArray())[0] : await collection(kind).findOne(filter, { projection })
     if (!row) throw new HttpError(404, 'Không tìm thấy dữ liệu')
     return { ...row, adminVersion: revision(row), ...(['businesses', 'posts'].includes(kind) ? { version: row.version ?? 0 } : {}) }
   }
@@ -37,36 +60,53 @@ export function createAdminRepository(db) {
     return row
   }
   return {
+    ...roleRepository,
+    ...createAdminAnalytics(db),
+    ...createAdminBusinessHistory(db),
     get, update,
     async recordCreation(kind, id, actorId) {
       await collection(kind).updateOne({ id }, { $push: { adminHistory: audit(actorId, 'create') } })
     },
-    async list(kind, page, q, status, role = '') {
-      const filter = { deletedAt: { $exists: false }, ...(['businesses', 'posts'].includes(kind) ? { status: { $ne: 'deleted' } } : {}), ...(status ? { status } : {}) }
+    async list(kind, page, q, status, role = '', options = {}) {
+      const filter = { deletedAt: { $exists: false }, ...(['businesses', 'posts'].includes(kind) ? { status: { $ne: 'deleted' } } : {}), ...(status && kind !== 'users' ? { status } : {}) }
       const searchFields = { users: ['name', 'email'], businesses: ['company', 'representativeEmail'], posts: ['title', 'businessName'], reports: ['reason', 'detail', 'activityId'], tickets: ['subject', 'ownerId'] }
       if (q) { const pattern = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); filter.$or = searchFields[kind].map(key => ({ [key]: { $regex: pattern, $options: 'i' } })) }
-      const memberships = kind === 'users' && role ? await roleMemberships() : null
-      if (memberships) {
-        filter.$expr = { $eq: [{ $switch: { branches: [
-          { case: { $eq: ['$role', 'admin'] }, then: 'admin' },
-          { case: { $in: ['$id', { $literal: [...memberships.businesses] }] }, then: 'business' },
-          { case: { $in: ['$id', { $literal: [...memberships.staff] }] }, then: 'business-staff' },
-        ], default: { $ifNull: ['$role', 'user'] } } }, role] }
-      }
-      const items = await collection(kind).find(filter, { projection: kind === 'users' ? userProjection : projection }).sort({ createdAt: -1, created_at: -1, id: 1 }).skip((page - 1) * 20).limit(20).toArray()
-      if (kind === 'users') {
-        const { businesses, staff } = memberships || await roleMemberships(items.map(item => item.id))
-        for (const row of items) row.effectiveRole = row.role === 'admin' ? 'admin' : businesses.has(row.id) ? 'business' : staff.has(row.id) ? 'business-staff' : row.role || 'user'
-      }
-      return { items: items.map(row => ({ ...row, adminVersion: revision(row), ...(['businesses', 'posts'].includes(kind) ? { version: row.version ?? 0 } : {}) })), total: await collection(kind).countDocuments(filter) }
+      if (role && role.startsWith('custom-') && !(await roleRepository.roles()).some(item => item.id === role)) throw new HttpError(400, 'Invalid role filter')
+      const dateRange = {}
+      if (options.dateFrom) dateRange.$gte = new Date(options.dateFrom + 'T00:00:00+07:00')
+      if (options.dateTo) dateRange.$lt = new Date(+new Date(options.dateTo + 'T00:00:00+07:00') + 86400000)
+      const sortField = { createdAt: '_created', role: 'effectiveRole', status: kind === 'users' ? 'adminStatus' : 'status' }[options.sortBy] || options.sortBy || '_created'
+      const [result] = await collection(kind).aggregate([
+        { $match: filter }, { $set: { _created: { $ifNull: ['$createdAt', '$created_at'] } } },
+        ...(kind === 'users' ? await userStages() : []),
+        ...(kind === 'users' && (role || status) ? [{ $match: { ...(role ? { effectiveRole: role } : {}), ...(status ? { adminStatus: status } : {}) } }] : []),
+        ...(Object.keys(dateRange).length ? [{ $match: { _created: dateRange } }] : []),
+        { $facet: { items: [{ $sort: { [sortField]: options.sortDirection === 'asc' ? 1 : -1, id: 1 } }, { $skip: (page - 1) * 20 }, { $limit: 20 }, { $project: kind === 'users' ? userProjection : { ...projection, _created: 0 } }], total: [{ $count: 'count' }] } },
+      ], { maxTimeMS: 10000 }).toArray()
+      return { items: result.items.map(row => ({ ...row, adminVersion: revision(row), ...(['businesses', 'posts'].includes(kind) ? { version: row.version ?? 0 } : {}) })), total: result.total[0]?.count ?? 0 }
     },
     async createUser(body, actorId) {
       const data = credentials(body, true)
       data.name = adminText(data.name, 'Họ tên', 100, { min: 2 })
       if (!data.password.trim()) throw new HttpError(400, 'Mật khẩu không được chỉ chứa khoảng trắng.')
-      const row = { id: randomUUID(), name: data.name, email: data.email, password_hash: await hashPassword(data.password), role: 'user', email_verified: false, created_at: new Date(), adminVersion: 1, adminHistory: [audit(actorId, 'create')] }
+      const assignment = await roleRepository.resolveRole(body.roleId)
+      const row = { id: randomUUID(), name: data.name, email: data.email, password_hash: await hashPassword(data.password), ...assignment, email_verified: false, created_at: new Date(), adminVersion: 1, adminHistory: [audit(actorId, 'create')] }
       try { await collection('users').insertOne(row) } catch (error) { if (error.code === 11000) throw new HttpError(409, 'Email đã được sử dụng'); throw error }
       return get('users', row.id)
+    },
+    async updateUser(id, expected, body, actorId) {
+      const name = adminText(body.name, 'Họ tên', 100, { min: 2 })
+      const previous = await collection('users').findOne({ id, deletedAt: { $exists: false } })
+      if (!previous) throw new HttpError(404, 'Không tìm thấy dữ liệu')
+      const assignment = body.roleId === undefined ? {} : await roleRepository.resolveRole(body.roleId)
+      const roleChanged = assignment.role !== undefined && (assignment.role !== (previous.role || 'user') || assignment.adminRoleId !== (previous.adminRoleId || (previous.role === 'admin' ? 'admin' : 'member')))
+      if (roleChanged && id === actorId) throw new HttpError(409, 'You cannot change your own role')
+      const row = await collection('users').findOneAndUpdate({ id, deletedAt: { $exists: false }, adminVersion: matchRevision(expected) }, {
+        $set: { name, ...assignment, updatedAt: new Date(), ...(roleChanged ? { roleUpdatedBy: actorId, roleUpdatedAt: new Date() } : {}) },
+        $inc: { adminVersion: 1, ...(roleChanged ? { credential_version: 1 } : {}) }, $push: { adminHistory: audit(actorId, 'update') },
+      }, { returnDocument: 'after', projection: userProjection })
+      if (!row) throw new HttpError(409, 'Dữ liệu đã thay đổi. Vui lòng tải lại.')
+      return get('users', id)
     },
     async deleteUser(id, expected, actorId) {
       const row = await get('users', id)
@@ -96,15 +136,37 @@ export function createAdminRouter(auth, writes) {
   router.use((req, res, next) => (req.method === 'POST' && req.path === '/businesses' ? documentBody : smallBody)(req, res, next))
   router.param('kind', (req, _res, next, kind) => { if (!Object.hasOwn(collections, kind)) throw new HttpError(404, 'Không tìm thấy mục quản lý'); next() })
   router.param('id', (req, _res, next, id) => { adminId(id); next() })
+  router.get('/dashboard-stats', async (req, res) => res.json(await admin.dashboard(analyticsQuery('dashboard', req.query))))
+  router.get('/analytics/performance', async (req, res) => { analyticsQuery('performance', req.query); res.json(await admin.performance()) })
+  router.get('/analytics/revenue', async (req, res) => res.json(await admin.revenue(analyticsQuery('revenue', req.query))))
+  router.get('/business-directory', async (req, res) => res.json(await admin.businessDirectory(historyQuery(req.query))))
+  router.get('/businesses/:id/history/:resource', async (req, res) => res.json(await admin.businessHistory(req.params.id, req.params.resource, historyQuery(req.query), req.auth.user.id)))
+  router.get('/businesses/:id/conversations/:conversationId/messages', async (req, res) => {
+    adminId(req.params.conversationId)
+    res.json(await admin.businessMessages(req.params.id, req.params.conversationId, historyQuery(req.query, true), req.auth.user.id))
+  })
+  router.get('/roles', async (req, res) => { fields(req.query, []); res.json(await admin.roles()) })
+  router.post('/roles', async (req, res) => {
+    fields(req.body, ['name', 'description'])
+    res.status(201).json(await admin.saveRole(null, null, req.body, req.auth.user.id))
+  })
+  router.put('/roles/:id', async (req, res) => {
+    fields(req.body, ['name', 'description', 'adminVersion'])
+    res.json(await admin.saveRole(req.params.id, version(req.body.adminVersion), req.body, req.auth.user.id))
+  })
+  router.delete('/roles/:id', async (req, res) => {
+    fields(req.body, ['adminVersion'])
+    res.json(await admin.deleteRole(req.params.id, version(req.body.adminVersion), req.auth.user.id))
+  })
   router.get('/:kind', async (req, res) => {
-    const { page, q, status, role } = adminQuery(req.params.kind, req.query)
-    res.json(await admin.list(req.params.kind, page, q, status, role))
+    const { page, q, status, role, ...options } = adminQuery(req.params.kind, req.query)
+    res.json(await admin.list(req.params.kind, page, q, status, role, options))
   })
   router.get('/:kind/:id', async (req, res) => res.json(await admin.get(req.params.kind, req.params.id)))
   router.post('/:kind', async (req, res) => {
     const { kind } = req.params, actorId = req.auth.user.id, body = req.body
     let result
-    if (kind === 'users') { fields(body, ['name', 'email', 'password']); result = await admin.createUser(body, actorId) }
+    if (kind === 'users') { fields(body, ['name', 'email', 'password', 'roleId']); result = await admin.createUser(body, actorId) }
     if (kind === 'businesses') {
       fields(body, ['ownerId', 'application'])
       const ownerId = adminId(body.ownerId)
@@ -122,14 +184,13 @@ export function createAdminRouter(auth, writes) {
   })
   router.put('/:kind/:id', async (req, res) => {
     const { kind, id } = req.params, body = req.body, actorId = req.auth.user.id
-    fields(body, { users: ['adminVersion', 'name'], businesses: ['adminVersion', 'version', 'company', 'address', 'website', 'representativeName', 'representativeTitle', 'representativeEmail', 'representativePhone'], posts: ['adminVersion', 'version', 'post'], reports: ['adminVersion', 'detail'], tickets: ['adminVersion', 'subject', 'status'] }[kind])
+    fields(body, { users: ['adminVersion', 'name', 'roleId'], businesses: ['adminVersion', 'version', 'company', 'address', 'website', 'representativeName', 'representativeTitle', 'representativeEmail', 'representativePhone'], posts: ['adminVersion', 'version', 'post'], reports: ['adminVersion', 'detail'], tickets: ['adminVersion', 'subject', 'status'] }[kind])
     const expected = version(body.adminVersion)
     let patch, extra = {}
     const row = await admin.get(kind, id)
     if (expected !== row.adminVersion) throw new HttpError(409, 'Dữ liệu đã thay đổi. Vui lòng tải lại.')
     if (kind === 'users') {
-      fields(body, ['adminVersion', 'name'])
-      patch = { name: adminText(body.name, 'Họ tên', 100, { min: 2 }) }
+      res.json(await admin.updateUser(id, expected, body, actorId)); return
     }
     if (kind === 'businesses') {
       fields(body, ['adminVersion', 'version', 'company', 'address', 'website', 'representativeName', 'representativeTitle', 'representativeEmail', 'representativePhone'])

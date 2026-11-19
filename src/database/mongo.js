@@ -8,6 +8,11 @@ export function createClient(config) {
 }
 
 export async function initializeDatabase(db) {
+  await db.collection('admin_roles').createIndex({ id: 1 }, { unique: true })
+  await db.collection('admin_roles').createIndex({ nameKey: 1 }, { unique: true })
+  await db.collection('users').createIndex({ adminRoleId: 1 })
+  await db.collection('admin_business_access').createIndex({ businessId: 1, createdAt: -1 })
+  await db.collection('admin_business_access').createIndex({ actorId: 1, createdAt: -1 })
   await db.collection('business_audiences').createIndex({ userId: 1, postId: 1 }, { unique: true })
   await db.collection('activities').createIndex({ businessPostId: 1, id: 1 })
   await db.collection('business_applications').createIndex({ ownerId: 1 }, { unique: true })

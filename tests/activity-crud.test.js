@@ -47,6 +47,7 @@ test('activity CRUD lifecycle and ownership', async t => {
     const row = created.body.activity; id = row.id
     assert.equal(row.hostId, users[0].id); assert.equal(row.memberCount, 1); assert.equal(row.status, 'published')
     assert.equal(row._id, undefined); assert.equal(row.version, 1)
+    assert.equal((await req('', 'POST', body)).status, 409, 'A repeated create returns a conflict instead of a ReferenceError')
   })
   await t.test('detail, owner list and discovery reflect persistent data', async () => {
     assert.equal((await req(`/${id}`)).body.activity.title, body.title)

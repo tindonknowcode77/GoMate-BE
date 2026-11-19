@@ -1,5 +1,7 @@
 # GoMate Backend
 
+Current Admin dashboard, analytics, list filters and role API: [Admin API](docs/admin-api.md).
+
 Business registration, campaign approval and scoped employee operations: [Business web API](docs/business-workflow.md).
 
 Luồng khám phá, lời mời cần đồng ý, điều kiện chốt/bắt đầu/kết thúc và kết bạn sau chuyến đi: [Activity participation contract](docs/activity-participation.md).

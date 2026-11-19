@@ -189,7 +189,7 @@ export function createPortalRepository(db) {
       if (!['user', 'admin'].includes(role)) throw new HttpError(400, 'Invalid role')
       if (id === actorId) throw new HttpError(409, 'You cannot change your own role')
       const row = await users.findOneAndUpdate({ id, deletedAt: { $exists: false } }, {
-        $set: { role, updated_at: new Date(), roleUpdatedBy: actorId, roleUpdatedAt: new Date() },
+        $set: { role, adminRoleId: role === 'admin' ? 'admin' : 'member', updated_at: new Date(), roleUpdatedBy: actorId, roleUpdatedAt: new Date() },
         $inc: { credential_version: 1, adminVersion: 1 },
       }, { returnDocument: 'after', projection: { _id: 0, id: 1, role: 1 } })
       if (!row) throw new HttpError(404, 'User not found')

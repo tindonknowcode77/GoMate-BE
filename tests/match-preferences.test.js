@@ -33,7 +33,7 @@ test('Match preferences, discovery ranking, favorites and profile cover persist 
   const draft = { title: 'Thể thao sớm', category: 'Thể thao', description: 'Giao lưu cuối tuần', location: 'TP.HCM', startsAt: new Date('2099-01-01T02:00:00Z'), endsAt: new Date('2099-01-01T04:00:00Z'), estimatedCost: 0, maxParticipants: 6, coordinates: { type: 'Point', coordinates: [106.7, 10.77] } }
   const personal = await activities.create(draft, users[1])
   const business = await activities.create({ ...draft, organizerType: 'business', title: 'Cà phê cùng bạn', category: 'Ăn uống', startsAt: new Date('2099-02-01T02:00:00Z') }, users[1])
-  const far = await activities.create({ ...draft, coordinates: { type: 'Point', coordinates: [105.85, 21.02] } }, users[1])
+  const far = await activities.create({ ...draft, title: 'Far away activity', coordinates: { type: 'Point', coordinates: [105.85, 21.02] } }, users[1])
   await t.test('organizer type defaults, validates and filters legacy records', async () => {
     assert.equal((await request('/activities?organizerType=business')).body.items[0].id, business.id)
     await db.collection('activities').updateOne({ id: personal.id }, { $unset: { organizerType: '' } })

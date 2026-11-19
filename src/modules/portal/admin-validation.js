@@ -2,7 +2,7 @@ import { HttpError } from '../../common/http-error.js'
 import { fields, text, postFields, applicationFields } from './validation.js'
 
 const statuses = {
-  users: [], businesses: ['pending', 'approved', 'rejected'],
+  users: ['active', 'banned', 'pending'], businesses: ['pending', 'approved', 'rejected'],
   posts: ['pending', 'approved', 'rejected', 'withdrawn', 'publishing'],
   reports: ['pending', 'resolved', 'dismissed'], tickets: ['open', 'closed'],
 }
@@ -22,15 +22,32 @@ export function adminId(value) {
 }
 
 export function adminQuery(kind, query) {
-  fields(query, ['page', 'q', 'status', 'role'])
+  const sortable = ['users', 'posts'].includes(kind)
+  fields(query, ['page', 'q', 'status', 'role', ...(sortable ? ['dateFrom', 'dateTo', 'sortBy', 'sortDirection'] : [])])
   const rawPage = query.page === undefined ? '1' : query.page
   if (typeof rawPage !== 'string' || !/^[1-9]\d{0,4}$/.test(rawPage) || Number(rawPage) > 10000) throw new HttpError(400, 'Trang phải là số nguyên từ 1 đến 10000.')
   const q = adminText(query.q, 'Từ khóa', 120, { optional: true })
   const status = adminText(query.status, 'Trạng thái', 30, { optional: true })
   if (status && !statuses[kind]?.includes(status)) throw new HttpError(400, 'Trạng thái lọc không hợp lệ cho mục này.')
-  const role = adminText(query.role, 'Vai trò', 30, { optional: true })
-  if (role && (kind !== 'users' || !['admin', 'business', 'business-staff', 'staff', 'user'].includes(role))) throw new HttpError(400, 'Vai trò lọc không hợp lệ cho mục này.')
-  return { page: Number(rawPage), q, status, ...(role ? { role } : {}) }
+  const role = adminText(query.role, 'Vai trò', 100, { optional: true })
+  if (role && (kind !== 'users' || !['admin', 'business', 'business-staff', 'staff', 'host', 'user'].includes(role) && !/^custom-[0-9a-f-]{36}$/.test(role))) throw new HttpError(400, 'Vai trò lọc không hợp lệ cho mục này.')
+  const options = {}
+  for (const key of ['dateFrom', 'dateTo']) {
+    if (query[key] === undefined) continue
+    const value = query[key]
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString().slice(0, 10) !== value) throw new HttpError(400, 'Invalid date filter')
+    options[key] = value
+  }
+  if (options.dateFrom && options.dateTo && options.dateFrom > options.dateTo) throw new HttpError(400, 'Invalid date range')
+  if (query.sortBy !== undefined) {
+    if (!(kind === 'users' ? ['createdAt', 'name', 'email', 'role', 'status'] : ['createdAt', 'title', 'status']).includes(query.sortBy)) throw new HttpError(400, 'Invalid sort field')
+    options.sortBy = query.sortBy
+  }
+  if (query.sortDirection !== undefined) {
+    if (!['asc', 'desc'].includes(query.sortDirection)) throw new HttpError(400, 'Invalid sort direction')
+    options.sortDirection = query.sortDirection
+  }
+  return { page: Number(rawPage), q, status, ...(role ? { role } : {}), ...options }
 }
 
 export function adminPostFields(body) {
