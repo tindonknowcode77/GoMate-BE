@@ -60,7 +60,7 @@ test('profiles and avatars persist with owner-only writes', async t => {
     assert.equal(result.status, 200)
     assert.equal(result.body.profile.name, users[0].name)
     assert.equal(result.body.profile.avatarUrl, null)
-    assert.deepEqual(Object.keys(result.body.profile).sort(), ['activityWish', 'age', 'alcohol', 'availableTimes', 'avatarUrl', 'basicProfileComplete', 'bio', 'birthDate', 'companionGoal', 'contribution', 'coverUrl', 'demo', 'education', 'email', 'emailVerified', 'gender', 'id', 'interests', 'languages', 'location', 'missingFields', 'name', 'occupation', 'photos', 'profileComplete', 'religion', 'school', 'username'])
+    assert.deepEqual(Object.keys(result.body.profile).sort(), ['activityWish', 'age', 'alcohol', 'availableTimes', 'avatarUrl', 'basicProfileComplete', 'bio', 'birthDate', 'companionGoal', 'contribution', 'coverUrl', 'demo', 'education', 'email', 'emailVerified', 'gender', 'id', 'interests', 'languages', 'location', 'missingFields', 'name', 'occupation', 'photos', 'profileComplete', 'religion', 'reputation', 'school', 'username'])
     assert.equal(result.body.profile.profileComplete, false)
     assert.ok(result.body.profile.missingFields.includes('languages'))
     assert.equal(result.headers.get('cache-control'), 'no-store')

@@ -34,6 +34,7 @@ export async function initializeDatabase(db) {
   await db.collection('payments').createIndex({ activeKey: 1 }, { unique: true, partialFilterExpression: { activeKey: { $type: 'string' } } })
   await db.collection('finance_escrows').createIndex({ ownerId: 1, updatedAt: -1 })
   await db.collection('finance_escrows').createIndex({ 'lots.userId': 1 })
+  await db.collection('activities').createIndex({ 'attendance.userId': 1, status: 1 })
   await db.collection('bank_events').createIndex({ applied: 1, createdAt: 1 })
   await db.collection('bank_events').createIndex({ paymentId: 1 })
   await db.collection('business_bank_accounts').createIndex({ ownerId: 1 }, { unique: true })

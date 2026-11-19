@@ -1,5 +1,6 @@
 import express, { Router } from 'express'
 import { activityReadiness } from '../../common/activity-readiness.js'
+import { notifyUnmarkedStart } from '../community/attendance.js'
 import sharp from 'sharp'
 import { rateLimit } from 'express-rate-limit'
 import { activityCategories, activityFields, publicActivity } from './validation.js'
@@ -178,9 +179,10 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
       } : {
         status: 'completed',
         completedAt: entry.createdAt,
-        attendance: roster.map(member => member.status === 'unmarked' ? { ...member, status: 'present', updatedAt: entry.createdAt, updatedBy: req.auth.user.id } : member),
+        attendance: roster.map(member => member.status === 'unmarked' && !member.correctionReportId ? { ...member, status: 'present', updatedAt: entry.createdAt, updatedBy: req.auth.user.id } : member),
       }
       const row = await saveLifecycle(activity, req, fields, entry)
+      if (starting) await notifyUnmarkedStart(authRepository.community, row, req.auth.user.id).catch(() => { console.warn('Start attendance notifications deferred') })
       res.json({ activity: publicActivity(row) })
     })
   }
@@ -206,13 +208,14 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const roster = buildAttendanceRoster(activity)
     const target = roster.find(item => item.userId === req.params.userId)
     if (!target) throw new HttpError(404, 'Participant not found in attendance roster')
+    if (target.correctionReportId) throw new HttpError(409, 'Admin đã xác minh kết quả điểm danh này; liên hệ hỗ trợ nếu cần sửa tiếp.')
     if (correction && (target.status !== 'unmarked' || req.body.status === 'unmarked')) throw new HttpError(409, 'Chỉ bổ sung điểm danh còn thiếu sau khi tự kết thúc.')
     if (target.status === req.body.status) { res.json({ attendance: target }); return }
     if ((activity.updates?.length ?? 0) >= 2000) throw new HttpError(409, 'Activity update limit reached')
     const entry = event(req, 'attendance-changed', { userId: target.userId, previousStatus: target.status, status: req.body.status })
     const attendance = roster.map(item => item.userId === target.userId ? { ...item, status: req.body.status, updatedAt: entry.createdAt, updatedBy: req.auth.user.id } : item)
     await saveLifecycle(activity, req, { attendance }, entry)
-    if (req.body.status === 'absent' && target.userId !== req.auth.user.id) await authRepository.community?.notify(target.userId, { key: `attendance-absent:${activity.id}:${target.userId}:${entry.id}`, type: 'activity', title: 'Trạng thái điểm danh: Vắng mặt', text: `Bạn được ghi nhận vắng mặt tại ${activity.title}. Nếu có nhầm lẫn, hãy phản hồi trong nhóm hoặc gửi khiếu nại trong Ví.`, activityId: activity.id, actorId: req.auth.user.id })
+    if (req.body.status === 'absent' && target.userId !== req.auth.user.id) await authRepository.community?.notify(target.userId, { key: `attendance-absent:${activity.id}:${target.userId}:${entry.id}`, type: 'attendance', title: 'Trạng thái điểm danh: Vắng mặt', text: `Bạn được ghi nhận vắng mặt tại ${activity.title}. Mở thông báo để xem điểm danh và gửi khiếu nại lên Admin nếu có nhầm lẫn.`, activityId: activity.id, actorId: req.auth.user.id })
     res.json({ attendance: attendance.find(item => item.userId === target.userId) })
   })
   router.post('/:id/updates', writes, json, async (req, res) => {

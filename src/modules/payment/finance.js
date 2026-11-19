@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { HttpError } from '../../common/http-error.js'
 import { createCommunityRepository } from '../community/repository.js'
 import { financePolicy } from './policy.js'
+import { payoutReceipt, payoutTransfer } from './payout-transfer.js'
 
 const clean = row => { if (!row) return null; const { _id, ...value } = row; return value }
 const money = value => { if (!Number.isSafeInteger(value) || value <= 0 || value > 1000000000) throw new HttpError(400, 'Số tiền phải là số nguyên VND lớn hơn 0, tối đa 1 tỷ.'); return value }
@@ -19,7 +20,7 @@ export function createFinanceRepository(db) {
   const escrows = db.collection('finance_escrows'), payments = db.collection('payments'), activities = db.collection('activities')
   const banks = db.collection('user_bank_accounts'), businessBanks = db.collection('business_bank_accounts'), transfers = db.collection('finance_transfers')
   const community = createCommunityRepository(db), policy = financePolicy()
-  const notify = (userId, key, title, message) => community.notify(userId, { key, type: 'business-finance', title, text: message }).catch(() => {})
+  const notify = (userId, key, title, message, activityId) => community.notify(userId, { key, type: key.startsWith('refund-left:') ? 'activity' : 'payment', title, text: message, ...(activityId ? { activityId } : {}) }).catch(() => {})
   async function admin(actorId) { if (!await db.collection('users').findOne({ id: actorId, role: 'admin', deletedAt: { $exists: false } })) throw new HttpError(403, 'Chỉ admin được xử lý tài chính.') }
   async function business(ownerId) { if (!await db.collection('business_applications').findOne({ ownerId, status: 'approved' })) throw new HttpError(403, 'Doanh nghiệp chưa được xác minh.') }
   async function mutate(id, action) {
@@ -151,7 +152,7 @@ export function createFinanceRepository(db) {
         const current = draft.lots.find(lot => lot.paymentId === paymentId)
         if (['refund_requested', 'refund_approved', 'refunded'].includes(current.state)) return current.refund
         if (!['held', 'disputed', 'payout_reserved'].includes(current.state)) throw new HttpError(409, 'Khoản cọc đã giải ngân; hãy gửi yêu cầu hỗ trợ để đối soát.')
-        if (draft.payouts.some(payout => payout.status === 'processing' && payout.lotIds.includes(paymentId))) throw new HttpError(409, 'Ngân hàng đang xử lý giải ngân. Cần admin đối soát kết quả trước khi xử lý hoàn tiền; không gửi lệnh chuyển khác.')
+        if (current.refund?.status === 'processing' || draft.payouts.some(payout => payout.status === 'processing' && payout.lotIds.includes(paymentId))) throw new HttpError(409, 'Ngân hàng đang xử lý chuyển tiền. Cần admin đối soát kết quả; không gửi lệnh chuyển khác.')
         for (const payout of draft.payouts.filter(payout => ['pending', 'approved'].includes(payout.status) && payout.lotIds.includes(paymentId))) {
           payout.status = 'blocked'; payout.reviewNote = 'Phát sinh yêu cầu hoàn tiền.'
           for (const item of draft.lots.filter(item => item.payoutId === payout.id && item.state === 'payout_reserved')) { item.state = 'held'; delete item.payoutId }
@@ -278,6 +279,7 @@ export function createFinanceRepository(db) {
       const row = await escrows.findOne({ _id: keyFor(payment) }), lot = row?.lots.find(item => item.paymentId === paymentId)
       if (!lot?.refund) throw new HttpError(404, 'Không có yêu cầu hoàn tiền.')
       if (actorId === lot.userId || actorId === row.ownerId) throw new HttpError(403, 'Không tự xử lý hoàn tiền liên quan đến mình.')
+      if (lot.refund.transferMode === 'manual-qr' && ['complete', 'approve', 'reject'].includes(action)) throw new HttpError(400, 'Lệnh hoàn qua QR cần tải ảnh bill để hoàn tất.')
       if (action === 'complete' && !['refund_approved', 'refunded'].includes(lot.state)) throw new HttpError(409, 'Phải duyệt hoàn tiền trước khi ghi nhận chuyển tiền.')
       const transferRef = action === 'complete' ? await outgoing(body.transferRef, lot.refund.id, lot.refund.amount ?? lot.amount, actorId) : null
       const result = await mutate(keyFor(payment), draft => {
@@ -308,6 +310,7 @@ export function createFinanceRepository(db) {
       if (!['release', 'refund'].includes(outcome)) throw new HttpError(400, 'Thao tác xử lý khiếu nại không hợp lệ.')
       const bankAccount = outcome === 'refund' ? clean(await banks.findOne({ _id: (await payments.findOne({ id: paymentId }))?.userId })) : null
       return mutate(activityId, draft => {
+        if (draft.lots.some(item => item.paymentId === paymentId && item.refund?.status === 'processing')) throw new HttpError(409, 'Lệnh hoàn tiền đang chuyển ngân hàng; cần đối soát trước.')
         const lot = draft.lots.find(lot => lot.paymentId === paymentId)
         if (!lot || lot.state !== 'disputed' || actorId === lot.userId || actorId === draft.ownerId) throw new HttpError(409, 'Không thể đóng khiếu nại này.')
         lot.confirmation = { ...lot.confirmation, resolvedBy: actorId, resolution: note, outcome }
@@ -329,6 +332,7 @@ export function createFinanceRepository(db) {
       const row = await escrows.findOne({ _id: activityId }), target = row?.payouts.find(item => item.id === payoutId)
       if (!target) throw new HttpError(404, 'Không có yêu cầu giải ngân.')
       if (actorId === row.ownerId) throw new HttpError(403, 'Không tự duyệt giải ngân cho mình.')
+      if (action === 'complete' && target.transferMode === 'manual-qr') throw new HttpError(400, 'Lệnh chuyển qua QR cần tải ảnh bill để hoàn tất giải ngân.')
       if (action === 'complete' && !['processing', 'completed'].includes(target.status)) throw new HttpError(409, 'Phải duyệt và khóa lệnh chuyển tiền trước khi ghi nhận kết quả.')
       const transferRef = action === 'complete' ? await outgoing(body.transferRef, payoutId, target.amount, actorId) : null
       return mutate(activityId, (draft, activity) => {
@@ -354,6 +358,153 @@ export function createFinanceRepository(db) {
         else { if (payout.status !== 'processing') throw new HttpError(409, 'Admin phải khóa lệnh trước khi thực hiện chuyển tiền.'); payout.status = 'completed'; payout.transferRef = transferRef; payout.processedAt = new Date(); payout.processedBy = actorId; for (const lot of lots) lot.state = 'settled' }
         payout.reviewNote = note; draft.audit.push(entry(actorId, `payout-${action}`, { payoutId, note, transferRef })); return payout
       })
+    },
+    async prepareRefundTransfer(actorId, paymentId) {
+      await admin(actorId)
+      const payment = await payments.findOne({ id: paymentId })
+      if (!payment) throw new HttpError(404, 'Không tìm thấy giao dịch.')
+      const refund = await mutate(keyFor(payment), draft => {
+        const lot = draft.lots.find(item => item.paymentId === paymentId), request = lot?.refund
+        if (!request) throw new HttpError(404, 'Không có yêu cầu hoàn cọc.')
+        if ([lot.userId, draft.ownerId].includes(actorId)) throw new HttpError(403, 'Không tự xử lý hoàn tiền liên quan đến mình.')
+        if (request.status === 'processing') {
+          if (request.transferStartedBy !== actorId) throw new HttpError(409, 'Admin khác đang chuyển khoản cho yêu cầu này.')
+          return request
+        }
+        if (!['refund_requested', 'refund_approved'].includes(lot.state) || !['pending', 'approved'].includes(request.status)) throw new HttpError(409, 'Yêu cầu hoàn cọc không còn khả dụng.')
+        if (draft.payouts.some(item => item.status === 'processing' && item.lotIds.includes(paymentId))) throw new HttpError(409, 'Khoản cọc đang giải ngân; cần đối soát trước.')
+        const transfer = payoutTransfer({ ...request, amount: request.amount ?? lot.amount, referenceCode: 'RF' + request.id.replace(/-/g, '').slice(0, 20).toUpperCase() })
+        request.amount = transfer.amount; request.transferMemo = transfer.description; request.transferMode = 'manual-qr'
+        request.approvedBy ||= actorId; request.approvedAt ||= new Date()
+        request.status = 'processing'; request.transferStartedBy = actorId; request.transferStartedAt = new Date(); lot.state = 'refund_approved'
+        draft.audit.push(entry(actorId, 'refund-transfer-prepared', { paymentId, refundId: request.id, amount: request.amount }))
+        return request
+      })
+      return { refund, transfer: payoutTransfer(refund) }
+    },
+    async refundTransferDetails(actorId, paymentId) {
+      await admin(actorId)
+      const payment = await payments.findOne({ id: paymentId }), row = payment && await escrows.findOne({ _id: keyFor(payment) })
+      const lot = row?.lots.find(item => item.paymentId === paymentId), refund = lot?.refund
+      if (!refund) throw new HttpError(404, 'Không có yêu cầu hoàn cọc.')
+      if ([lot.userId, row.ownerId].includes(actorId)) throw new HttpError(403, 'Không tự xử lý hoàn tiền liên quan đến mình.')
+      if (refund.status !== 'processing' || refund.transferStartedBy !== actorId) throw new HttpError(409, 'Lệnh hoàn cọc không ở trạng thái chuyển tiền của bạn.')
+      return { refund, transfer: payoutTransfer(refund) }
+    },
+    async completeRefundWithReceipt(actorId, paymentId, body) {
+      await admin(actorId)
+      const payment = await payments.findOne({ id: paymentId }), row = payment && await escrows.findOne({ _id: keyFor(payment) })
+      const lot = row?.lots.find(item => item.paymentId === paymentId), request = lot?.refund
+      if (!request) throw new HttpError(404, 'Không có yêu cầu hoàn cọc.')
+      if ([lot.userId, row.ownerId].includes(actorId)) throw new HttpError(403, 'Không tự xử lý hoàn tiền liên quan đến mình.')
+      if (!['processing', 'completed'].includes(request.status) || request.transferStartedBy !== actorId) throw new HttpError(409, 'Phải xác nhận hoàn cọc trước khi tải bill.')
+      const receipt = await payoutReceipt(body?.receipt), files = db.collection('finance_receipts'), uploadedAt = new Date()
+      if (request.status === 'completed' && request.receipt?.id !== receipt.id) throw new HttpError(409, 'Lệnh đã hoàn tất với bill khác.')
+      try { await files.insertOne({ _id: receipt.id, refundId: request.id, paymentId, ...receipt, uploadedAt, uploadedBy: actorId }) }
+      catch (error) { if (error.code !== 11000) throw error; const previous = await files.findOne({ _id: receipt.id }); if (previous.refundId !== request.id || previous.paymentId !== paymentId) throw new HttpError(409, 'Bill này đã được dùng cho lệnh chuyển tiền khác.') }
+      const { base64: _bytes, ...metadata } = receipt
+      const result = await mutate(keyFor(payment), draft => {
+        const current = draft.lots.find(item => item.paymentId === paymentId), refund = current.refund
+        if ([current.userId, draft.ownerId].includes(actorId)) throw new HttpError(403, 'Không tự xử lý hoàn tiền liên quan đến mình.')
+        if (refund.status === 'completed' && refund.receipt?.id === receipt.id) return refund
+        if (current.state !== 'refund_approved' || refund.status !== 'processing' || refund.transferStartedBy !== actorId) throw new HttpError(409, 'Lệnh không còn ở trạng thái chuyển tiền.')
+        refund.status = 'completed'; refund.receipt = { ...metadata, uploadedAt, uploadedBy: actorId }; refund.proofMethod = 'manual-bank-receipt'
+        refund.completedBy = actorId; refund.completedAt = new Date(); current.state = 'refunded'; draft.refundMirrorPending = true
+        draft.audit.push(entry(actorId, 'refund-complete', { paymentId, receiptId: receipt.id, proofMethod: refund.proofMethod })); return refund
+      })
+      await mirrorRefunds(await escrows.findOne({ _id: keyFor(payment) }))
+      await notify(payment.userId, `refund:${result.id}:completed`, 'Đã hoàn cọc', 'Admin đã chuyển khoản hoàn cọc và lưu bill. Kiểm tra tài khoản ngân hàng của bạn.')
+      return result
+    },
+    async refundReceiptFile(actorId, paymentId) {
+      await admin(actorId)
+      const payment = await payments.findOne({ id: paymentId }), row = payment && await escrows.findOne({ _id: keyFor(payment) })
+      const refund = row?.lots.find(item => item.paymentId === paymentId)?.refund
+      const receipt = refund?.receipt && await db.collection('finance_receipts').findOne({ _id: refund.receipt.id, refundId: refund.id, paymentId })
+      if (!receipt) throw new HttpError(404, 'Chưa có bill hoàn cọc.')
+      return { name: receipt.name, mime: receipt.mime, base64: receipt.base64 }
+    },
+    async preparePayoutTransfer(actorId, activityId, payoutId) {
+      await admin(actorId)
+      const payout = await mutate(activityId, (draft, activity) => {
+        const target = draft.payouts.find(item => item.id === payoutId)
+        if (!target) throw new HttpError(404, 'Không có yêu cầu giải ngân.')
+        if (actorId === draft.ownerId) throw new HttpError(403, 'Không tự duyệt giải ngân cho mình.')
+        if (target.status === 'processing') {
+          if (target.transferStartedBy && target.transferStartedBy !== actorId) throw new HttpError(409, 'Admin khác đang thực hiện chuyển tiền cho lệnh này.')
+          return target
+        }
+        if (!['pending', 'approved'].includes(target.status)) throw new HttpError(409, 'Yêu cầu không còn khả dụng để giải ngân.')
+        const blocked = blockers(draft, activity)
+        if (blocked || draft.settlement.status !== 'approved') throw new HttpError(409, blocked || 'Cần đối soát lại hoạt động.')
+        if (!Array.isArray(target.lotIds) || !target.lotIds.length) throw new HttpError(409, 'Yêu cầu thiếu thông tin khoản cọc; cần đối soát lại.')
+        const lots = draft.lots.filter(lot => target.lotIds.includes(lot.paymentId))
+        if (!lots.length || lots.length !== target.lotIds.length || lots.some(lot => lot.state !== 'payout_reserved' || lot.payoutId !== payoutId)) throw new HttpError(409, 'Số dư đang có tranh chấp hoặc đã xử lý.')
+        const transfer = payoutTransfer(target)
+        target.approvedBy ||= actorId; target.approvedAt ||= new Date()
+        target.transferStartedBy = actorId; target.transferStartedAt = new Date()
+        target.transferMemo = transfer.description; target.transferMode = 'manual-qr'; target.status = 'processing'
+        draft.audit.push(entry(actorId, 'payout-transfer-prepared', { payoutId, amount: target.amount, note: 'Xác nhận giải ngân và tạo QR chuyển khoản thủ công.' }))
+        return target
+      })
+      return { payout, transfer: payoutTransfer(payout) }
+    },
+    async payoutTransferDetails(actorId, activityId, payoutId) {
+      await admin(actorId)
+      const row = await escrows.findOne({ _id: activityId }), payout = row?.payouts.find(item => item.id === payoutId)
+      if (!payout) throw new HttpError(404, 'Không có yêu cầu giải ngân.')
+      if (actorId === row.ownerId) throw new HttpError(403, 'Không tự giải ngân cho mình.')
+      if (payout.status !== 'processing') throw new HttpError(409, 'Lệnh không ở trạng thái chuyển tiền.')
+      if (payout.transferStartedBy && payout.transferStartedBy !== actorId) throw new HttpError(409, 'Admin khác đang thực hiện chuyển tiền cho lệnh này.')
+      return { payout, transfer: payoutTransfer(payout) }
+    },
+    async completePayoutWithReceipt(actorId, activityId, payoutId, body) {
+      await admin(actorId)
+      const row = await escrows.findOne({ _id: activityId }), target = row?.payouts.find(item => item.id === payoutId)
+      if (!target) throw new HttpError(404, 'Không có yêu cầu giải ngân.')
+      if (actorId === row.ownerId) throw new HttpError(403, 'Không tự giải ngân cho mình.')
+      if (!['processing', 'completed'].includes(target.status)) throw new HttpError(409, 'Phải xác nhận giải ngân trước khi tải bill.')
+      if (target.transferStartedBy && target.transferStartedBy !== actorId) throw new HttpError(409, 'Admin khác đang thực hiện chuyển tiền cho lệnh này.')
+      const receipt = await payoutReceipt(body?.receipt)
+      if (target.status === 'completed') {
+        if (target.receipt?.id !== receipt.id) throw new HttpError(409, 'Lệnh đã hoàn tất với chứng từ khác.')
+        return target
+      }
+      const uploadedAt = new Date(), files = db.collection('finance_receipts')
+      // A receipt is stored outside the escrow document to keep dashboards and
+      // wallet responses small. Its hash also prevents reuse for another payout.
+      try { await files.insertOne({ _id: receipt.id, activityId, payoutId, ...receipt, uploadedAt, uploadedBy: actorId }) }
+      catch (error) {
+        if (error.code !== 11000) throw error
+        const previous = await files.findOne({ _id: receipt.id })
+        if (previous.activityId !== activityId || previous.payoutId !== payoutId) throw new HttpError(409, 'Ảnh bill này đã được dùng cho lệnh giải ngân khác.')
+      }
+      const { base64: _bytes, ...metadata } = receipt
+      return mutate(activityId, draft => {
+        const payout = draft.payouts.find(item => item.id === payoutId)
+        if (actorId === draft.ownerId) throw new HttpError(403, 'Không tự giải ngân cho mình.')
+        if (payout.status === 'completed') {
+          if (payout.receipt?.id !== receipt.id) throw new HttpError(409, 'Lệnh đã hoàn tất với chứng từ khác.')
+          return payout
+        }
+        if (payout.status !== 'processing') throw new HttpError(409, 'Lệnh không còn ở trạng thái chuyển tiền.')
+        if (!Array.isArray(payout.lotIds) || !payout.lotIds.length) throw new HttpError(409, 'Yêu cầu thiếu thông tin khoản cọc; cần đối soát lại.')
+        const lots = draft.lots.filter(lot => payout.lotIds.includes(lot.paymentId))
+        if (!lots.length || lots.length !== payout.lotIds.length || lots.some(lot => lot.state !== 'payout_reserved' || lot.payoutId !== payoutId)) throw new HttpError(409, 'Số dư đang có tranh chấp hoặc đã xử lý.')
+        payout.status = 'completed'; payout.receipt = { ...metadata, uploadedAt, uploadedBy: actorId }
+        payout.proofMethod = 'manual-bank-receipt'; payout.processedAt = new Date(); payout.processedBy = actorId
+        for (const lot of lots) lot.state = 'settled'
+        draft.audit.push(entry(actorId, 'payout-complete', { payoutId, receiptId: receipt.id, note: 'Đã chuyển khoản thủ công và lưu ảnh bill.', proofMethod: payout.proofMethod }))
+        return payout
+      })
+    },
+    async payoutReceiptFile(actorId, activityId, payoutId) {
+      await admin(actorId)
+      const row = await escrows.findOne({ _id: activityId }), payout = row?.payouts.find(item => item.id === payoutId)
+      if (!payout?.receipt) throw new HttpError(404, 'Chưa có bill chuyển khoản cho lệnh này.')
+      const receipt = await db.collection('finance_receipts').findOne({ _id: payout.receipt.id, activityId, payoutId })
+      if (!receipt) throw new HttpError(404, 'Không tìm thấy ảnh bill chuyển khoản.')
+      return { name: receipt.name, mime: receipt.mime, base64: receipt.base64 }
     },
     async dashboard(actorId, page = 1) {
       await admin(actorId)

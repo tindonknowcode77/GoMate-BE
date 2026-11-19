@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { HttpError } from '../../common/http-error.js'
+import { attendanceSummary, createAttendanceRepository } from './attendance.js'
 
 export const defaultSettings = {
   allowFriendRequests: true, directMessages: 'everyone', discoverable: true,
@@ -15,7 +16,7 @@ export function createCommunityRepository(db) {
     const social = type === 'message' || type?.startsWith('friend')
     if (actorId === userId || actorId && social && await blocked(userId, actorId)) return
     const prefs = await settings(userId)
-    if (!(type === 'message' ? prefs.notifyMessages : type.startsWith('friend') ? prefs.notifyFriends : prefs.notifyActivity)) return
+    if (type !== 'attendance' && !(type === 'message' ? prefs.notifyMessages : type.startsWith('friend') ? prefs.notifyFriends : prefs.notifyActivity)) return
     try { await notices.updateOne({ userId, key }, { $setOnInsert: { id: randomUUID(), userId, key, type, title, text, activityId, conversationId, actorId, createdAt: new Date(), readAt: null } }, { upsert: true }) }
     catch (error) { if (error.code !== 11000) throw error }
     if (type === 'message' && conversationId) {
@@ -29,6 +30,7 @@ export function createCommunityRepository(db) {
     return row
   }
   return {
+    attendance: createAttendanceRepository(db, { notify: (...args) => notify(...args).catch(() => { console.warn('Attendance result notification will need retry') }) }),
     blocked, blockedIds, settings,
     notifyScheduled: notify,
     async notify(...args) { try { await notify(...args) } catch { console.warn('Notification storage failed; primary action was preserved') } },
@@ -64,7 +66,7 @@ export function createCommunityRepository(db) {
       catch (error) { if (error.code !== 11000) throw error; report = await reports.findOne({ key }) }
       return { id: report.id, activityId: report.activityId, reason: report.reason, detail: report.detail, status: report.status, createdAt: report.createdAt }
     },
-    async reports(userId) { return db.collection('reports').find({ reporterId: userId }, { projection: { _id: 0, id: 1, activityId: 1, reason: 1, detail: 1, status: 1, createdAt: 1, resolvedAt: 1 } }).sort({ createdAt: -1 }).limit(100).toArray() },
+    async reports(userId) { return db.collection('reports').find({ reporterId: userId }, { projection: { _id: 0, id: 1, activityId: 1, reason: 1, detail: 1, status: 1, createdAt: 1, resolvedAt: 1, type: 1, kind: 1, reviewNote: 1, correctedStatus: 1 } }).sort({ createdAt: -1 }).limit(100).toArray() },
     async ratingForm(activityId, userId) {
       const row = await activity(activityId, userId)
       if (row.status !== 'completed') throw new HttpError(409, 'Chỉ đánh giá sau khi hoạt động kết thúc')
@@ -98,10 +100,11 @@ export function createCommunityRepository(db) {
     },
     async reputation(userId) {
       const [rating, completed] = await Promise.all([db.collection('activity_ratings').aggregate([{ $match: { targetUserId: userId, score: { $gte: 1, $lte: 5 } } }, { $group: { _id: null, average: { $avg: '$score' }, count: { $sum: 1 } } }]).toArray(), db.collection('activities').countDocuments({ hostId: userId, status: 'completed' })])
-      return { average: rating[0]?.average ?? null, count: rating[0]?.count ?? 0, completedActivities: completed }
+      return { average: rating[0]?.average ?? null, count: rating[0]?.count ?? 0, completedActivities: completed, ...await attendanceSummary(db, userId) }
     },
     async moderationQueue() { return db.collection('reports').find({ deletedAt: { $exists: false } }, { projection: { _id: 0, key: 0 } }).sort({ createdAt: -1 }).limit(200).toArray() },
     async moderate(id, actorId, status, hideActivity) {
+      if (await db.collection('reports').findOne({ id, type: 'member-complaint' })) throw new HttpError(400, 'Hãy xử lý khiếu nại qua phần sửa điểm danh/kết quả khiếu nại.')
       let row = await db.collection('reports').findOneAndUpdate({ id, status: 'pending' }, { $set: { status, hideActivity, resolvedBy: actorId, resolvedAt: new Date() } }, { returnDocument: 'after' })
       if (!row) row = await db.collection('reports').findOne({ id, status, hideActivity, resolvedBy: actorId })
       if (!row) throw new HttpError(409, 'Báo cáo đã được xử lý hoặc không tồn tại')

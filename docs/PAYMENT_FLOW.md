@@ -50,28 +50,45 @@ Không dùng header/body này từ client người dùng. Adapter phải xác mi
 
 ## Hoàn cọc
 
-`Giữ cọc → Yêu cầu hoàn → Admin duyệt → Chờ chuyển ngân hàng → Admin ghi nhận hoàn tất`
+`Giữ cọc → Yêu cầu hoàn → Admin xác nhận một lần → Quét QR chuyển thủ công → Tải bill và hoàn tất`
 
 Người dùng lưu ngân hàng và gửi lý do; ngân hàng nhận tiền được chụp cố định vào yêu cầu. Đổi ngân hàng trong ví sau đó không đổi yêu cầu đang chờ. Gửi trước giờ bắt đầu cũng từ bỏ chỗ tham gia. Người dùng không thể tự đánh dấu đã hoàn; admin liên quan trực tiếp đến tiền không được tự duyệt.
 
-Chỉ khi admin đã chuyển thật, kiểm tra kết quả, nhập mã ngân hàng và xác nhận trên giao diện thì khoản cọc mới mang trạng thái hoàn tất. Chưa có API ngân hàng tự động chuyển tiền. Không được dùng mã tiền vào hoặc dùng lại mã chuyển ra của lệnh khác.
+- Admin chọn **Hoàn cọc**, kiểm tra người nhận/số tiền rồi **Xác nhận hoàn cọc** một lần. QR dùng ngân hàng thành viên đã lưu cố định trong yêu cầu, số tiền hoàn thực tế sau chính sách và mã hoàn riêng; không dùng ngân hàng doanh nghiệp hay tài khoản thu GoMate.
+- Quét QR và chuyển thủ công, tải bill PNG/JPG/WEBP tối đa 5 MB rồi **Lưu bill & hoàn tất**. Không yêu cầu nhập lại ghi chú/mã ngân hàng. Bill được kiểm tra ảnh thật, chuẩn hóa và lưu riêng có xác thực Admin, cùng quy tắc chống dùng lại ảnh giữa hoàn cọc và giải ngân.
+- Đóng/tải lại trang giữ lệnh `processing`; **Tiếp tục hoàn cọc** lấy cùng QR mà không xác nhận lại. Chỉ Admin bắt đầu được tiếp tục/hoàn tất. Tiền vẫn khóa, không cho giải ngân hoặc xử lý tranh chấp để mở khóa cùng khoản đang chuyển. Retry cùng bill trả kết quả cũ.
+- API Admin: `POST /api/portal/finance/refunds/:paymentId/prepare-transfer`, `GET .../transfer`, `POST .../receipt`, `GET .../receipt`. API cũ vẫn phục vụ yêu cầu chưa bắt đầu QR; không thể dùng để bỏ qua bill cho lệnh QR. Chỉ ghi nhận `refunded` sau khi bill lưu thành công; chưa có API tự động chuyển tiền/xác minh ngân hàng.
 
 ## Giải ngân
 
-`Hoàn tất hoạt động → Hết thời gian giữ → Xử lý hết khiếu nại/hoàn tiền → Admin xác minh hoạt động → Doanh nghiệp yêu cầu → Admin duyệt → Khóa lệnh chuyển → Chuyển ở ngân hàng → Ghi nhận mã giao dịch`
+`Hoàn tất hoạt động → Hết thời gian giữ → Xử lý hết khiếu nại/hoàn tiền → Admin xác minh hoạt động → Doanh nghiệp yêu cầu → Admin xác nhận một lần → Quét QR chuyển thủ công → Tải bill và hoàn tất`
 
 - Có xác nhận độc lập từ thành viên; trường hợp thiếu xác nhận cần admin kiểm tra bằng chứng và ghi lý do thay thế. Doanh nghiệp tự đánh dấu điểm danh/kết thúc không đủ điều kiện rút tiền.
 - Yêu cầu giữ chỗ toàn bộ tiền được giải ngân và chụp ngân hàng nhận. Có mã chống gửi trùng; retry sau mất mạng trả lại cùng yêu cầu.
 - Khi còn `pending`/`approved`, yêu cầu hoàn hoặc khiếu nại khóa lệnh và trả các khoản chưa có tranh chấp về giữ cọc. Phải xét hoạt động lại sau xử lý.
-- **Khóa lệnh & chuẩn bị chuyển** đổi thành `processing` trước khi admin thao tác ngân hàng. Lúc này không tự giải phóng số dư hoặc cho hoàn cùng khoản tiền; người dùng được báo liên hệ hỗ trợ để đối soát. Chỉ trạng thái này mới ghi nhận chuyển tiền hoàn tất.
+- Nút **Giải ngân** mở thông tin tài khoản và số tiền; **Xác nhận giải ngân** gộp duyệt và khóa lệnh vào một thao tác nguyên tử, chuyển `pending`/`approved` thành `processing`. Không yêu cầu ghi chú hoặc mã giao dịch lặp lại. Lúc này không tự giải phóng số dư hoặc cho hoàn cùng khoản tiền; chỉ trạng thái này mới ghi nhận chuyển tiền hoàn tất.
+- VietQR lấy đúng ngân hàng, số tài khoản và chủ tài khoản đã chụp trong yêu cầu, số tiền thực chuyển sau phí và mã yêu cầu làm nội dung chuyển khoản. Không dùng cấu hình tài khoản thu tiền GoMate hay dữ liệu ngân hàng mới sửa sau yêu cầu. QR dùng bộ tạo VietQR hiện có; ảnh được phục vụ từ `img.vietqr.io`.
+- Sau khi admin chuyển thủ công, chọn ảnh bill PNG/JPG/WEBP tối đa 5 MB rồi **Lưu bill & hoàn tất**. BE đọc/giải mã ảnh thật, giới hạn 20 triệu điểm ảnh, chuẩn hóa JPEG và lưu riêng trong `finance_receipts`; sổ chỉ giữ metadata. Admin có thể xem/tải lại bill qua API có xác thực. Không tự tạo mã giao dịch ngân hàng từ tên file hoặc mã yêu cầu. Ảnh bill là chứng từ admin ghi nhận thủ công, không phải kết quả xác minh tự động từ ngân hàng.
+- Đóng hoặc tải lại trang khi đang chuyển không mở khóa tiền. Nút **Tiếp tục giải ngân** tải lại cùng QR bằng GET, không yêu cầu xác nhận lại. Admin khác không được mở QR hoặc hoàn tất lệnh đang do một admin thực hiện. Retry cùng bill trả lại kết quả cũ; một ảnh bill không được dùng cho lệnh khác. Tiền và phí chỉ được ghi nhận khi lưu bill thành công.
 - Nếu ngân hàng trả kết quả không rõ hoặc mất mạng: giữ `processing`, kiểm tra sao kê, không chuyển lại. Không tự hết hạn/mở khóa. Chỉ mở khóa qua thao tác **Ngân hàng xác nhận chưa chuyển**, với xác nhận tiền chưa bị trừ/chuyển và chứng cứ tối thiểu 15 ký tự; sau đó phải xác minh hoạt động lại.
-- Hoàn tất đòi hỏi mã giao dịch và xác nhận đã kiểm tra chuyển tiền. Replay không chi tiền hai lần. Tiền đã giải ngân không còn trong quỹ cọc có thể hoàn; khiếu nại sau giải ngân đi qua hỗ trợ và đối soát riêng.
+- API cũ `review` vẫn hỗ trợ lệnh vận hành theo mã giao dịch để tương thích; lệnh đã bắt đầu bằng luồng QR mới bắt buộc hoàn tất bằng ảnh bill và không thể dùng API cũ để bỏ qua chứng từ. Tiền đã giải ngân không còn trong quỹ cọc có thể hoàn; khiếu nại sau giải ngân đi qua hỗ trợ và đối soát riêng.
+
+### API giải ngân QR (chỉ Admin)
+
+Tiền tố `/api/portal/finance/groups/:id/payouts/:payoutId`:
+
+| Method / path | Nội dung |
+| --- | --- |
+| `POST /prepare-transfer` | Body `{}`; xác nhận, duyệt và khóa lệnh nguyên tử; trả `{ payout, transfer }` chứa QR, tài khoản, số tiền và nội dung. Retry cùng admin không tạo sự kiện duyệt thứ hai. |
+| `GET /transfer` | Tải lại QR của lệnh `processing` mà không sửa sổ. |
+| `POST /receipt` | Body `{ receipt: { name, mime, base64 } }`; kiểm tra ảnh, lưu bill và hoàn tất lệnh. |
+| `GET /receipt` | Trả `{ name, mime, base64 }` của bill đã gắn vào lệnh; chỉ Admin, `Cache-Control: no-store`. |
 
 ## Tính nhất quán và khôi phục
 
 Mỗi hoạt động có một sổ `finance_escrows`, cập nhật nguyên tử theo phiên bản MongoDB. Cùng một khoản không đồng thời dùng để hoàn và giải ngân. Các khoản vào có bản ghi `bank_events` bền vững trước khi ghi sổ; worker chạy lúc khởi động và mỗi 30 giây để khôi phục sự cố giữa các bước. Worker không chạy chồng và lỗi tài chính không chặn bộ lập lịch hoạt động.
 
-Các yêu cầu và tài khoản nhận tiền, người xử lý, thời điểm, lý do và mã ngân hàng được lưu để đối soát. `finance_transfers` ngăn tái sử dụng một mã chuyển ra. Admin xem 100 sự kiện gần nhất của mỗi sổ; lịch sử đầy đủ vẫn trong DB.
+Các yêu cầu và tài khoản nhận tiền, người xử lý, thời điểm, lý do và chứng từ được lưu để đối soát. `finance_transfers` ngăn tái sử dụng một mã chuyển ra trong luồng cũ/hoàn tiền; khóa hash ảnh trong `finance_receipts` ngăn dùng lại cùng bill cho lệnh giải ngân khác. Admin xem 100 sự kiện gần nhất của mỗi sổ; lịch sử đầy đủ vẫn trong DB.
 
 Phương trình kiểm tra:
 

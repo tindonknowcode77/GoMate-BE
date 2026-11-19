@@ -5,6 +5,7 @@ import { createActivityRepository } from '../activities/repository.js'
 import { activityReadiness } from '../../common/activity-readiness.js'
 import { planningFields } from '../../common/activity-plan.js'
 import { createFinanceRepository } from '../payment/finance.js'
+import { notifyUnmarkedStart } from '../community/attendance.js'
 
 const view = { _id: 0 }
 function buildAttendanceRoster(row) {
@@ -301,11 +302,13 @@ export function createBusinessOperations(db) {
         }
         const now = new Date()
         const attendance = buildAttendanceRoster(row)
-        return change(row, userId, version, { status: 'in-progress', startedAt: now, scheduleConfirmedAt: row.scheduleConfirmedAt || now, scheduleConfirmedBy: row.scheduleConfirmedBy || userId, attendance }, 'started')
+        const result = await change(row, userId, version, { status: 'in-progress', startedAt: now, scheduleConfirmedAt: row.scheduleConfirmedAt || now, scheduleConfirmedBy: row.scheduleConfirmedBy || userId, attendance }, 'started')
+        await notifyUnmarkedStart(community, { ...row, attendance, startedAt: now }, userId).catch(() => { console.warn('Start attendance notifications deferred') })
+        return result
       }
       if (row.status !== 'in-progress') throw new HttpError(409, 'Group is not running')
       const now = new Date()
-      const attendance = buildAttendanceRoster(row).map(item => item.status === 'unmarked' ? { ...item, status: 'present', updatedBy: userId, updatedAt: now } : item)
+      const attendance = buildAttendanceRoster(row).map(item => item.status === 'unmarked' && !item.correctionReportId ? { ...item, status: 'present', updatedBy: userId, updatedAt: now } : item)
       const result = await change(row, userId, version, { status: 'completed', completedAt: now, attendance }, 'completed')
       await Promise.all(attendance.map(member => community.notify(member.userId, { key: 'business-completed:' + id, type: 'activity', title: 'Hoạt động đã kết thúc', text: row.title, activityId: id, actorId: userId })))
       return result
@@ -313,11 +316,12 @@ export function createBusinessOperations(db) {
     async attendance(userId, id, version, memberId, status) {
       const row = await group(userId, id)
       const roster = buildAttendanceRoster(row)
+      if (roster.find(item => item.userId === memberId)?.correctionReportId) throw new HttpError(409, 'Admin đã xác minh kết quả điểm danh này; liên hệ hỗ trợ nếu cần sửa tiếp.')
       const correction = row.status === 'completed' && row.autoCompletedAt && Date.now() - new Date(row.autoCompletedAt).getTime() < 86400000
       if (!['published', 'in-progress'].includes(row.status) && !correction || !roster.some(item => item.userId === memberId)) throw new HttpError(409, 'Participant not found or group not running')
       if (correction && (roster.find(item => item.userId === memberId)?.status !== 'unmarked' || status === 'unmarked')) throw new HttpError(409, 'Chỉ bổ sung điểm danh còn thiếu sau khi tự kết thúc.')
       const result = await change(row, userId, version, { attendance: roster.map(item => item.userId === memberId ? { ...item, status, updatedBy: userId, updatedAt: new Date() } : item) }, 'attendance-changed')
-      if (status === 'absent' && memberId !== userId) await community.notify(memberId, { key: `attendance-absent:${id}:${memberId}:${result.version}`, type: 'activity', title: 'Trạng thái điểm danh: Vắng mặt', text: `Bạn được ghi nhận vắng mặt tại ${row.title}. Nếu có nhầm lẫn, hãy phản hồi trong nhóm hoặc gửi khiếu nại trong Ví.`, activityId: id, actorId: userId })
+      if (status === 'absent' && memberId !== userId) await community.notify(memberId, { key: `attendance-absent:${id}:${memberId}:${result.version}`, type: 'attendance', title: 'Trạng thái điểm danh: Vắng mặt', text: `Bạn được ghi nhận vắng mặt tại ${row.title}. Mở thông báo để xem và gửi khiếu nại nếu có nhầm lẫn.`, activityId: id, actorId: userId })
       return result
     },
     async listStaff(ownerId, offset, reviewing = false) { return page(staff, reviewing ? {} : { ownerId }, offset) },

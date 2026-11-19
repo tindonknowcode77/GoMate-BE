@@ -1,5 +1,83 @@
 # Development log
 
+## 2026-11-19 - Member refund QR, reputation and attendance appeals
+
+### Summary
+
+- Extend one-confirmation QR and private receipt completion to member refunds,
+  retaining frozen recipient/net refund amount, operator locks, replay/reuse and
+  concurrent payout/dispute guards. Resume without another confirmation.
+- Expose rating/absence metrics on own/public profiles; notify unmarked members
+  after start and members marked absent. Add private attendance history, member
+  complaints, Admin decisions, audited corrections and recalculated absence rates.
+- Preserve Admin corrections against organizer edits; do not change money on an
+  attendance correction. Add scheduler notification retry and pagination support.
+
+### Files changed
+
+- `src/modules/community/attendance.js`, `repository.js`, `routes.js`.
+- Activity routes/scheduler, portal operations, profile routes, Mongo indexes.
+- Payment finance repository/routes and companion FE screens/Admin workflows.
+- `tests/member-attendance-refund.test.js`, profile contract expectations,
+  `docs/ATTENDANCE_COMPLAINTS.md`, `docs/PAYMENT_FLOW.md`, this log.
+
+### Verification
+
+- Full `npm test`: 201/201 passed, including 9 attendance/refund scenarios.
+- FE attendance browser test: passed own/public metrics, notification routing,
+  complaint submission, Admin correction, updated rate and mobile layouts.
+- FE finance and finance-settlement browser tests: passed refund QR/bill/resume,
+  payout regression, settlement eligibility and authorization.
+- FE typecheck/web export passed; lint has 5 existing warnings, Expo Doctor 20/21
+  due existing five SDK patch mismatches. Reviewed mobile/Admin screenshots.
+
+### Remaining work
+
+- None. Bank transfers remain manual and bill submission records Admin evidence.
+
+## 2026-11-19 - One-confirmation business payouts with QR and receipt images
+
+### Summary
+
+- Add an atomic prepare-transfer operation that approves pending/approved payouts,
+  locks funds and returns VietQR instructions from the frozen beneficiary, net
+  amount and memo. Resume via GET without another approval; prevent another Admin
+  from taking over an active transfer.
+- Complete manual payouts by uploading a validated PNG/JPG/WEBP bill (5 MB input,
+  20 MP decode limit), normalized to JPEG. Store images privately outside escrow
+  documents and expose only receipt metadata in wallets/dashboards. Add protected
+  Admin retrieval and image-hash reuse protection.
+- Preserve eligibility, self-approval, reserved-lot, refund/dispute and replay
+  guards. QR-started payouts cannot complete through the legacy reference-only
+  endpoint. Recognize money and fees only on receipt completion; keep old non-QR
+  payout operations compatible.
+
+### Files changed
+
+- `src/modules/payment/finance.js`, `finance-routes.js`, `payout-transfer.js`.
+- `tests/payout-transfer.test.js`, `docs/PAYMENT_FLOW.md`, this log.
+- Companion FE: `AdminPayoutTransfer.jsx`, `AdminFinance.jsx`, `finance.css`,
+  `tests/finance.web.cjs`, `tests/finance-settlement.web.cjs`.
+
+### Verification
+
+- Full BE `npm test`: 192/192 passed. After adding defensive missing-lot guards,
+  `node --test tests/payout-transfer.test.js tests/finance.test.js`: 33/33 passed.
+- FE `node tests/finance.web.cjs`: Passed, including one confirmation, correct QR,
+  cancel/resume, invalid file feedback, upload/preview/retrieval, mobile and totals.
+- FE `node tests/finance-settlement.web.cjs`: Passed; demo eligibility, merchant
+  payout requests, legacy payout compatibility and ordinary eligibility guards.
+- FE typecheck/web export: Passed. Existing 5 lint warnings and Expo SDK patch
+  mismatches remain (20/21 Expo Doctor checks).
+- Downloaded and decoded a VietQR image using dummy bank data; inspected the
+  QR and desktop/mobile modal screenshots. No real money transfer performed.
+- `git diff --check`: Passed.
+
+### Remaining work
+
+- Transfers remain manual in the Admin's banking application as requested;
+  receipt uploads do not perform automatic bank-statement verification.
+
 ## 2026-11-13 - Apply approved demo settlements to the full payout flow
 
 ### Summary

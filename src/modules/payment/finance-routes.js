@@ -6,7 +6,28 @@ import { fields } from '../portal/validation.js'
 export function createFinanceRouter(auth, writes) {
   const router = Router(), finance = auth.finance
   router.use((req, _res, next) => { if (req.portalRole !== 'admin') throw new HttpError(403, 'Chỉ admin được quản lý tài chính.'); next() })
+  router.post('/refunds/:id/receipt', writes, express.json({ limit: '7mb' }), async (req, res) => {
+    fields(req.body, ['receipt']); res.set('Cache-Control', 'no-store').json(await finance.completeRefundWithReceipt(req.auth.user.id, req.params.id, req.body))
+  })
+  router.get('/refunds/:id/receipt', async (req, res) => res.set('Cache-Control', 'no-store').json(await finance.refundReceiptFile(req.auth.user.id, req.params.id)))
+  // Parse receipt uploads before the small JSON parser used by other operations.
+  router.post('/groups/:id/payouts/:payoutId/receipt', writes, express.json({ limit: '7mb' }), async (req, res) => {
+    fields(req.body, ['receipt'])
+    res.set('Cache-Control', 'no-store').json(await finance.completePayoutWithReceipt(req.auth.user.id, req.params.id, req.params.payoutId, req.body))
+  })
+  router.get('/groups/:id/payouts/:payoutId/receipt', async (req, res) => {
+    res.set('Cache-Control', 'no-store').json(await finance.payoutReceiptFile(req.auth.user.id, req.params.id, req.params.payoutId))
+  })
   router.use(express.json({ limit: '32kb' }))
+  router.post('/refunds/:id/prepare-transfer', writes, async (req, res) => { fields(req.body, []); res.set('Cache-Control', 'no-store').json(await finance.prepareRefundTransfer(req.auth.user.id, req.params.id)) })
+  router.get('/refunds/:id/transfer', async (req, res) => res.set('Cache-Control', 'no-store').json(await finance.refundTransferDetails(req.auth.user.id, req.params.id)))
+  router.post('/groups/:id/payouts/:payoutId/prepare-transfer', writes, async (req, res) => {
+    fields(req.body, [])
+    res.set('Cache-Control', 'no-store').json(await finance.preparePayoutTransfer(req.auth.user.id, req.params.id, req.params.payoutId))
+  })
+  router.get('/groups/:id/payouts/:payoutId/transfer', async (req, res) => {
+    res.set('Cache-Control', 'no-store').json(await finance.payoutTransferDetails(req.auth.user.id, req.params.id, req.params.payoutId))
+  })
   router.get('/', async (req, res) => {
     const page = Number(req.query.page || 1)
     if (Object.keys(req.query).some(key => key !== 'page') || !Number.isInteger(page) || page < 1 || page > 10000) throw new HttpError(400, 'Trang không hợp lệ.')

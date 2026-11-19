@@ -32,7 +32,22 @@ export function createCommunityRouter(auth) {
     res.status(201).json({ report: await repository.report(req.auth.user.id, { ...req.body, detail: req.body.detail.trim() }) })
   })
   router.get('/reports', async (req, res) => res.json({ items: await repository.reports(req.auth.user.id) }))
+  router.get('/attendance', async (req, res) => {
+    const page = Number(req.query.page || 1), limit = Number(req.query.limit || 20)
+    if (Object.keys(req.query).some(key => !['page', 'limit'].includes(key)) || !Number.isInteger(page) || page < 1 || page > 500 || !Number.isInteger(limit) || limit < 1 || limit > 50) throw new HttpError(400, 'Trang không hợp lệ')
+    res.json(await repository.attendance.history(req.auth.user.id, page, limit))
+  })
+  router.post('/attendance/complaints', writes, async (req, res) => {
+    body(req.body, ['activityId', 'kind', 'detail', 'requestedStatus'])
+    if (!isId(req.body.activityId) || !['attendance', 'other'].includes(req.body.kind) || typeof req.body.detail !== 'string' || req.body.detail.trim().length < 10 || req.body.detail.length > 1000 || req.body.kind === 'attendance' && !['present', 'late'].includes(req.body.requestedStatus) || req.body.kind === 'other' && req.body.requestedStatus !== undefined) throw new HttpError(400, 'Chọn hoạt động, loại khiếu nại và mô tả từ 10 đến 1000 ký tự.')
+    res.status(201).json({ report: await repository.attendance.submit(req.auth.user.id, { ...req.body, detail: req.body.detail.trim() }) })
+  })
   router.use('/moderation', async (req, _res, next) => { if ((await auth.getProfile(req.auth.user.id))?.role !== 'admin') throw new HttpError(403, 'Chỉ quản trị viên có quyền xử lý báo cáo'); next() })
+  router.patch('/moderation/attendance-complaints/:id', writes, async (req, res) => {
+    body(req.body, ['decision', 'status', 'note'])
+    if (!['approve', 'reject'].includes(req.body.decision) || typeof req.body.note !== 'string' || req.body.note.trim().length < 10 || req.body.note.length > 1000 || req.body.decision === 'reject' && req.body.status !== undefined) throw new HttpError(400, 'Chọn quyết định và nhập lý do từ 10 đến 1000 ký tự.')
+    res.json(await repository.attendance.resolve(req.auth.user.id, req.params.id, { ...req.body, note: req.body.note.trim() }))
+  })
   router.get('/moderation/reports', async (_req, res) => res.json({ items: await repository.moderationQueue() }))
   router.patch('/moderation/reports/:id', writes, async (req, res) => { body(req.body, ['status', 'hideActivity']); if (!['resolved', 'dismissed'].includes(req.body.status) || typeof req.body.hideActivity !== 'boolean' || req.body.hideActivity && req.body.status !== 'resolved') throw new HttpError(400, 'Quyết định xử lý không hợp lệ'); res.json(await repository.moderate(req.params.id, req.auth.user.id, req.body.status, req.body.hideActivity)) })
   router.get('/ratings/:activityId', async (req, res) => res.json(await repository.ratingForm(req.params.activityId, req.auth.user.id)))

@@ -1,5 +1,6 @@
 import { syncActivityMessages, closedRequests } from './chat-events.js'
 import { randomUUID } from 'node:crypto'
+import { notifyUnmarkedStart } from '../community/attendance.js'
 
 // Atomic transitions and stable notification keys make concurrent/repeated ticks safe.
 export function createActivityScheduler(db, community) {
@@ -13,6 +14,10 @@ export function createActivityScheduler(db, community) {
     })))
   }
   async function process(now) {
+    for (const row of await activities.find({ status: { $in: ['in-progress', 'completed'] }, startedAt: { $exists: true }, attendanceStartNotified: { $ne: true } }).limit(100).toArray()) {
+      await notifyUnmarkedStart(community, row)
+      await activities.updateOne({ id: row.id, startedAt: row.startedAt }, { $set: { attendanceStartNotified: true } })
+    }
     const overdue = await activities.find({ status: { $in: ['published', 'in-progress'] }, endsAt: { $lte: now } }).limit(100).toArray()
     for (const row of overdue) {
       const expired = row.status === 'published'
