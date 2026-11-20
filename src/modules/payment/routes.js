@@ -61,26 +61,31 @@ export function createPaymentRouter(paymentRepo, authRepo, activityRepo, config)
     const pending = receipt ? null : await paymentRepo.findPendingPayment({ userId: req.auth.user.id, activityId: activity.id, type: 'activity_deposit' })
     res.json({ activityId: activity.id, activityTitle: activity.title, depositRequired: (activity.depositAmount || 0) > 0, depositAmount: activity.depositAmount || 0, isPaid: Boolean(receipt), receipt: receipt || null, pendingPayment: pending, bankInfo: bank })
   })
+  const isAdminUser = async userId => (await authRepo.getProfile(userId))?.role === 'admin'
   router.get('/:id/status', auth, async (req, res) => {
     const payment = await paymentRepo.findPaymentById(req.params.id)
-    if (!payment || payment.userId !== req.auth.user.id && req.auth.user.role !== 'admin') throw new HttpError(404, 'Không tìm thấy giao dịch của bạn.')
+    if (!payment || payment.userId !== req.auth.user.id && !await isAdminUser(req.auth.user.id)) throw new HttpError(404, 'Không tìm thấy giao dịch của bạn.')
     res.json({ id: payment.id, orderCode: payment.orderCode, status: payment.status, verified: Boolean(payment.verification), amount: payment.amount, paidAt: payment.paidAt, refundOnly: Boolean(payment.refundOnly) })
   })
   router.get('/:id', auth, async (req, res) => {
     const payment = await paymentRepo.findPaymentById(req.params.id)
-    if (!payment || payment.userId !== req.auth.user.id && req.auth.user.role !== 'admin') throw new HttpError(404, 'Không tìm thấy giao dịch của bạn.')
+    if (!payment || payment.userId !== req.auth.user.id && !await isAdminUser(req.auth.user.id)) throw new HttpError(404, 'Không tìm thấy giao dịch của bạn.')
     res.json({ payment: await authRepo.finance.enrich(payment) })
   })
   router.post('/:id/confirm', auth, writes, async (req, res) => {
     fields(req.body || {}, [])
     const existing = await paymentRepo.findPaymentById(req.params.id)
     if (!existing) throw new HttpError(404, 'Không tìm thấy giao dịch.')
-    if (existing.userId !== req.auth.user.id && req.auth.user.role !== 'admin') throw new HttpError(403, 'Không có quyền xác nhận giao dịch này.')
+    const isAdmin = await isAdminUser(req.auth.user.id)
+    const allowDemoSelfConfirm = Boolean(config.allowDemoPaymentConfirm) && existing.userId === req.auth.user.id
+    if (!isAdmin && !allowDemoSelfConfirm) {
+      throw new HttpError(403, 'Chỉ hệ thống đối soát ngân hàng (Webhook) hoặc Quản trị viên mới có quyền xác nhận thanh toán.')
+    }
     const payment = await paymentRepo.confirmPayment(req.params.id, {
       confirmedBy: req.auth.user.id,
-      method: 'vietqr-auto-confirm',
+      method: isAdmin ? 'admin-manual-confirm' : 'demo-self-confirm',
     })
-    res.json({ message: 'Thanh toán tiền cọc đã được xác nhận tự động.', payment })
+    res.json({ message: isAdmin ? 'Quản trị viên đã xác nhận thanh toán tiền cọc.' : 'Thanh toán tiền cọc đã được xác nhận ở chế độ demo.', payment })
   })
   router.post('/:id/refund', auth, writes, async (req, res) => {
     fields(req.body, ['bankId', 'accountNo', 'accountName', 'reason'])

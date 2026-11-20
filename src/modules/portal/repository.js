@@ -1,6 +1,7 @@
 import { createPostLifecycle } from './post-lifecycle.js'
 import { createPostDetails } from './post-details.js'
 import { createAdminRepository } from './admin.js'
+import { createPortalEnrichment } from './enrichment.js'
 import { createBusinessAudience } from '../../common/business-audience.js'
 import { createBusinessOperations } from './operations.js'
 import { randomUUID } from 'node:crypto'
@@ -12,8 +13,9 @@ const publicRow = { _id: 0, document: 0, lifecycleTasks: 0, contentSync: 0 }
 export function createPortalRepository(db) {
   const community = createCommunityRepository(db)
   const lifecycle = createPostLifecycle(db), audience = createBusinessAudience(db)
-  const details = createPostDetails(db)
   const notify = (userId, key, title, text, actorId) => community.notify(userId, { key, type: 'business-update', title, text, actorId })
+  const details = createPostDetails(db, { notify })
+  const enrichment = createPortalEnrichment(db)
   const applications = db.collection('business_applications'), posts = db.collection('business_posts')
   const users = db.collection('users'), tickets = db.collection('support_tickets')
   const page = async (collection, filter, offset, projection = publicRow) => ({
@@ -22,6 +24,7 @@ export function createPortalRepository(db) {
   })
   return {
     editBasicPost: details.edit,
+    reviewPostRevision: details.reviewRevision,
     admin: createAdminRepository(db),
     operations: createBusinessOperations(db),
     postLifecycle: lifecycle.command,
@@ -56,7 +59,7 @@ export function createPortalRepository(db) {
       if (!row) { if (supplementalId) await db.collection('business_verification_files').deleteOne({ id: supplementalId, ownerId }); throw new HttpError(409, 'Hồ sơ đã thay đổi. Tải lại trước khi gửi lại.') }
       return row
     },
-    async applications(offset) { const result=await page(applications,{status:{$ne:'deleted'}},offset);return {...result,items:result.items.map(row=>({...row,version:row.version ?? 0}))} },
+    async applications(offset) { const result = await page(applications, { status: { $ne: 'deleted' } }, offset); return { ...result, items: await enrichment.enrichBusinesses(result.items.map(row => ({ ...row, version: row.version ?? 0 }))) } },
     async document(id, actorId, reviewer, kind) {
       const row = await applications.findOne({ id, ...(!reviewer ? { ownerId: actorId } : {}) })
       if (!row) throw new HttpError(404, 'Application not found')
@@ -89,7 +92,7 @@ export function createPortalRepository(db) {
       const grants = await db.collection('business_staff').find({ userId: id, status: 'approved', $or: [{ provisionedAt: { $ne: null } }, { acceptedAt: { $ne: null } }] }).toArray()
       return grants.length && await applications.findOne({ ownerId: { $in: grants.map(grant => grant.ownerId) }, status: 'approved' }) ? 'business-staff' : 'user'
     },
-    async posts(ownerId,offset) { const result=await page(posts,{...(ownerId?{ownerId}:{}),status:{$ne:'deleted'}},offset);return {...result,items:await details.hydrate(result.items.map(row=>({...row,version:row.version ?? 0})))} },
+    async posts(ownerId, offset) { const result = await page(posts, { ...(ownerId ? { ownerId } : {}), status: { $ne: 'deleted' } }, offset); return { ...result, items: await enrichment.enrichPosts(result.items.map(row => ({ ...row, version: row.version ?? 0 }))) } },
     async createPost(ownerId, data) {
       const user = await users.findOne({ id: ownerId })
       if (data.premium && !(user?.subscription?.plan === 'plus' && user.subscription.status === 'active')) throw new HttpError(403, 'An active Plus plan is required for premium styling')

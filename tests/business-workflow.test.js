@@ -156,12 +156,13 @@ test('business registration, revisions, multi-group publication, direct employee
     expect(await call(2, path + '/deposits/' + users[1].id, 'PATCH', { version: group.version, status: 'paid' }), 400)
     // Staff cannot manually mark paid without verified VietQR payment
     expect(await call(2, path + '/deposits/' + users[5].id, 'PATCH', { version: group.version, status: 'paid' }), 409)
-    // Member pays via VietQR and auto-confirms
+    // Member cannot self-confirm payment; admin or bank webhook must verify it
     const qr = expect(await call(5, '/payments/create-qr', 'POST', { activityId: id }), 201).payment
-    expect(await call(5, '/payments/' + qr.id + '/confirm', 'POST', {}))
+    expect(await call(5, '/payments/' + qr.id + '/confirm', 'POST', {}), 403)
+    expect(await call(4, '/payments/' + qr.id + '/confirm', 'POST', {}))
     group = expect(await call(2, path))
     const receipt = (await activities.get(id)).businessReceipts[0]
-    assert.equal(receipt.method, 'vietqr-auto-confirm'); assert.equal(receipt.amount, 50000)
+    assert.equal(receipt.method, 'admin-manual-confirm'); assert.equal(receipt.amount, 50000)
     assert.equal(await db.collection('notifications').countDocuments({ userId: users[5].id, title: 'Tiền cọc đã được đối soát', activityId: id }), 1)
     assert.equal(expect(await call(2, '/activities/' + id + '/members')).items.find(item => item.userId === users[5].id)?.depositStatus, 'paid')
     expect(await call(2, path + '/plan', 'PUT', { version: group.version, itinerary: [null] }), 400)

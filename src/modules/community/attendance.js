@@ -5,15 +5,21 @@ const ownAttendance = (row, id) => row.attendance?.find(item => item.userId === 
 const snapshot = item => ({ status: item.status, updatedAt: item.updatedAt ? new Date(item.updatedAt).toISOString() : null, updatedBy: item.updatedBy || null })
 const member = (row, id) => row.hostId === id || row.joinRequests?.some(item => item.userId === id && item.status === 'approved') || row.attendance?.some(item => item.userId === id)
 export async function attendanceSummary(db, userId) {
+  return (await attendanceSummaries(db, [userId])).get(userId)
+}
+export async function attendanceSummaries(db, userIds) {
+  if (!userIds.length) return new Map()
   const rows = await db.collection('activities').aggregate([
-    { $match: { status: 'completed', 'attendance.userId': userId } }, { $unwind: '$attendance' },
-    { $match: { 'attendance.userId': userId, 'attendance.status': { $in: ['present', 'late', 'absent'] } } },
-    { $group: { _id: '$id', status: { $first: '$attendance.status' } } },
-    { $group: { _id: '$status', count: { $sum: 1 } } },
+    { $match: { status: 'completed', 'attendance.userId': { $in: userIds } } }, { $unwind: '$attendance' },
+    { $match: { 'attendance.userId': { $in: userIds }, 'attendance.status': { $in: ['present', 'late', 'absent'] } } },
+    { $group: { _id: { activity: '$id', user: '$attendance.userId' }, status: { $first: '$attendance.status' } } },
+    { $group: { _id: { user: '$_id.user', status: '$status' }, count: { $sum: 1 } } },
   ]).toArray()
-  const count = status => rows.find(row => row._id === status)?.count || 0
+  return new Map(userIds.map(userId => {
+  const count = status => rows.find(row => row._id.user === userId && row._id.status === status)?.count || 0
   const presentCount = count('present'), lateCount = count('late'), absentCount = count('absent'), attendanceCount = presentCount + lateCount + absentCount
-  return { attendanceCount, presentCount, lateCount, absentCount, absenceRate: attendanceCount ? Math.round(absentCount / attendanceCount * 1000) / 10 : null }
+  return [userId, { attendanceCount, presentCount, lateCount, absentCount, absenceRate: attendanceCount ? Math.round(absentCount / attendanceCount * 1000) / 10 : null }]
+  }))
 }
 
 export async function notifyUnmarkedStart(community, row, actorId) {

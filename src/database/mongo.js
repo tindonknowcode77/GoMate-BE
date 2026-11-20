@@ -4,7 +4,7 @@ import { setServers } from 'node:dns'
 export function createClient(config) {
   if (!config.mongodbUri) throw new Error('MONGODB_URI is required. Set it in GoMate-BE/.env.')
   if (config.mongodbDnsServers?.length) setServers(config.mongodbDnsServers)
-  return new MongoClient(config.mongodbUri, { maxPoolSize: 5, serverSelectionTimeoutMS: 10000 })
+  return new MongoClient(config.mongodbUri, { maxPoolSize: config.mongodbMaxPoolSize ?? 20, waitQueueTimeoutMS: 5000, serverSelectionTimeoutMS: 10000 })
 }
 
 export async function initializeDatabase(db) {
@@ -49,6 +49,15 @@ export async function initializeDatabase(db) {
   await db.collection('rating_submissions').createIndex({ activityId: 1, userId: 1 }, { unique: true })
   await db.collection('activity_ratings').createIndex({ activityId: 1, authorId: 1, targetUserId: 1 }, { unique: true, partialFilterExpression: { authorId: { $type: 'string' } } })
   await db.collection('activity_ratings').createIndex({ targetUserId: 1, createdAt: -1 })
+  await db.collection('activity_experience_ratings').createIndex({ activityId: 1, authorId: 1 }, { unique: true })
+  await db.collection('activity_experience_ratings').createIndex({ hostId: 1, createdAt: -1 })
+  await db.collection('activity_memories').createIndex({ activityId: 1, createdAt: -1 })
+  await db.collection('activities').createIndex({ 'invitations.userId': 1, 'invitations.status': 1 })
+  await db.collection('activities').createIndex({ status: 1, endsAt: 1 })
+  await db.collection('activities').createIndex({ autoCompletedAt: 1 })
+  await db.collection('reports').createIndex({ reporterId: 1, createdAt: -1 })
+  await db.collection('reports').createIndex({ status: 1, createdAt: -1 })
+  await db.collection('chat_messages').createIndex({ conversationId: 1, clientMessageId: 1 })
   await db.collection('friendships').createIndex({ key: 1 }, { unique: true })
   await db.collection('friendships').createIndex({ id: 1 }, { unique: true })
   await db.collection('friendships').createIndex({ participantIds: 1, status: 1, updatedAt: -1 })
@@ -63,6 +72,7 @@ export async function initializeDatabase(db) {
   await db.collection('activities').createIndex({ coordinates: '2dsphere' })
   await db.collection('activities').createIndex({ status: 1, startsAt: 1, id: 1 })
   await db.collection('activities').createIndex({ hostId: 1, createdAt: -1, id: 1 })
+  await db.collection('activities').createIndex({ hostId: 1, status: 1 })
   await db.collection('activities').createIndex({ 'joinRequests.userId': 1, 'joinRequests.status': 1 })
   await db.collection('users').createIndex({ email: 1 }, { unique: true })
   await db.collection('users').createIndex({ id: 1 }, { unique: true })

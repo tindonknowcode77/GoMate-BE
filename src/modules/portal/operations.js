@@ -6,8 +6,14 @@ import { activityReadiness } from '../../common/activity-readiness.js'
 import { planningFields } from '../../common/activity-plan.js'
 import { createFinanceRepository } from '../payment/finance.js'
 import { notifyUnmarkedStart } from '../community/attendance.js'
+import { findConfirmedConflict, cancelConflictingPending } from '../../common/time-conflict.js'
 
 const view = { _id: 0 }
+function hasUnpaidDeposits(row) {
+  if (!row.depositAmount) return false
+  const approved = (row.joinRequests ?? []).filter(item => item.status === 'approved')
+  return approved.some(member => !(row.businessReceipts ?? []).some(receipt => receipt.userId === member.userId && receipt.status === 'paid'))
+}
 function buildAttendanceRoster(row) {
   const existing = new Map((row.attendance ?? []).map(item => [item.userId, item]))
   const members = [{ userId: row.hostId, name: row.hostName }, ...(row.joinRequests ?? []).filter(item => item.status === 'approved').map(item => ({ userId: item.userId, name: item.name }))]
@@ -188,10 +194,13 @@ export function createBusinessOperations(db) {
       const date = new Date(+new Date(row.startsAt) + 7 * 3600000).toISOString().slice(0, 10)
       if (!Array.isArray(itinerary) || itinerary.length > 60) throw new HttpError(400, 'Provide at most 60 itinerary items')
       if (itinerary.some(item=>!item || typeof item!=='object' || Array.isArray(item) || Object.keys(item).some(key=>!['id','date','time','title','location','locationId','notes','place','note'].includes(key)))) throw new HttpError(400,'Invalid itinerary item')
-      for (const item of itinerary) if(item.locationId && !await locations.findOne({id:item.locationId,ownerId:row.hostId})) throw new HttpError(400,'Invalid itinerary location')
+      const locIds = [...new Set(itinerary.map(item => item.locationId).filter(Boolean))]
+      const locDocs = locIds.length ? await locations.find({ id: { $in: locIds }, ownerId: row.hostId }, { projection: { _id: 0, id: 1, name: 1, address: 1 } }).toArray() : []
+      const locMap = new Map(locDocs.map(doc => [doc.id, doc]))
+      if (locIds.some(locId => !locMap.has(locId))) throw new HttpError(400, 'Invalid itinerary location')
       const normalized = itinerary.map(item => ({ id: typeof item.id==='string' && /^[a-zA-Z0-9_-]{1,100}$/.test(item.id) ? item.id : randomUUID(), date: item.date || date, time: item.time, title: item.title, place: item.location || item.place || '', note: item.notes || item.note || '' }))
       const patch = planningFields({ itinerary: normalized }, row)
-      for (const step of patch.itinerary) { const source=itinerary[normalized.findIndex(item=>item.id===step.id)]; if(source?.locationId) {const place=await locations.findOne({id:source.locationId,ownerId:row.hostId});step.place=(place.name+' · '+place.address).slice(0,200);} }
+      for (const step of patch.itinerary) { const source=itinerary[normalized.findIndex(item=>item.id===step.id)]; if(source?.locationId) {const place=locMap.get(source.locationId);step.place=(place.name+' · '+place.address).slice(0,200);} }
       return change(row, userId, version, { ...patch, lastPlanUpdatedAt: new Date(), businessPlanLocations:Object.fromEntries(normalized.flatMap((item,index)=>itinerary[index].locationId?[[item.id,itinerary[index].locationId]]:[])), ...(row.status === 'published' ? { scheduleConfirmedAt: null, scheduleConfirmedBy: null } : {}) }, 'business-plan-updated')
     },
     async recordDeposit(userId, id, version, memberId, status) {
@@ -243,13 +252,17 @@ export function createBusinessOperations(db) {
       const now = new Date()
       const cleanNote = String(note || '').trim().slice(0, 300)
       const updatedLeaveReqs = (row.leaveRequests ?? []).map(item => item.id === requestId ? { ...item, status, reviewedBy: userId, reviewedAt: now, reviewNote: cleanNote } : item)
-      await activities.updateOne({ id, version: row.version }, { $set: { leaveRequests: updatedLeaveReqs, updatedAt: now }, $inc: { version: 1 } })
+      const leaveRes = await activities.updateOne({ id, version: row.version }, { $set: { leaveRequests: updatedLeaveReqs, updatedAt: now }, $inc: { version: 1 } })
+      if (!leaveRes.modifiedCount) throw new HttpError(409, 'Group changed. Reload before saving.')
       if (status === 'approved') {
         const removed = await repository.removeMember(id, reqItem.userId, reqItem.userId, false)
-        if (removed) {
-          await finance.onMemberRemoved(id, reqItem.userId, false, now, { approvedByHost: true, reason: reqItem.reason })
-          await repository.lifecycle(removed, row.hostId, {}, { id: randomUUID(), type: 'note', actorId: userId, createdAt: now, text: `Thành viên ${reqItem.name || ''} đã rời nhóm (được Doanh nghiệp chấp thuận). Lý do: ${reqItem.reason}` })
+        if (!removed) {
+          // Roll back leave request status if member removal could not proceed.
+          await activities.updateOne({ id }, { $set: { leaveRequests: row.leaveRequests ?? [], updatedAt: new Date() }, $inc: { version: 1 } })
+          throw new HttpError(409, 'Không thể hoàn tất rời nhóm ở trạng thái hiện tại. Hãy tải lại.')
         }
+        await finance.onMemberRemoved(id, reqItem.userId, false, now, { approvedByHost: true, reason: reqItem.reason })
+        await repository.lifecycle(removed, row.hostId, {}, { id: randomUUID(), type: 'note', actorId: userId, createdAt: now, text: `Thành viên ${reqItem.name || ''} đã rời nhóm (được Doanh nghiệp chấp thuận). Lý do: ${reqItem.reason}` })
         await community.notify(reqItem.userId, { key: `leave-decision:${requestId}:approved`, type: 'activity', title: 'Yêu cầu rời nhóm đã được chấp thuận', text: `${row.title} · Bạn được hoàn 100% tiền cọc trong Ví.`, activityId: id, actorId: userId })
       } else {
         await community.notify(reqItem.userId, { key: `leave-decision:${requestId}:rejected`, type: 'activity', title: 'Yêu cầu rời nhóm chưa được chấp thuận', text: `${row.title}${cleanNote ? ` · ${cleanNote}` : ''}`, activityId: id, actorId: userId })
@@ -259,8 +272,16 @@ export function createBusinessOperations(db) {
     async decideMember(userId, id, version, requestId, status) {
       const row = await group(userId, id)
       if (row.version !== version) throw new HttpError(409, 'Group changed')
+      const targetReq = (row.joinRequests ?? []).find(item => item.id === requestId && item.status === 'pending')
+      if (status === 'approved' && targetReq) {
+        const conflict = await findConfirmedConflict(db, targetReq.userId, row)
+        if (conflict) throw new HttpError(409, `Thành viên đã có hoạt động "${conflict.title}" trùng khung giờ này.`, 'SCHEDULE_CONFLICT')
+      }
       const request = await repository.changeJoinRequest(id, { hostId: row.hostId, requestId, status, version })
       if (!request) throw new HttpError(409, 'Request changed, group full or no longer upcoming')
+      if (status === 'approved') {
+        await cancelConflictingPending(db, request.userId, row, { community, actorId: userId })
+      }
       await community.notify(request.userId, { key: 'business-decision:' + request.id + ':' + status, type: 'activity', title: status === 'approved' ? 'Yêu cầu đã được duyệt' : 'Yêu cầu chưa được duyệt', text: row.title, activityId: id, actorId: userId })
       return groupView(await repository.get(id))
     },
@@ -297,12 +318,14 @@ export function createBusinessOperations(db) {
         if (!readiness.ready) throw new HttpError(409, readiness.reason)
         if (action === 'confirm-schedule') {
           if (row.startsAt <= new Date()) throw new HttpError(409, 'Adjust the schedule first')
-          if (row.depositAmount && row.joinRequests.filter(item => item.status === 'approved').some(member => !row.businessReceipts?.some(receipt => receipt.userId === member.userId && receipt.status === 'paid'))) throw new HttpError(409, 'Còn thành viên chưa được ghi nhận tiền cọc.')
+          if (hasUnpaidDeposits(row)) throw new HttpError(409, 'Còn thành viên chưa được ghi nhận tiền cọc.')
           return change(row, userId, version, { scheduleConfirmedAt: new Date(), scheduleConfirmedBy: userId }, 'schedule-confirmed')
         }
+        if (!row.scheduleConfirmedAt) throw new HttpError(409, 'Cần chốt lịch trước khi bắt đầu hoạt động.')
+        if (hasUnpaidDeposits(row)) throw new HttpError(409, 'Còn thành viên chưa được ghi nhận tiền cọc.')
         const now = new Date()
         const attendance = buildAttendanceRoster(row)
-        const result = await change(row, userId, version, { status: 'in-progress', startedAt: now, scheduleConfirmedAt: row.scheduleConfirmedAt || now, scheduleConfirmedBy: row.scheduleConfirmedBy || userId, attendance }, 'started')
+        const result = await change(row, userId, version, { status: 'in-progress', startedAt: now, attendance }, 'started')
         await notifyUnmarkedStart(community, { ...row, attendance, startedAt: now }, userId).catch(() => { console.warn('Start attendance notifications deferred') })
         return result
       }

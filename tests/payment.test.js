@@ -199,14 +199,12 @@ test('VietQR payment module and QR scanning flow', async (t) => {
       assert.equal(data.pendingPayment, null)
     })
 
-    await t.test('Idempotent confirm on already paid payment', async () => {
+    await t.test('Non-admin member cannot self-confirm payment', async () => {
       const res = await fetch(`${base}/payments/${paymentId}/confirm`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       })
-      assert.equal(res.status, 200)
-      const data = await res.json()
-      assert.equal(data.payment.status, 'paid')
+      assert.equal(res.status, 403)
     })
 
     await t.test('GET /api/payments/history returns user payment history and summary', async () => {
@@ -371,10 +369,16 @@ test('VietQR payment module and QR scanning flow', async (t) => {
       assert.equal(qrRes.status, 201)
       const { payment } = await qrRes.json()
 
-      const confirmRes = await fetch(`${base}/payments/${payment.id}/confirm`, {
+      const confirmRes = await fetch(`${base}/payments/webhook`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({}),
+        headers: { 'Content-Type': 'application/json', 'x-gomate-webhook-secret': 's'.repeat(32) },
+        body: JSON.stringify({
+          description: `CHUYEN TIEN ${payment.orderCode} COC GOMATE`,
+          amount: payment.amount,
+          transactionRef: `FT-SOLO-${payment.orderCode}`,
+          direction: 'in',
+          accountNo: '0901234567',
+        }),
       })
       assert.equal(confirmRes.status, 200)
 
@@ -437,10 +441,16 @@ test('VietQR payment module and QR scanning flow', async (t) => {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokA}` },
         body: JSON.stringify({ activityId: lateAct.id }),
       })).json()).payment
-      await fetch(`${base}/payments/${payA.id}/confirm`, {
+      await fetch(`${base}/payments/webhook`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokA}` },
-        body: JSON.stringify({}),
+        headers: { 'Content-Type': 'application/json', 'x-gomate-webhook-secret': 's'.repeat(32) },
+        body: JSON.stringify({
+          description: `CHUYEN TIEN ${payA.orderCode} COC GOMATE`,
+          amount: payA.amount,
+          transactionRef: `FT-LATEA-${payA.orderCode}`,
+          direction: 'in',
+          accountNo: '0901234567',
+        }),
       })
 
       const payB = (await (await fetch(`${base}/payments/create-qr`, {
@@ -448,10 +458,16 @@ test('VietQR payment module and QR scanning flow', async (t) => {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokB}` },
         body: JSON.stringify({ activityId: lateAct.id }),
       })).json()).payment
-      await fetch(`${base}/payments/${payB.id}/confirm`, {
+      await fetch(`${base}/payments/webhook`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokB}` },
-        body: JSON.stringify({}),
+        headers: { 'Content-Type': 'application/json', 'x-gomate-webhook-secret': 's'.repeat(32) },
+        body: JSON.stringify({
+          description: `CHUYEN TIEN ${payB.orderCode} COC GOMATE`,
+          amount: payB.amount,
+          transactionRef: `FT-LATEB-${payB.orderCode}`,
+          direction: 'in',
+          accountNo: '0901234567',
+        }),
       })
 
       const noReasonRes = await fetch(`${base}/activities/${lateAct.id}/members/me`, {
@@ -543,10 +559,16 @@ test('VietQR payment module and QR scanning flow', async (t) => {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokC}` },
         body: JSON.stringify({ activityId: kickAct.id }),
       })).json()).payment
-      await fetch(`${base}/payments/${payC.id}/confirm`, {
+      await fetch(`${base}/payments/webhook`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokC}` },
-        body: JSON.stringify({}),
+        headers: { 'Content-Type': 'application/json', 'x-gomate-webhook-secret': 's'.repeat(32) },
+        body: JSON.stringify({
+          description: `CHUYEN TIEN ${payC.orderCode} COC GOMATE`,
+          amount: payC.amount,
+          transactionRef: `FT-KICKC-${payC.orderCode}`,
+          direction: 'in',
+          accountNo: '0901234567',
+        }),
       })
 
       const groupBefore = await db.collection('activities').findOne({ id: kickAct.id })

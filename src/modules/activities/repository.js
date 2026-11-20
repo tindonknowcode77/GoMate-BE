@@ -5,6 +5,7 @@ import { HttpError } from '../../common/http-error.js'
 import { publicActivity } from './validation.js'
 import { createCommunityRepository } from '../community/repository.js'
 import { staffGroupScope, isAssignedStaff, isStaffAccount, listAssignedStaff } from '../../common/business-staff-access.js'
+import { findConfirmedConflict, findOverlappingPending, cancelConflictingPending } from '../../common/time-conflict.js'
 
 export function createActivityRepository(db) {
   const activities = db.collection('activities')
@@ -25,6 +26,125 @@ export function createActivityRepository(db) {
     isAssignedStaff: (userId, activityId) => isAssignedStaff(db, userId, activityId),
     isStaffAccount: userId => isStaffAccount(db, userId),
     listAssignedStaff: activity => listAssignedStaff(db, activity),
+    async profilesByIds(userIds) {
+      const ids = [...new Set(userIds.filter(Boolean))]
+      if (!ids.length) return new Map()
+      const people = await db.collection('users').find({ id: { $in: ids } }, { projection: { _id: 0, id: 1, name: 1, avatar_url: 1, avatar_version: 1 } }).toArray()
+      return new Map(people.map(person => [person.id, {
+        name: person.name,
+        avatarUrl: person.avatar_url || (person.avatar_version ? `/api/profile/${person.id}/avatar?v=${person.avatar_version}` : null),
+      }]))
+    },
+    findConfirmedConflict: (userId, targetActivity) => findConfirmedConflict(db, userId, targetActivity),
+    findOverlappingPending: (userId, targetActivity) => findOverlappingPending(db, userId, targetActivity),
+    cancelConflictingPending: (userId, acceptedActivity, options) => cancelConflictingPending(db, userId, acceptedActivity, options),
+    async listMemories(activityId, page = 1, limit = 50) {
+      const memories = db.collection('activity_memories')
+      const query = { activityId, deletedAt: { $exists: false } }
+      const [rows, total] = await Promise.all([
+        memories.find(query, { projection: { _id: 0, imagePublicId: 0 } }).sort({ createdAt: -1, id: 1 }).skip((page - 1) * limit).limit(limit).toArray(),
+        memories.countDocuments(query),
+      ])
+      const profiles = await this.profilesByIds(rows.map(item => item.uploaderId))
+      const items = rows.map(item => {
+        const user = profiles.get(item.uploaderId)
+        return { ...item, uploaderName: user?.name || item.uploaderName || 'Thành viên', uploaderAvatarUrl: user?.avatarUrl ?? null }
+      })
+      return { items, total, page, limit, hasMore: page * limit < total }
+    },
+    async addMemory(activityId, user, { imageUrl, imagePublicId, caption = '' }) {
+      const now = new Date()
+      const row = {
+        id: randomUUID(),
+        activityId,
+        uploaderId: user.id,
+        uploaderName: user.name,
+        imageUrl,
+        imagePublicId: imagePublicId ?? null,
+        caption,
+        createdAt: now,
+      }
+      await db.collection('activity_memories').insertOne(row)
+      const { _id, imagePublicId: _pub, ...result } = row
+      return result
+    },
+    async deleteMemory(activityId, memoryId, actorId, isHost) {
+      const query = { id: memoryId, activityId, deletedAt: { $exists: false }, ...(!isHost ? { uploaderId: actorId } : {}) }
+      return db.collection('activity_memories').findOneAndUpdate(query, { $set: { deletedAt: new Date(), deletedBy: actorId } }, { returnDocument: 'after' })
+    },
+    async summary(activity, userId) {
+      const existing = new Map((activity.attendance ?? []).map(item => [item.userId, item]))
+      const approvedMembers = (activity.joinRequests ?? []).filter(item => item.status === 'approved')
+      const baseMembers = [
+        { userId: activity.hostId, name: activity.hostName, role: 'host' },
+        ...approvedMembers.map(item => ({ userId: item.userId, name: item.name, role: 'member' })),
+      ]
+      const roster = baseMembers.map(item => {
+        const record = existing.get(item.userId)
+        return { userId: item.userId, name: item.name, role: item.role, status: record?.status ?? 'unmarked' }
+      })
+      const userIds = [...new Set(roster.map(item => item.userId))]
+      const [people, expRatings, userSubmission, memories] = await Promise.all([
+        userIds.length ? db.collection('users').find({ id: { $in: userIds } }, { projection: { _id: 0, id: 1, name: 1, avatar_url: 1, avatar_version: 1 } }).toArray() : [],
+        db.collection('activity_experience_ratings').aggregate([
+          { $match: { activityId: activity.id, score: { $gte: 1, $lte: 5 } } },
+          { $group: { _id: null, average: { $avg: '$score' }, count: { $sum: 1 } } },
+        ]).toArray(),
+        db.collection('rating_submissions').findOne({ activityId: activity.id, userId }, { projection: { _id: 0, createdAt: 1 } }),
+        db.collection('activity_memories').find({ activityId: activity.id, deletedAt: { $exists: false } }, { projection: { _id: 0 } }).sort({ createdAt: -1 }).limit(100).toArray(),
+      ])
+      const profileMap = new Map(people.map(person => [person.id, person]))
+      const enrichedMembers = roster.map(item => {
+        const person = profileMap.get(item.userId)
+        return {
+          ...item,
+          name: person?.name || item.name,
+          avatarUrl: person?.avatar_url || (person?.avatar_version ? `/api/profile/${item.userId}/avatar?v=${person.avatar_version}` : null),
+        }
+      })
+      const presentCount = enrichedMembers.filter(m => m.status === 'present').length
+      const lateCount = enrichedMembers.filter(m => m.status === 'late').length
+      const absentCount = enrichedMembers.filter(m => m.status === 'absent').length
+      const unmarkedCount = enrichedMembers.filter(m => m.status === 'unmarked').length
+      const isHost = activity.hostId === userId
+      const currentMember = enrichedMembers.find(m => m.userId === userId)
+      const canRate = activity.status === 'completed' && (
+        (isHost && activity.organizerType === 'business') ||
+        ['present', 'late'].includes(currentMember?.status)
+      )
+      return {
+        activityId: activity.id,
+        title: activity.title,
+        category: activity.category,
+        organizerType: activity.organizerType || 'personal',
+        status: activity.status,
+        startsAt: activity.startsAt,
+        endsAt: activity.endsAt ?? null,
+        completedAt: activity.completedAt ?? activity.autoCompletedAt ?? null,
+        location: activity.location,
+        imageUrl: activity.imageUrl ?? null,
+        hostId: activity.hostId,
+        hostName: activity.hostName,
+        attendance: {
+          total: enrichedMembers.length,
+          attendedCount: presentCount + lateCount,
+          presentCount,
+          lateCount,
+          absentCount,
+          unmarkedCount,
+          members: enrichedMembers,
+        },
+        rating: {
+          average: expRatings[0]?.average ?? null,
+          count: expRatings[0]?.count ?? 0,
+          hasRated: Boolean(userSubmission),
+          canRate: Boolean(canRate),
+          isHost,
+        },
+        memories,
+        coverImages: activity.imageUrls ?? (activity.imageUrl ? [activity.imageUrl] : []),
+      }
+    },
     async create(fields, host) {
       const now = new Date()
       const normTitle = String(fields.title || '').trim().toLowerCase()
@@ -82,7 +202,7 @@ export function createActivityRepository(db) {
     },
     // Keep requests and capacity in one document so approval is atomic even on standalone MongoDB.
     async submitJoinRequest(id, user, version) {
-      const target = await activities.findOne({ id }); if (target && !await audience.canView(target, user.id)) return null
+      const target = await activities.findOne({ id }, { projection: { planFileData: 0 } }); if (target && !await audience.canView(target, user.id)) return null
       const now = new Date()
       const autoApprove = target?.organizerType === 'business' && target.autoApproveMembers === true
       const policy = target?.autoApproveMembers === true ? true : { $ne: true }
@@ -100,7 +220,7 @@ export function createActivityRepository(db) {
         autoApproveMembers: policy,
         ...(version !== undefined ? { version } : {}),
         $or: [{ registrationDeadline: null }, { registrationDeadline: { $gt: now } }],
-        joinRequests: { $elemMatch: { userId: user.id, status: { $in: ['cancelled', 'rejected', 'left', 'removed'] } } },
+        joinRequests: { $elemMatch: { userId: user.id, status: { $in: ['cancelled', 'cancelled_conflict', 'rejected', 'left', 'removed'] } } },
         $expr: { $lt: ['$memberCount', '$maxParticipants'] },
       }, { $set: { 'joinRequests.$': request, updatedAt: now, ...(autoApprove ? { scheduleConfirmedAt: null, scheduleConfirmedBy: null } : {}) }, $inc: { version: 1, ...(autoApprove ? { memberCount: 1 } : {}) } }, { returnDocument: 'after' })
       return retry ? request : null
@@ -157,7 +277,7 @@ export function createActivityRepository(db) {
     },
     async invitations(userId, page, limit) {
       const query = { status: 'published', startsAt: { $gt: new Date() }, invitations: { $elemMatch: { userId, status: 'pending' } } }
-      const [rows, total] = await Promise.all([activities.find(query).sort({ createdAt: -1, id: 1 }).skip((page - 1) * limit).limit(limit).toArray(), activities.countDocuments(query)])
+      const [rows, total] = await Promise.all([activities.find(query, { projection: { planFileData: 0 } }).sort({ createdAt: -1, id: 1 }).skip((page - 1) * limit).limit(limit).toArray(), activities.countDocuments(query)])
       return { items: rows.map(row => ({ ...row.invitations.find(item => item.userId === userId && item.status === 'pending'), activityId: row.id, activity: publicActivity(row) })), total, page, limit, hasMore: page * limit < total }
     },
     async addFriends(previous, people, useReservedSeats) {
@@ -265,13 +385,14 @@ export function createActivityRepository(db) {
         { $facet: {
           items: [{ $skip: (options.page - 1) * options.limit }, { $limit: options.limit },
             { $project: { _id: 0, id: 1, title: 1, hostId: 1, hostName: 1, location: 1, organizerType: { $ifNull: ['$organizerType', 'personal'] }, coordinates: 1, startsAt: 1,
+              requestStatus: { $let: { vars: { own: { $arrayElemAt: [{ $filter: { input: { $ifNull: ['$joinRequests', []] }, as: 'request', cond: { $eq: ['$$request.userId', userId] } } }, 0] } }, in: '$$own.status' } },
               address: 1, province: 1, district: 1, ward: 1, costNote: 1, reservedSeats: 1, itinerary: 1, planLink: 1, planFile: 1, memberCount: 1, minParticipants: 1, maxParticipants: 1, participantPreferences: 1, endsAt: 1, registrationDeadline: 1, meetingPoint: 1, financialConfig: 1, category: 1, tags: 1, description: 1, estimatedCost: 1,
               requirements: 1, plan: 1, imageUrl: 1, imageUrls: 1, business: 1, distanceKm: geo ? { $divide: ['$distanceMeters', 1000] } : { $literal: null },
             } }], total: [{ $count: 'count' }],
         } })
       const [result] = await db.collection('activities').aggregate(pipeline, { maxTimeMS: 5000 }).toArray()
       const total = result?.total[0]?.count ?? 0
-      const reputations = new Map(await Promise.all([...new Set((result?.items ?? []).map(row => row.hostId))].map(async id => [id, await community.reputation(id)])))
+      const reputations = await community.reputations((result?.items ?? []).map(row => row.hostId))
       const hostProfiles = await db.collection('users').find({ id: { $in: [...new Set((result?.items ?? []).map(row => row.hostId))] } }, { projection: { id: 1, avatar_url: 1, avatar_version: 1 } }).toArray()
       const avatars = new Map(hostProfiles.map(user => [user.id, user.avatar_url ?? (user.avatar_version ? `/api/profile/${user.id}/avatar?v=${user.avatar_version}` : null)]))
       const items = (result?.items ?? []).map(row => ({ ...row, hostAvatarUrl: avatars.get(row.hostId) ?? null, hostRating: reputations.get(row.hostId)?.average, hostRatingCount: reputations.get(row.hostId)?.count, hostCompletedActivities: reputations.get(row.hostId)?.completedActivities }))

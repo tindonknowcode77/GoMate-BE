@@ -9,7 +9,7 @@ export function createPaymentRepository(db, community) {
   const amountValue = amount => { if (!Number.isSafeInteger(amount) || amount <= 0 || amount > 1000000000) throw new HttpError(400, 'Số tiền ngân hàng phải là số nguyên VND từ 1 đến 1 tỷ.'); return amount }
   async function recordIncoming(paymentId, { transactionRef, amount, confirmedBy, method, evidence = '' }) {
     amountValue(amount)
-    if (!['admin-bank-reconciliation', 'bank-webhook', 'vietqr-auto-confirm'].includes(method)) throw new HttpError(403, 'Phương thức xác nhận thanh toán không hợp lệ.')
+    if (!['admin-bank-reconciliation', 'bank-webhook', 'admin-manual-confirm', 'demo-self-confirm'].includes(method)) throw new HttpError(403, 'Phương thức xác nhận thanh toán không hợp lệ.')
     if (typeof transactionRef !== 'string' || !/^[\w./:-]{6,120}$/.test(transactionRef)) throw new HttpError(400, 'Cần mã giao dịch ngân hàng hợp lệ (6–120 ký tự).')
     const reference = transactionRef.trim().toUpperCase(), eventId = createHash('sha256').update(reference).digest('hex')
     try { await events.insertOne({ _id: eventId, id: eventId, transactionRef: reference, amount, paymentId: paymentId || null, source: method, actorId: confirmedBy, evidence, applied: false, createdAt: new Date() }) }

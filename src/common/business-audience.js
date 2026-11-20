@@ -39,7 +39,15 @@ export function createBusinessAudience(db) {
     const posts = await db.collection('business_posts').find({ status: includeClosed ? { $in: ['approved','withdrawn'] } : 'approved' }, { projection: { id: 1, ownerId: 1, groups: 1 } }).toArray()
     const managed = includeClosed ? await activities.find(await staffGroupScope(db, userId), { projection: { id: 1 } }).toArray() : []
     const saved = new Map((await assignments.find({ userId, postId: { $in: posts.map(post => post.id) } }).toArray()).map(row => [row.postId, row.activityId]))
-    const chosen = await Promise.all(posts.filter(post => post.ownerId !== userId).map(async post => { const id = saved.get(post.id) || await choose(userId, post.id); const state = post.groups?.find(group => group.activityId === id)?.state; return state === 'deleted' || state === 'withdrawn' && !includeClosed ? null : id }))
+    const savedRows = saved.size ? await activities.find({ id: { $in: [...saved.values()] } }, { projection: { id: 1, status: 1, businessRevoked: 1 } }).toArray() : []
+    const byId = new Map(savedRows.map(row => [row.id, row]))
+    const chosen = await Promise.all(posts.filter(post => post.ownerId !== userId).map(async post => {
+      const savedId = saved.get(post.id), savedGroup = post.groups?.find(group => group.activityId === savedId), activity = byId.get(savedId)
+      const reusable = savedGroup && activity && savedGroup.state !== 'deleted' && (includeClosed || savedGroup.state !== 'withdrawn' && activity.status === 'published' && !activity.businessRevoked)
+      const id = reusable ? savedId : await choose(userId, post.id)
+      const state = post.groups?.find(group => group.activityId === id)?.state
+      return state === 'deleted' || state === 'withdrawn' && !includeClosed ? null : id
+    }))
     return { $or: [{ businessPostId: { $exists: false } }, { hostId: userId }, { id: { $in: [...chosen.filter(Boolean), ...managed.map(row => row.id)] }, ...(!includeClosed ? { businessRevoked: { $ne: true } } : {}) }] }
   }
   return { choose, canView, scope }

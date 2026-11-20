@@ -20,7 +20,7 @@ function integer(value, fallback, max) {
   return Number(value)
 }
 
-export function createChatRouter(repository, authRepository, { streamIntervalMs = 1000 } = {}) {
+export function createChatRouter(repository, authRepository, { streamIntervalMs = 30000 } = {}) {
   const router = Router(), streams = new Map()
   router.use(authenticate(authRepository))
   router.use(express.json({ limit: '16kb' }))
@@ -33,14 +33,17 @@ export function createChatRouter(repository, authRepository, { streamIntervalMs 
     res.status(200).json({ conversation: await repository.create(req.auth.user.id, req.body) })
   })
   router.get('/', async (req, res) => {
-    query(req, ['page', 'limit'])
-    res.json(await repository.list(req.auth.user.id, integer(req.query.page, 1, 500), integer(req.query.limit, 20, 50)))
+    query(req, ['page', 'limit', 'q', 'type', 'unread'])
+    if ((req.query.q?.length ?? 0) > 100 || req.query.type !== undefined && !['group', 'direct'].includes(req.query.type) || req.query.unread !== undefined && req.query.unread !== 'true') throw new HttpError(400, 'Invalid conversation filter')
+    res.json(await repository.list(req.auth.user.id, integer(req.query.page, 1, 500), integer(req.query.limit, 20, 50), { q: req.query.q, type: req.query.type, unread: req.query.unread === 'true' }))
   })
+  router.get('/unread-count', async (req, res) => { query(req, []); res.json({ unreadCount: await repository.unreadCount(req.auth.user.id) }) })
   router.get('/:id', async (req, res) => { query(req, []); res.json({ conversation: await repository.snapshot(req.params.id, req.auth.user.id) }) })
   router.get('/:id/messages', async (req, res) => {
-    query(req, ['before', 'limit'])
+    query(req, ['before', 'after', 'limit'])
     if (req.query.before !== undefined && !cursor(req.query.before)) throw new HttpError(400, 'Invalid cursor')
-    res.json(await repository.history(req.params.id, req.auth.user.id, { before: req.query.before, limit: integer(req.query.limit, 30, 100) }))
+    if (req.query.after !== undefined && !cursor(req.query.after) || req.query.before && req.query.after) throw new HttpError(400, 'Invalid cursor')
+    res.json(await repository.history(req.params.id, req.auth.user.id, { before: req.query.before, after: req.query.after, limit: integer(req.query.limit, 30, 100) }))
   })
   router.post('/:id/messages', writes, async (req, res) => {
     res.status(200).json({ message: await repository.send(req.params.id, req.auth.user.id, messageContent(req.body)) })
@@ -87,11 +90,14 @@ export function createChatRouter(repository, authRepository, { streamIntervalMs 
     streams.set(userId, (streams.get(userId) ?? 0) + 1)
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-store', 'X-Accel-Buffering': 'no' })
     res.flushHeaders()
-    let closed = false, timer, last = '', heartbeat = Date.now()
+    let closed = false, timer, last = '', heartbeat = Date.now(), running = false, queued = false
+    const changed = id => { if (id === req.params.id) void tick() }
+    repository.events?.on('conversation', changed)
     const started = Date.now()
     const close = () => {
       if (closed) return
       closed = true; clearTimeout(timer)
+      repository.events?.off('conversation', changed)
       const count = (streams.get(userId) ?? 1) - 1
       if (count) streams.set(userId, count); else streams.delete(userId)
       res.end()
@@ -101,6 +107,8 @@ export function createChatRouter(repository, authRepository, { streamIntervalMs 
       if (!closed && !res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)) close()
     }
     async function tick() {
+      if (running) { queued = true; return }
+      running = true; clearTimeout(timer)
       try {
         if (closed) return
         if (Date.now() - started > 300000) { emit('reconnect', {}); close(); return }
@@ -113,7 +121,8 @@ export function createChatRouter(repository, authRepository, { streamIntervalMs 
       } catch (error) {
         if (!closed) { emit(error.status === 403 || error.status === 404 ? 'access-revoked' : 'stream-error', { status: error.status ?? 500 }); close() }
       }
-      if (!closed) timer = setTimeout(tick, streamIntervalMs)
+      finally { running = false }
+      if (!closed) { timer = setTimeout(tick, queued ? 0 : streamIntervalMs); queued = false }
     }
     void tick()
   })

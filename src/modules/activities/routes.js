@@ -10,6 +10,7 @@ import { planKeys, planningFields } from '../../common/activity-plan.js'
 import { companionFields } from '../../common/companions.js'
 import { randomUUID } from 'node:crypto'
 import { canParticipate, genders, religions } from '../../common/preferences.js'
+import { createAttendanceQrToken, verifyAttendanceQrToken } from '../../common/qr-attendance.js'
 
 const categories = activityCategories
 export function searchOptions(query) {
@@ -79,15 +80,15 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const result = await repository.owned(req.auth.user.id, page, limit)
     res.json({ ...result, items: result.items.map(publicActivity) })
   })
-  router.use('/:id', async (req, _res, next) => { const row = await repository.get(req.params.id); if (row && repository.canViewBusinessGroup && !await repository.canViewBusinessGroup(row, req.auth.user.id)) throw new HttpError(404, 'Activity not found'); next(); })
-  async function find(id, owner, allowStaff = false) {
-    const row = await repository.get(id)
+  router.use('/:id', async (req, _res, next) => { const row = await repository.get(req.params.id); if (row && repository.canViewBusinessGroup && !await repository.canViewBusinessGroup(row, req.auth.user.id)) throw new HttpError(404, 'Activity not found'); req._activity = row; next(); })
+  async function find(id, owner, allowStaff = false, cached) {
+    const row = cached !== undefined ? cached : await repository.get(id)
     if (!row) throw new HttpError(404, 'Activity not found')
     if (owner && row.hostId !== owner && !(allowStaff && await repository.isAssignedStaff(owner, row.id))) throw new HttpError(403, 'Only the host can change this activity')
     return row
   }
   router.get('/:id', async (req, res) => {
-    const row = await find(req.params.id)
+    const row = await find(req.params.id, undefined, false, req._activity)
     const isBusinessManager = await repository.isAssignedStaff(req.auth.user.id, row.id)
     if (row.status !== 'published' && row.hostId !== req.auth.user.id && !isBusinessManager && !row.joinRequests?.some(item => item.userId === req.auth.user.id && item.status === 'approved')) throw new HttpError(404, 'Activity not found')
     const reputation = await authRepository.community?.reputation(row.hostId)
@@ -112,12 +113,20 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   }
   async function gallery(body, owner) {
     if (body.photosBase64 === undefined && body.coverBase64 === undefined) return null
-    const images = []
-    try {
-      for (const value of body.photosBase64 ?? [body.coverBase64]) images.push(await cover(value, owner))
-      return { imageUrl: images[0]?.url ?? null, imagePublicId: images[0]?.publicId ?? null,
-        imageUrls: images.map(image => image.url), imagePublicIds: images.map(image => image.publicId) }
-    } catch (error) { await Promise.all(images.map(image => cleanup(image.publicId))); throw error }
+    const inputs = body.photosBase64 ?? [body.coverBase64]
+    const settled = await Promise.allSettled(inputs.map(value => cover(value, owner)))
+    const uploaded = settled.filter(r => r.status === 'fulfilled').map(r => r.value)
+    const failed = settled.find(r => r.status === 'rejected')
+    if (failed) {
+      await Promise.all(uploaded.map(image => cleanup(image.publicId)))
+      throw failed.reason
+    }
+    return {
+      imageUrl: uploaded[0]?.url ?? null,
+      imagePublicId: uploaded[0]?.publicId ?? null,
+      imageUrls: uploaded.map(image => image.url),
+      imagePublicIds: uploaded.map(image => image.publicId),
+    }
   }
   const cleanGallery = async row => { await Promise.all([...new Set(row.imagePublicIds ?? (row.imagePublicId ? [row.imagePublicId] : []))].map(cleanup)) }
   const writes = rateLimit({ windowMs: 15 * 60 * 1000, limit: 40, keyGenerator: req => req.auth.user.id, standardHeaders: 'draft-8', legacyHeaders: false })
@@ -168,6 +177,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
         const readiness = activityReadiness(activity)
         if (!readiness.ready) throw new HttpError(409, readiness.reason)
         if (!activity.scheduleConfirmedAt) throw new HttpError(409, 'Cần chốt lịch trước khi bắt đầu hoạt động.')
+        if (activity.organizerType === 'business' && activity.depositAmount && (activity.joinRequests ?? []).filter(item => item.status === 'approved').some(member => !activity.businessReceipts?.some(receipt => receipt.userId === member.userId && receipt.status === 'paid'))) throw new HttpError(409, 'Còn thành viên chưa được ghi nhận tiền cọc.')
         if (activity.endsAt && activity.endsAt <= new Date()) throw new HttpError(409, 'Hoạt động đã hết thời gian.')
       }
       const entry = event(req, starting ? 'started' : 'completed')
@@ -191,6 +201,11 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     if (activity.hostId !== req.auth.user.id && !activity.joinRequests?.some(item => item.userId === req.auth.user.id && item.status === 'approved') && !await repository.isAssignedStaff(req.auth.user.id, activity.id)) throw new HttpError(403, 'Only host, assigned staff and approved members can view this data')
     return activity
   }
+  router.get('/:id/summary', async (req, res) => {
+    const activity = await groupActivity(req)
+    if (activity.status !== 'completed') throw new HttpError(409, 'Tổng kết chỉ khả dụng sau khi hoạt động kết thúc.')
+    res.json({ summary: await repository.summary(activity, req.auth.user.id) })
+  })
   for (const kind of ['attendance', 'updates']) {
     router.get(`/:id/${kind}`, async (req, res) => {
       const activity = await groupActivity(req)
@@ -217,6 +232,104 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     await saveLifecycle(activity, req, { attendance }, entry)
     if (req.body.status === 'absent' && target.userId !== req.auth.user.id) await authRepository.community?.notify(target.userId, { key: `attendance-absent:${activity.id}:${target.userId}:${entry.id}`, type: 'attendance', title: 'Trạng thái điểm danh: Vắng mặt', text: `Bạn được ghi nhận vắng mặt tại ${activity.title}. Mở thông báo để xem điểm danh và gửi khiếu nại lên Admin nếu có nhầm lẫn.`, activityId: activity.id, actorId: req.auth.user.id })
     res.json({ attendance: attendance.find(item => item.userId === target.userId) })
+  })
+  router.put('/:id/attendance/bulk', writes, json, async (req, res) => {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) throw new HttpError(400, 'Invalid bulk attendance body')
+    const { markAll, items = [] } = req.body
+    if (markAll !== undefined && !['present', 'absent', 'late', 'unmarked'].includes(markAll)) throw new HttpError(400, 'Invalid markAll status')
+    if (!Array.isArray(items) || items.length > 500) throw new HttpError(400, 'Invalid items list')
+    for (const item of items) {
+      if (!item || typeof item.userId !== 'string' || !['present', 'absent', 'late', 'unmarked'].includes(item.status)) {
+        throw new HttpError(400, 'Each attendance item requires userId and valid status')
+      }
+    }
+    const activity = await find(req.params.id, req.auth.user.id, true)
+    const correction = activity.status === 'completed' && activity.autoCompletedAt && Date.now() - new Date(activity.autoCompletedAt).getTime() < 86400000
+    if (!['published', 'in-progress'].includes(activity.status) && !correction) throw new HttpError(409, 'Đã hết thời gian cập nhật điểm danh.')
+    const roster = buildAttendanceRoster(activity)
+    const overrideMap = new Map(items.map(item => [item.userId, item.status]))
+    const now = new Date()
+    const newlyAbsent = []
+    const attendance = roster.map(member => {
+      if (member.correctionReportId) return member
+      const nextStatus = overrideMap.has(member.userId) ? overrideMap.get(member.userId) : (markAll ?? member.status)
+      if (correction && (member.status !== 'unmarked' || nextStatus === 'unmarked')) return member
+      if (nextStatus === member.status) return member
+      if (nextStatus === 'absent' && member.userId !== req.auth.user.id) newlyAbsent.push(member.userId)
+      return { ...member, status: nextStatus, updatedAt: now, updatedBy: req.auth.user.id }
+    })
+    const entry = event(req, 'attendance-bulk-changed', { count: attendance.length })
+    await saveLifecycle(activity, req, { attendance }, entry)
+    await Promise.all(newlyAbsent.map(uid => authRepository.community?.notify(uid, {
+      key: `attendance-absent:${activity.id}:${uid}:${entry.id}`,
+      type: 'attendance',
+      title: 'Trạng thái điểm danh: Vắng mặt',
+      text: `Bạn được ghi nhận vắng mặt tại ${activity.title}. Mở thông báo để xem điểm danh và gửi khiếu nại lên Admin nếu có nhầm lẫn.`,
+      activityId: activity.id,
+      actorId: req.auth.user.id,
+    })))
+    res.json({ items: attendance })
+  })
+  router.post('/:id/attendance/qr-token', writes, json, async (req, res) => {
+    const activity = await find(req.params.id, req.auth.user.id, true)
+    if (!['published', 'in-progress'].includes(activity.status)) throw new HttpError(409, 'Chỉ tạo mã QR điểm danh khi hoạt động sắp diễn ra hoặc đang diễn ra.')
+    res.json({ qr: createAttendanceQrToken(activity.id, req.auth.user.id) })
+  })
+  router.post('/:id/attendance/qr-checkin', writes, json, async (req, res) => {
+    const token = typeof req.body?.token === 'string' ? req.body.token.trim() : ''
+    if (!token) throw new HttpError(400, 'Vui lòng cung cấp mã QR điểm danh.')
+    const activity = await groupActivity(req)
+    if (!['published', 'in-progress'].includes(activity.status)) throw new HttpError(409, 'Hoạt động không còn mở điểm danh.')
+    const verified = verifyAttendanceQrToken(token, activity.id)
+    if (!verified.ok) throw new HttpError(400, verified.reason)
+    const roster = buildAttendanceRoster(activity)
+    const target = roster.find(item => item.userId === req.auth.user.id)
+    if (!target) throw new HttpError(403, 'Bạn không nằm trong danh sách thành viên hoạt động này.')
+    if (target.correctionReportId) throw new HttpError(409, 'Kết quả điểm danh của bạn đã được Admin chốt.')
+    if (['present', 'late'].includes(target.status)) {
+      res.json({ attendance: target, alreadyCheckedIn: true })
+      return
+    }
+    const now = new Date()
+    const isLate = activity.startsAt && now.getTime() > new Date(activity.startsAt).getTime() + 15 * 60000
+    const nextStatus = isLate ? 'late' : 'present'
+    const entry = event(req, 'attendance-qr-checkin', { userId: target.userId, status: nextStatus })
+    const attendance = roster.map(item => item.userId === target.userId ? { ...item, status: nextStatus, checkedInMethod: 'qr', updatedAt: now, updatedBy: req.auth.user.id } : item)
+    await saveLifecycle(activity, req, { attendance }, entry)
+    res.json({ attendance: attendance.find(item => item.userId === target.userId), alreadyCheckedIn: false })
+  })
+  router.get('/:id/memories', async (req, res) => {
+    const activity = await groupActivity(req)
+    const page = Number(req.query.page ?? 1), limit = Number(req.query.limit ?? 50)
+    if (!Number.isInteger(page) || page < 1 || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new HttpError(400, 'Invalid pagination')
+    res.json(await repository.listMemories(activity.id, page, limit))
+  })
+  router.post('/:id/memories', writes, express.json({ limit: '16mb' }), async (req, res) => {
+    const activity = await groupActivity(req)
+    if (!['published', 'in-progress', 'completed'].includes(activity.status)) throw new HttpError(409, 'Không thể đăng ảnh kỷ niệm cho hoạt động này.')
+    const imageBase64 = req.body?.imageBase64
+    const caption = typeof req.body?.caption === 'string' ? req.body.caption.trim().slice(0, 300) : ''
+    if (typeof imageBase64 !== 'string' || !imageBase64) throw new HttpError(400, 'Vui lòng chọn ảnh kỷ niệm.')
+    const uploaded = await cover(imageBase64, req.auth.user.id)
+    try {
+      const memory = await repository.addMemory(activity.id, req.auth.user, {
+        imageUrl: uploaded.url,
+        imagePublicId: uploaded.publicId,
+        caption,
+      })
+      res.status(201).json({ memory })
+    } catch (error) {
+      if (uploaded?.publicId) await cleanup(uploaded.publicId)
+      throw error
+    }
+  })
+  router.delete('/:id/memories/:memoryId', writes, async (req, res) => {
+    const activity = await groupActivity(req)
+    const isHost = activity.hostId === req.auth.user.id || await repository.isAssignedStaff(req.auth.user.id, activity.id)
+    const deleted = await repository.deleteMemory(activity.id, req.params.memoryId, req.auth.user.id, isHost)
+    if (!deleted) throw new HttpError(404, 'Không tìm thấy ảnh kỷ niệm hoặc bạn không có quyền xóa.')
+    if (deleted.imagePublicId) await cleanup(deleted.imagePublicId)
+    res.status(204).end()
   })
   router.post('/:id/updates', writes, json, async (req, res) => {
     if (!req.body || Array.isArray(req.body) || Object.keys(req.body).some(key => !['text', 'clientId'].includes(key)) || (req.body.clientId !== undefined && (typeof req.body.clientId !== 'string' || !/^[a-zA-Z0-9_-]{8,100}$/.test(req.body.clientId))) || typeof req.body.text !== 'string' || !req.body.text.trim() || req.body.text.length > 1000) throw new HttpError(400, 'Provide only text of 1-1000 characters')
@@ -257,10 +370,17 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const items = [{ userId: activity.hostId, name: activity.hostName, role: 'host' },
       ...staffMembers.map(item => ({ userId: item.userId, name: item.name, role: 'staff', title: item.title || 'Nhân sự quản lý' })),
       ...approved.filter(item => !staffIds.has(item.userId)).map(item => ({ userId: item.userId, name: item.name, role: 'member', ...(depositAmount > 0 ? { depositAmount, depositStatus: receipts.get(item.userId)?.status || 'pending' } : {}) }))]
-    const paged = await Promise.all(items.slice((page - 1) * limit, page * limit).map(async item => {
-      const user = await authRepository.getProfile(item.userId)
-      return { ...item, name: user?.name ?? item.name, avatarUrl: user?.avatar_url ?? null }
-    }))
+    const slice = items.slice((page - 1) * limit, page * limit)
+    const profiles = repository.profilesByIds ? await repository.profilesByIds(slice.map(item => item.userId)) : null
+    const paged = profiles
+      ? slice.map(item => {
+          const user = profiles.get(item.userId)
+          return { ...item, name: user?.name ?? item.name, avatarUrl: user?.avatarUrl ?? null }
+        })
+      : await Promise.all(slice.map(async item => {
+          const user = await authRepository.getProfile(item.userId)
+          return { ...item, name: user?.name ?? item.name, avatarUrl: user?.avatar_url ?? null }
+        }))
     res.json({ items: paged, total: items.length, page, limit, hasMore: page * limit < items.length })
   })
   async function removeMember(req, res, hostAction) {
@@ -332,11 +452,16 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     if (req.body.status === 'accepted') {
       if (!await authRepository.resolveFriends(previous.hostId, [req.auth.user.id]) || await authRepository.community?.blocked(previous.hostId, req.auth.user.id)) throw new HttpError(403, 'Không thể nhận lời mời từ tài khoản này.')
       if (!canParticipate(previous.participantPreferences, await authRepository.getProfile(req.auth.user.id))) throw new HttpError(403, 'Hồ sơ chưa đáp ứng điều kiện hoạt động.', 'PROFILE_REQUIREMENTS_NOT_MET')
+      const conflict = await repository.findConfirmedConflict?.(req.auth.user.id, previous)
+      if (conflict) throw new HttpError(409, `Bạn đã có hoạt động "${conflict.title}" trong khung giờ này.`, 'SCHEDULE_CONFLICT')
     }
     const row = await repository.decideInvitation(previous, invitation, req.body.status)
     if (!row) throw new HttpError(409, 'Lời mời không còn khả dụng, hoạt động đã đủ chỗ hoặc đã thay đổi. Hãy tải lại hoặc nhờ host tăng sức chứa.')
+    const cancelledConflicts = req.body.status === 'accepted'
+      ? await repository.cancelConflictingPending?.(req.auth.user.id, row, { community: authRepository.community, actorId: row.hostId }) ?? []
+      : []
     await authRepository.community?.notify(row.hostId, { key: 'invitation-decision:' + invitation.id, type: 'activity', title: req.body.status === 'accepted' ? 'Bạn bè đã đồng ý tham gia' : 'Bạn bè đã từ chối lời mời', text: req.auth.user.name + ' · ' + row.title, activityId: row.id, actorId: req.auth.user.id })
-    res.json({ activity: publicActivity(row) })
+    res.json({ activity: publicActivity(row), cancelledConflicts })
   })
   router.delete('/:id/members/me', writes, json, (req, res) => removeMember(req, res, false))
   router.delete('/:id/members/:userId', writes, json, (req, res) => removeMember(req, res, true))
@@ -358,6 +483,9 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     if (await authRepository.community?.blocked(req.auth.user.id, activity.hostId)) throw new HttpError(403, 'Không thể tham gia hoạt động của tài khoản đã chặn')
     if (activity.hostId === req.auth.user.id) throw new HttpError(403, 'Host cannot request to join their own activity')
     if (activity.participantPreferences && !canParticipate(activity.participantPreferences, await authRepository.getProfile(req.auth.user.id))) throw new HttpError(403, 'Hồ sơ chưa đáp ứng yêu cầu nhóm. Hãy kiểm tra giới tính, ngôn ngữ và tùy chọn cá nhân trong hồ sơ.', 'PROFILE_REQUIREMENTS_NOT_MET')
+    const conflict = await repository.findConfirmedConflict?.(req.auth.user.id, activity)
+    if (conflict) throw new HttpError(409, `Bạn đã có hoạt động "${conflict.title}" trong khung giờ này.`, 'SCHEDULE_CONFLICT')
+    const overlappingPending = await repository.findOverlappingPending?.(req.auth.user.id, activity) ?? []
     const request = await repository.submitJoinRequest(activity.id, req.auth.user, activity.version)
     if (!request) {
       const current = await repository.get(activity.id)
@@ -366,9 +494,16 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
       if (current?.registrationDeadline && current.registrationDeadline <= new Date()) throw new HttpError(409, 'Đã hết hạn đăng ký.', 'REGISTRATION_CLOSED')
       throw new HttpError(409, 'Hoạt động đã thay đổi hoặc không còn nhận đăng ký. Hãy tải lại.', 'ACTIVITY_UNAVAILABLE')
     }
+    let cancelledConflicts = []
+    if (request.status === 'approved') {
+      cancelledConflicts = await repository.cancelConflictingPending?.(req.auth.user.id, activity, { community: authRepository.community, actorId: activity.hostId }) ?? []
+    }
     await authRepository.community?.notify(activity.hostId, { key: `join:${request.id}`, type: 'activity', title: request.status === 'approved' ? 'Thành viên mới tham gia' : 'Yêu cầu tham gia mới', text: `${req.auth.user.name} · ${activity.title}`, activityId: activity.id, actorId: req.auth.user.id })
     if (request.status === 'approved') await authRepository.community?.notify(req.auth.user.id, { key: `decision:${request.id}:approved`, type: 'activity', title: 'Yêu cầu đã được duyệt', text: activity.title, activityId: activity.id, actorId: activity.hostId })
-    res.status(201).json({ request })
+    res.status(201).json({
+      request,
+      ...(request.status === 'approved' ? { cancelledConflicts } : { overlappingPending: overlappingPending.map(item => ({ activityId: item.id, title: item.title, startsAt: item.startsAt, endsAt: item.endsAt })) }),
+    })
   })
   router.delete('/:id/join-requests/me', writes, async (req, res) => {
     const activity = await find(req.params.id)
@@ -381,7 +516,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   router.get('/:id/join-requests', async (req, res) => {
     const activity = await find(req.params.id, req.auth.user.id, true)
     const { status, ...pagination } = req.query
-    if (status !== undefined && !['pending', 'approved', 'rejected', 'cancelled', 'left', 'removed', 'closed'].includes(status)) throw new HttpError(400, 'Invalid request status')
+    if (status !== undefined && !['pending', 'approved', 'rejected', 'cancelled', 'cancelled_conflict', 'left', 'removed', 'closed'].includes(status)) throw new HttpError(400, 'Invalid request status')
     if (Object.keys(pagination).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Only status, page and limit are supported')
     const { page, limit } = searchOptions(pagination)
     const items = (activity.joinRequests ?? []).filter(item => !status || item.status === status)
@@ -391,11 +526,19 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   router.patch('/:id/join-requests/:requestId', writes, express.json({ limit: '16kb' }), async (req, res) => {
     if (!req.body || Array.isArray(req.body) || Object.keys(req.body).length !== 1 || !['approved', 'rejected'].includes(req.body.status)) throw new HttpError(400, 'Provide only status: approved or rejected')
     const activity = await find(req.params.id, req.auth.user.id, true)
-    if (!activity.joinRequests?.some(item => item.id === req.params.requestId)) throw new HttpError(404, 'Join request not found')
+    const targetReq = activity.joinRequests?.find(item => item.id === req.params.requestId)
+    if (!targetReq) throw new HttpError(404, 'Join request not found')
+    if (req.body.status === 'approved') {
+      const conflict = await repository.findConfirmedConflict?.(targetReq.userId, activity)
+      if (conflict) throw new HttpError(409, `Thành viên đã có hoạt động "${conflict.title}" trùng khung giờ này.`, 'SCHEDULE_CONFLICT')
+    }
     const request = await repository.changeJoinRequest(activity.id, { hostId: activity.hostId, requestId: req.params.requestId, status: req.body.status })
     if (!request) throw new HttpError(409, 'Request is no longer pending, activity unavailable, or capacity reached')
+    const cancelledConflicts = request.status === 'approved'
+      ? await repository.cancelConflictingPending?.(request.userId, activity, { community: authRepository.community, actorId: req.auth.user.id }) ?? []
+      : []
     await authRepository.community?.notify(request.userId, { key: `decision:${request.id}:${request.status}`, type: 'activity', title: request.status === 'approved' ? 'Yêu cầu đã được duyệt' : 'Yêu cầu chưa được duyệt', text: activity.title, activityId: activity.id, actorId: req.auth.user.id })
-    res.json({ request })
+    res.json({ request, cancelledConflicts })
   })
   router.get('/:id/plan-file', async (req, res) => {
     const row = await repository.getWithPlanFile(req.params.id)
@@ -403,9 +546,9 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     if (row.status !== 'published' && row.hostId !== req.auth.user.id && !row.joinRequests?.some(item => item.userId === req.auth.user.id && item.status === 'approved') && !await repository.isAssignedStaff(req.auth.user.id, row.id)) throw new HttpError(403, 'Activity access denied')
     if (!row.planFile || !row.planFileData) throw new HttpError(404, 'Không có tệp kế hoạch')
     if (req.query.version && req.query.version !== row.planFile.id) throw new HttpError(409, 'Tệp đã được thay thế. Tải lại kế hoạch.')
-    res.attachment(row.planFile.name).type('application/octet-stream').send(Buffer.isBuffer(row.planFileData) ? row.planFileData : Buffer.from(row.planFileData.buffer))
+    res.attachment(row.planFile.name).type(row.planFile.mimeType || 'application/octet-stream').set('X-Content-Type-Options', 'nosniff').send(Buffer.isBuffer(row.planFileData) ? row.planFileData : Buffer.from(row.planFileData.buffer))
   })
-  router.patch('/:id/plan', writes, express.json({ limit: '5mb' }), async (req, res) => {
+  router.patch('/:id/plan', writes, express.json({ limit: '15mb' }), async (req, res) => {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).some(key => ![...planKeys, 'version'].includes(key)) || !planKeys.some(key => Object.hasOwn(req.body, key))) throw new HttpError(400, 'Invalid plan update')
     const previous = await find(req.params.id, req.auth.user.id, true)
     if (req.body.version !== (previous.version ?? 0)) throw new HttpError(409, 'Kế hoạch đã thay đổi. Tải lại trước khi lưu.')
@@ -450,8 +593,18 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
       if (!row) throw new HttpError(409, 'Activity changed. Reload and try again.')
     } catch (error) { if (images) await cleanGallery(images); throw error }
     if (images) await cleanGallery(previous)
-    row = await repository.lifecycle(row, req.auth.user.id, {}, event(req, 'activity-updated')) || row
-    await notifyMembers(row, req, `edited:${row.id}:${row.version}`, 'Host đã cập nhật hoạt động')
+    const changeLabels = []
+    if (fields.title && fields.title !== previous.title) changeLabels.push('Tiêu đề')
+    if ((fields.startsAt && String(fields.startsAt) !== String(previous.startsAt)) || (fields.endsAt && String(fields.endsAt) !== String(previous.endsAt))) changeLabels.push('Thời gian')
+    if ((fields.location && fields.location !== previous.location) || (fields.address && fields.address !== previous.address)) changeLabels.push('Địa điểm')
+    if (fields.meetingPoint !== undefined && fields.meetingPoint !== previous.meetingPoint) changeLabels.push('Điểm tập trung')
+    if (fields.estimatedCost !== undefined && fields.estimatedCost !== previous.estimatedCost) changeLabels.push('Chi phí')
+    if ((fields.minParticipants !== undefined && fields.minParticipants !== previous.minParticipants) || (fields.maxParticipants !== undefined && fields.maxParticipants !== previous.maxParticipants)) changeLabels.push('Sĩ số')
+    if (fields.description && fields.description !== previous.description) changeLabels.push('Mô tả')
+    if (images) changeLabels.push('Ảnh hoạt động')
+    const updateText = changeLabels.length ? `Host đã cập nhật hoạt động: ${changeLabels.join(', ')}` : 'Host đã cập nhật thông tin hoạt động'
+    row = await repository.lifecycle(row, req.auth.user.id, {}, event(req, 'activity-updated', { text: updateText })) || row
+    await notifyMembers(row, req, `edited:${row.id}:${row.version}`, updateText)
     res.json({ activity: publicActivity(row) })
   })
   router.delete('/:id', writes, async (req, res) => {

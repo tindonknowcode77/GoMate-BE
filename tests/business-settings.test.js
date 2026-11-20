@@ -72,21 +72,30 @@ test('business settings enforce owner access, atomic auto approval, current depo
   ok(await call(0, `/portal/posts/${post.id}/details`, 'PATCH', { ...details, status: 'approved' }), 400)
   const edited = ok(await call(0, `/portal/posts/${post.id}/details`, 'PATCH', details))
   assert.equal(edited.status, 'approved'); assert.equal(edited.version, post.version + 1)
+  assert.equal(edited.pendingRevision.title, details.title)
+  // Live activity must remain unchanged until Admin approves the revision (no moderation bypass).
+  activity = await repo.get(id)
+  assert.equal(activity.title, 'Settings workshop')
+  ok(await call(0, `/portal/posts/${post.id}/revision`, 'PATCH', { status: 'approved', reviewNote: 'Self approve', version: edited.version }), 403)
+  const approvedRev = ok(await call(1, `/portal/posts/${post.id}/revision`, 'PATCH', { status: 'approved', reviewNote: 'Approved revision', version: edited.version }))
+  assert.equal(approvedRev.pendingRevision, undefined)
   activity = await repo.get(id)
   assert.equal(activity.title, details.title); assert.equal(activity.description, details.copy)
   assert.equal(activity.business.offer, 'Coffee'); assert.equal(activity.depositAmount, 70000)
   assert.equal(activity.businessReceipts[0].amount, 50000); assert.equal(activity.autoApproveMembers, false)
   ok(await call(0, `/portal/posts/${post.id}/details`, 'PATCH', details), 409)
-  // A delayed retry of an older edit cannot overwrite a newer edit.
-  const newer = ok(await call(0, `/portal/posts/${post.id}/details`, 'PATCH', { ...details, version: edited.version, title: 'Newest title' }))
-  await createPostDetails(db).reconcile({ id: post.id, contentSync: { ...details, version: edited.version } })
+  // A delayed retry of an older edit cannot overwrite a newer approved revision.
+  const newerReq = ok(await call(0, `/portal/posts/${post.id}/details`, 'PATCH', { ...details, version: approvedRev.version, title: 'Newest title' }))
+  const newer = ok(await call(1, `/portal/posts/${post.id}/revision`, 'PATCH', { status: 'approved', reviewNote: 'OK', version: newerReq.version }))
+  await createPostDetails(db).reconcile({ id: post.id, contentSync: { ...details, version: approvedRev.version } })
   assert.equal((await repo.get(id)).title, newer.title)
   const interrupted = createPostDetails({ collection: name => {
     const collection = db.collection(name)
     return name === 'activities' ? { updateMany: async () => { throw Error('simulated network interruption') } } : collection
   } })
   const { version: _version, ...content } = details
-  await assert.rejects(() => interrupted.edit(post.id, users[0].id, newer.version, { ...content, title: 'Recovered after interruption' }), /simulated network/)
+  const queued = ok(await call(0, `/portal/posts/${post.id}/details`, 'PATCH', { ...content, version: newer.version, title: 'Recovered after interruption' }))
+  await assert.rejects(() => interrupted.reviewRevision(post.id, 'approved', 'OK', users[1].id, queued.version), /simulated network/)
   assert.ok((await db.collection('business_posts').findOne({ id: post.id })).contentSync)
   await auth.portal.reconcilePublications()
   assert.equal((await repo.get(id)).title, 'Recovered after interruption')

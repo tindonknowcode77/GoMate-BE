@@ -33,6 +33,11 @@ export function readConfig(env = process.env) {
     smtpPass: env.SMTP_PASS,
     mailFrom: env.MAIL_FROM || env.SMTP_USER,
     mongodbUri: env.MONGODB_URI,
+    mongodbMaxPoolSize: (() => {
+      const value = Number(env.MONGODB_MAX_POOL_SIZE ?? 20)
+      if (!Number.isInteger(value) || value < 1 || value > 200) throw new Error('MONGODB_MAX_POOL_SIZE must be between 1 and 200')
+      return value
+    })(),
     mongodbDnsServers,
     googleClientId: env.GOOGLE_CLIENT_ID?.trim() || '',
     // Only a public token may be exposed to the iframe/WebView.
@@ -44,6 +49,7 @@ export function readConfig(env = process.env) {
     vietqrAccountName: env.VIETQR_ACCOUNT_NAME?.trim() || 'CONG TY GOMATE',
     vietqrTemplate: env.VIETQR_TEMPLATE?.trim() || 'compact2',
     paymentWebhookSecret: env.PAYMENT_WEBHOOK_SECRET?.trim() || '',
+    allowDemoPaymentConfirm: env.ALLOW_DEMO_PAYMENT_CONFIRM === 'true' && env.NODE_ENV !== 'production',
     sessionTtlHours,
     rememberSessionTtlHours,
     trustProxyHops,

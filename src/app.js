@@ -4,6 +4,7 @@ import { createDraftRouter } from './modules/drafts/routes.js'
 import { createMapsRouter } from './modules/maps/routes.js'
 import express from 'express'
 import cors from 'cors'
+import compression from 'compression'
 import helmet from 'helmet'
 import { fileURLToPath } from 'node:url'
 import { extname, join } from 'node:path'
@@ -38,6 +39,21 @@ export function createApp(config = readConfig(), { authRepository, activityRepos
     } },
   }))
   app.use(cors({ origin: config.corsOrigin }))
+  app.use(compression({
+    // Event streams must flush immediately; byte-range media must preserve offsets.
+    filter: (req, res) => !req.headers.range && !String(res.getHeader('Content-Type') ?? '').startsWith('text/event-stream') && compression.filter(req, res),
+  }))
+  if (chatRepository?.events) app.use('/api', (req, res, next) => {
+    res.once('finish', () => {
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && res.statusCode < 400) {
+        if (/^\/api\/(activities|portal\/groups|portal\/posts|community\/blocks|community\/attendance)/.test(req.originalUrl)) {
+          const match = req.originalUrl.match(/^\/api\/(?:activities|portal\/groups)\/([0-9a-f-]{36})\b/i)
+          chatRepository.events.emit('activity', match?.[1] || null)
+        }
+      }
+    })
+    next()
+  })
   if (authRepository?.community) app.use('/api/community', createCommunityRouter(authRepository))
   if (authRepository) app.use('/api/friends', createFriendRouter(authRepository))
   if (authRepository) app.use('/api/profile', createProfileRouter(authRepository, config, avatarStorage))
@@ -83,7 +99,10 @@ export function createApp(config = readConfig(), { authRepository, activityRepos
     res.sendFile(fileURLToPath(new URL(config.mapboxAccessToken ? './map/mapbox-map.html' : './map/map.html', import.meta.url)))
   })
 
-  app.use(express.static(frontendDir, { index: false }))
+  app.use(express.static(frontendDir, { index: false, setHeaders(res, path) {
+    // Only content-addressed Expo assets are immutable across deployments.
+    res.setHeader('Cache-Control', /[.-][a-f0-9]{20,}\.[^.\\/]+$/.test(path) ? 'public, max-age=31536000, immutable' : 'no-cache')
+  } }))
   app.get('/{*path}', (req, res, next) => {
     if (extname(req.path) || !req.accepts('html')) return next()
     res.sendFile(join(frontendDir, 'index.html'), { headers: { 'Cache-Control': 'no-cache' } }, error => {

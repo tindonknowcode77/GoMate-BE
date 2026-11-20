@@ -62,8 +62,9 @@ test('verified escrow: adversarial payments, refunds, disputes and admin settlem
       ok(await call(3, '/payments/create-qr', 'POST', { activityId: first.id }), 403)
       ok(await call(2, '/payments/create-qr', 'POST', { type: 'wallet_topup', amount: 50000 }), 400)
     })
-    await t.test('auto-confirm immediately credits verified escrow and status polling is private', async () => {
-      const confirmed = ok(await call(2, `/payments/${first.payment.id}/confirm`, 'POST', {})).payment
+    await t.test('user cannot self-confirm; admin confirm immediately credits verified escrow and status polling is private', async () => {
+      ok(await call(2, `/payments/${first.payment.id}/confirm`, 'POST', {}), 403)
+      const confirmed = ok(await call(0, `/payments/${first.payment.id}/confirm`, 'POST', {})).payment
       assert.equal(confirmed.status, 'paid')
       assert.ok(confirmed.verification)
       ok(await call(null, `/payments/${first.payment.id}/status`), 401)

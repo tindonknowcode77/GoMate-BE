@@ -1,4 +1,6 @@
 import { createApp } from './app.js'
+import { createServer } from 'node:http'
+import { attachChatSockets } from './modules/chat/socket.js'
 import { readConfig } from './config/env.js'
 import { createClient, initializeDatabase } from './database/mongo.js'
 import { databaseStartupError } from './database/startup-error.js'
@@ -37,7 +39,9 @@ const reconcileActivities = async () => {
 await reconcileActivities()
 const scheduleTimer = setInterval(reconcileActivities, 30000)
 scheduleTimer.unref()
-const server = createApp(config, { authRepository, activityRepository, chatRepository }).listen(config.port, config.host, () => {
+const server = createServer(createApp(config, { authRepository, activityRepository, chatRepository }))
+const io = attachChatSockets(server, config, chatRepository, authRepository)
+server.listen(config.port, config.host, () => {
   console.log(`GoMate (FE + API) running at http://${config.host}:${config.port}`)
 })
 
@@ -51,6 +55,8 @@ server.on('error', async (error) => {
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => {
     clearInterval(scheduleTimer)
+    io.disconnectSockets(true)
+    io.engine.close()
     server.close(async () => {
       await client.close()
       process.exit(0)

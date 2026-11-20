@@ -10,6 +10,7 @@ import { adminText, adminId, adminQuery, adminPostFields, adminApplicationFields
 import { createAdminRoles } from './admin-roles.js'
 import { createAdminAnalytics, analyticsQuery } from './admin-analytics.js'
 import { createAdminBusinessHistory, historyQuery } from './admin-business-history.js'
+import { createPortalEnrichment } from './enrichment.js'
 
 const collections = { users: 'users', businesses: 'business_applications', posts: 'business_posts', reports: 'reports', tickets: 'support_tickets' }
 const userProjection = { _id: 0, id: 1, name: 1, email: 1, role: 1, adminRoleId: 1, subscription: 1, email_verified: 1, created_at: 1, createdAt: 1, adminVersion: 1, effectiveRole: 1, effectiveRoleName: 1, adminStatus: 1 }
@@ -19,6 +20,7 @@ const matchRevision = value => value === 0 ? { $in: [null, 0] } : value
 
 export function createAdminRepository(db) {
   const roleRepository = createAdminRoles(db)
+  const enrichment = createPortalEnrichment(db)
   const collection = kind => db.collection(collections[kind])
   const audit = (actorId, action) => ({ actorId, action, at: new Date() })
   async function roleMemberships(ids) {
@@ -49,7 +51,10 @@ export function createAdminRepository(db) {
     const filter = { id, deletedAt: { $exists: false }, ...(['businesses', 'posts'].includes(kind) ? { status: { $ne: 'deleted' } } : {}) }
     const row = kind === 'users' ? (await collection(kind).aggregate([{ $match: filter }, ...await userStages(), { $project: userProjection }], { maxTimeMS: 10000 }).toArray())[0] : await collection(kind).findOne(filter, { projection })
     if (!row) throw new HttpError(404, 'Không tìm thấy dữ liệu')
-    return { ...row, adminVersion: revision(row), ...(['businesses', 'posts'].includes(kind) ? { version: row.version ?? 0 } : {}) }
+    let result = { ...row, adminVersion: revision(row), ...(['businesses', 'posts'].includes(kind) ? { version: row.version ?? 0 } : {}) }
+    if (kind === 'businesses') result = (await enrichment.enrichBusinesses([result]))[0]
+    if (kind === 'posts') result = (await enrichment.enrichPosts([result]))[0]
+    return result
   }
   async function update(kind, id, expected, patch, actorId, extra = {}) {
     const row = await collection(kind).findOneAndUpdate({ id, deletedAt: { $exists: false }, adminVersion: matchRevision(expected), ...extra }, {
@@ -57,6 +62,15 @@ export function createAdminRepository(db) {
       $push: { adminHistory: audit(actorId, patch.deletedAt ? 'delete' : 'update') },
     }, { returnDocument: 'after', projection: kind === 'users' ? userProjection : projection })
     if (!row) throw new HttpError(409, 'Dữ liệu đã thay đổi hoặc không còn tồn tại. Vui lòng tải lại.')
+    if (kind === 'businesses' && patch.company && row.ownerId) {
+      // Cascade company name changes so posts, activities, and staff stay in sync.
+      await Promise.all([
+        db.collection('business_posts').updateMany({ ownerId: row.ownerId }, { $set: { businessName: row.company } }),
+        db.collection('activities').updateMany({ hostId: row.ownerId, organizerType: 'business' }, { $set: { hostName: row.company, 'business.name': row.company } }),
+        db.collection('business_staff').updateMany({ ownerId: row.ownerId }, { $set: { businessName: row.company } }),
+      ])
+    }
+    if (kind === 'businesses') return (await enrichment.enrichBusinesses([row]))[0]
     return row
   }
   return {
@@ -83,7 +97,10 @@ export function createAdminRepository(db) {
         ...(Object.keys(dateRange).length ? [{ $match: { _created: dateRange } }] : []),
         { $facet: { items: [{ $sort: { [sortField]: options.sortDirection === 'asc' ? 1 : -1, id: 1 } }, { $skip: (page - 1) * 20 }, { $limit: 20 }, { $project: kind === 'users' ? userProjection : { ...projection, _created: 0 } }], total: [{ $count: 'count' }] } },
       ], { maxTimeMS: 10000 }).toArray()
-      return { items: result.items.map(row => ({ ...row, adminVersion: revision(row), ...(['businesses', 'posts'].includes(kind) ? { version: row.version ?? 0 } : {}) })), total: result.total[0]?.count ?? 0 }
+      let items = result.items.map(row => ({ ...row, adminVersion: revision(row), ...(['businesses', 'posts'].includes(kind) ? { version: row.version ?? 0 } : {}) }))
+      if (kind === 'businesses') items = await enrichment.enrichBusinesses(items)
+      if (kind === 'posts') items = await enrichment.enrichPosts(items)
+      return { items, total: result.total[0]?.count ?? 0 }
     },
     async createUser(body, actorId) {
       const data = credentials(body, true)

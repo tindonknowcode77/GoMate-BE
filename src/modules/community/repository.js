@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import { realtimeEvents } from '../../common/realtime-events.js'
 import { HttpError } from '../../common/http-error.js'
-import { attendanceSummary, createAttendanceRepository } from './attendance.js'
+import { attendanceSummary, attendanceSummaries, createAttendanceRepository } from './attendance.js'
 
 export const defaultSettings = {
   allowFriendRequests: true, directMessages: 'everyone', discoverable: true,
@@ -17,7 +18,7 @@ export function createCommunityRepository(db) {
     if (actorId === userId || actorId && social && await blocked(userId, actorId)) return
     const prefs = await settings(userId)
     if (type !== 'attendance' && !(type === 'message' ? prefs.notifyMessages : type.startsWith('friend') ? prefs.notifyFriends : prefs.notifyActivity)) return
-    try { await notices.updateOne({ userId, key }, { $setOnInsert: { id: randomUUID(), userId, key, type, title, text, activityId, conversationId, actorId, createdAt: new Date(), readAt: null } }, { upsert: true }) }
+    try { const result = await notices.updateOne({ userId, key }, { $setOnInsert: { id: randomUUID(), userId, key, type, title, text, activityId, conversationId, actorId, createdAt: new Date(), readAt: null } }, { upsert: true }); if (result.upsertedCount) realtimeEvents(db).emit('user', userId) }
     catch (error) { if (error.code !== 11000) throw error }
     if (type === 'message' && conversationId) {
       const read = await db.collection('chat_reads').findOne({ userId, conversationId })
@@ -44,6 +45,7 @@ export function createCommunityRepository(db) {
       const query = { userId, ...(id ? { id } : {}) }
       if (id && !await notices.findOne(query)) throw new HttpError(404, 'Không tìm thấy thông báo')
       await notices.updateMany({ ...query, readAt: null }, { $set: { readAt: new Date() } })
+      realtimeEvents(db).emit('user', userId)
     },
     async listBlocks(ownerId) {
       const rows = await blocks.find({ ownerId }).sort({ createdAt: -1 }).toArray()
@@ -71,36 +73,76 @@ export function createCommunityRepository(db) {
       const row = await activity(activityId, userId)
       if (row.status !== 'completed') throw new HttpError(409, 'Chỉ đánh giá sau khi hoạt động kết thúc')
       const attended = new Set((row.attendance ?? []).filter(member => ['present', 'late'].includes(member.status)).map(member => member.userId))
+      if (row.organizerType === 'business') attended.add(row.hostId)
       if (!attended.has(userId) && row.organizerType === 'business') {
         const escrow = await db.collection('finance_escrows').findOne({ _id: activityId }, { projection: { lots: 1 } })
         if (escrow?.lots?.some(lot => lot.userId === userId && ['attended', 'disputed'].includes(lot.confirmation?.status))) attended.add(userId)
       }
       if (!attended.has(userId)) throw new HttpError(403, 'Bạn cần được host điểm danh có mặt hoặc đến muộn để đánh giá')
-      if (row.organizerType === 'business') attended.add(row.hostId)
+      const isHost = row.hostId === userId
       const ids = [row.hostId, ...(row.joinRequests ?? []).filter(member => member.status === 'approved').map(member => member.userId)].filter(id => id !== userId && attended.has(id))
       const people = await users.find({ id: { $in: ids } }, { projection: { _id: 0, id: 1, name: 1, avatar_url: 1 } }).toArray()
       const submitted = await db.collection('rating_submissions').findOne({ activityId, userId }, { projection: { _id: 0, activityId: 0, userId: 0 } })
-      return { activityId, title: row.title, members: people.map(person => ({ id: person.id, name: person.name, avatarUrl: person.avatar_url ?? null })), submitted }
+      return {
+        activityId,
+        title: row.title,
+        hostId: row.hostId,
+        isHost,
+        canRateActivity: !isHost,
+        canRateMembers: true,
+        members: people.map(person => ({ id: person.id, name: person.name, avatarUrl: person.avatar_url ?? null })),
+        submitted,
+      }
     },
     async rate(activityId, userId, body) {
       const form = await this.ratingForm(activityId, userId)
+      if (form.isHost) {
+        if (body.score !== null && body.score !== undefined) throw new HttpError(400, 'Host không cần đánh giá hoạt động do chính mình tạo.')
+        if (form.members.length > 0 && !body.members.length) throw new HttpError(400, 'Vui lòng đánh giá ít nhất một thành viên tham gia.')
+      } else {
+        if (!Number.isInteger(body.score) || body.score < 1 || body.score > 5) throw new HttpError(400, 'Điểm đánh giá hoạt động cần từ 1 đến 5.')
+      }
       if (body.members.some(item => !form.members.some(member => member.id === item.userId))) throw new HttpError(400, 'Chỉ đánh giá người cùng tham gia hoạt động')
+      const normalizedBody = { score: form.isHost ? null : body.score, comment: body.comment, members: body.members }
       const submissions = db.collection('rating_submissions')
       const existing = await submissions.findOne({ activityId, userId })
-      if (existing && JSON.stringify(existing.value) !== JSON.stringify(body)) throw new HttpError(409, 'Bạn đã gửi đánh giá cho hoạt động này')
-      const value = existing ?? { activityId, userId, value: body, createdAt: new Date() }
+      if (existing && JSON.stringify(existing.value) !== JSON.stringify(normalizedBody)) throw new HttpError(409, 'Bạn đã gửi đánh giá cho hoạt động này')
+      const value = existing ?? { activityId, userId, value: normalizedBody, createdAt: new Date() }
       if (!existing) { try { await submissions.insertOne(value) } catch (error) { if (error.code !== 11000) throw error; return this.rate(activityId, userId, body) } }
+      // Persist activity-level experience score for members (hosts never rate their own activity).
+      if (!form.isHost && normalizedBody.score) {
+        const expKey = { activityId, authorId: userId }
+        try {
+          await db.collection('activity_experience_ratings').updateOne(
+            expKey,
+            { $setOnInsert: { ...expKey, id: randomUUID(), hostId: form.hostId, score: normalizedBody.score, comment: normalizedBody.comment, activityTitle: form.title, createdAt: value.createdAt } },
+            { upsert: true }
+          )
+        } catch (error) { if (error.code !== 11000) throw error }
+      }
       // Idempotent writes also repair an interrupted request after submission was stored.
-      for (const item of body.members) {
+      for (const item of normalizedBody.members) {
         const key = { activityId, authorId: userId, targetUserId: item.userId }
-        try { await db.collection('activity_ratings').updateOne(key, { $setOnInsert: { ...key, id: randomUUID(), score: item.score, comment: body.comment, activityTitle: form.title, createdAt: value.createdAt } }, { upsert: true }) }
+        const memberComment = item.note !== undefined ? item.note : (form.isHost ? normalizedBody.comment : '')
+        try { await db.collection('activity_ratings').updateOne(key, { $setOnInsert: { ...key, id: randomUUID(), score: item.score, comment: memberComment, activityTitle: form.title, createdAt: value.createdAt } }, { upsert: true }) }
         catch (error) { if (error.code !== 11000) throw error }
       }
-      return { submitted: { value: body, createdAt: value.createdAt } }
+      return { submitted: { value: normalizedBody, createdAt: value.createdAt } }
     },
     async reputation(userId) {
       const [rating, completed] = await Promise.all([db.collection('activity_ratings').aggregate([{ $match: { targetUserId: userId, score: { $gte: 1, $lte: 5 } } }, { $group: { _id: null, average: { $avg: '$score' }, count: { $sum: 1 } } }]).toArray(), db.collection('activities').countDocuments({ hostId: userId, status: 'completed' })])
       return { average: rating[0]?.average ?? null, count: rating[0]?.count ?? 0, completedActivities: completed, ...await attendanceSummary(db, userId) }
+    },
+    async reputations(userIds) {
+      const ids = [...new Set(userIds)]
+      if (!ids.length) return new Map()
+      const [ratings, completed, attendance] = await Promise.all([
+        db.collection('activity_ratings').aggregate([{ $match: { targetUserId: { $in: ids }, score: { $gte: 1, $lte: 5 } } }, { $group: { _id: '$targetUserId', average: { $avg: '$score' }, count: { $sum: 1 } } }]).toArray(),
+        db.collection('activities').aggregate([{ $match: { hostId: { $in: ids }, status: 'completed' } }, { $group: { _id: '$hostId', count: { $sum: 1 } } }]).toArray(),
+        attendanceSummaries(db, ids),
+      ])
+      const byRating = new Map(ratings.map(row => [row._id, row])), byCompleted = new Map(completed.map(row => [row._id, row.count]))
+      return new Map(ids.map(id => [id, { average: byRating.get(id)?.average ?? null, count: byRating.get(id)?.count ?? 0, completedActivities: byCompleted.get(id) ?? 0, ...attendance.get(id) }]))
     },
     async moderationQueue() { return db.collection('reports').find({ deletedAt: { $exists: false } }, { projection: { _id: 0, key: 0 } }).sort({ createdAt: -1 }).limit(200).toArray() },
     async moderate(id, actorId, status, hideActivity) {

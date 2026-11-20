@@ -53,10 +53,16 @@ export function createCommunityRouter(auth) {
   router.get('/ratings/:activityId', async (req, res) => res.json(await repository.ratingForm(req.params.activityId, req.auth.user.id)))
   router.post('/ratings/:activityId', writes, async (req, res) => {
     body(req.body, ['score', 'comment', 'members'])
-    const { score, comment, members } = req.body
-    if (!Number.isInteger(score) || score < 1 || score > 5 || typeof comment !== 'string' || comment.length > 1000 || !Array.isArray(members) || members.length > 999 || new Set(members.map(item => item?.userId)).size !== members.length) throw new HttpError(400, 'Điểm cần từ 1 đến 5, nhận xét tối đa 1000 ký tự')
-    for (const item of members) { body(item, ['userId', 'score']); if (!isId(item.userId) || !Number.isInteger(item.score) || item.score < 1 || item.score > 5) throw new HttpError(400, 'Đánh giá thành viên không hợp lệ') }
-    res.json(await repository.rate(req.params.activityId, req.auth.user.id, { score, comment: comment.trim(), members: [...members].sort((a, b) => a.userId.localeCompare(b.userId)) }))
+    const { score = null, comment = '', members = [] } = req.body
+    if ((score !== null && (!Number.isInteger(score) || score < 1 || score > 5)) || typeof comment !== 'string' || comment.length > 1000 || !Array.isArray(members) || members.length > 999 || new Set(members.map(item => item?.userId)).size !== members.length) throw new HttpError(400, 'Điểm cần từ 1 đến 5, nhận xét tối đa 1000 ký tự')
+    const cleanMembers = []
+    for (const item of members) {
+      body(item, ['userId', 'score', 'note'])
+      if (!isId(item.userId) || !Number.isInteger(item.score) || item.score < 1 || item.score > 5) throw new HttpError(400, 'Đánh giá thành viên không hợp lệ')
+      if (item.note !== undefined && (typeof item.note !== 'string' || item.note.length > 500)) throw new HttpError(400, 'Nhận xét thành viên tối đa 500 ký tự')
+      cleanMembers.push({ userId: item.userId, score: item.score, ...(item.note !== undefined ? { note: item.note.trim() } : {}) })
+    }
+    res.json(await repository.rate(req.params.activityId, req.auth.user.id, { score, comment: comment.trim(), members: cleanMembers.sort((a, b) => a.userId.localeCompare(b.userId)) }))
   })
   return router
 }

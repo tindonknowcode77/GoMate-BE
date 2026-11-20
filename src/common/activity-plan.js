@@ -1,6 +1,17 @@
 import { randomUUID } from 'node:crypto'
 import { HttpError } from './http-error.js'
 
+const PLAN_FILE_TYPES = [
+  { ext: /\.xlsx$/i, mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', check: b => b.subarray(0, 4).toString('hex') === '504b0304' },
+  { ext: /\.xls$/i, mime: 'application/vnd.ms-excel', check: b => b.subarray(0, 8).toString('hex') === 'd0cf11e0a1b11ae1' },
+  { ext: /\.docx$/i, mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', check: b => b.subarray(0, 4).toString('hex') === '504b0304' },
+  { ext: /\.doc$/i, mime: 'application/msword', check: b => b.subarray(0, 8).toString('hex') === 'd0cf11e0a1b11ae1' },
+  { ext: /\.pdf$/i, mime: 'application/pdf', check: b => b.subarray(0, 4).toString('ascii') === '%PDF' },
+  { ext: /\.png$/i, mime: 'image/png', check: b => b.subarray(0, 8).toString('hex') === '89504e470d0a1a0a' },
+  { ext: /\.(jpe?g)$/i, mime: 'image/jpeg', check: b => b.subarray(0, 3).toString('hex') === 'ffd8ff' },
+  { ext: /\.webp$/i, mime: 'image/webp', check: b => b.subarray(0, 4).toString('ascii') === 'RIFF' && b.subarray(8, 12).toString('ascii') === 'WEBP' },
+]
+
 export const planKeys = ['itinerary', 'planLink', 'planAttachment']
 export function planningFields(body, activity) {
   const fields = {}
@@ -33,10 +44,15 @@ export function planningFields(body, activity) {
     if (body.planAttachment === null) { fields.planFile = null; fields.planFileData = null }
     else {
       const file = body.planAttachment
-      if (!file || typeof file !== 'object' || Array.isArray(file) || Object.keys(file).some(key => !['name', 'base64'].includes(key)) || typeof file.name !== 'string' || file.name.length > 120 || !/\.(xlsx|xls)$/i.test(file.name) || /[\/\\\r\n]/.test(file.name) || typeof file.base64 !== 'string' || file.base64.length > 4194304 || file.base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(file.base64)) throw new HttpError(400, 'Chọn tệp Excel .xlsx/.xls, tối đa 3 MB')
-      const buffer = Buffer.from(file.base64, 'base64'), xlsx = /\.xlsx$/i.test(file.name)
-      if (!buffer.length || buffer.length > 3 * 1024 * 1024 || (xlsx ? buffer.subarray(0, 4).toString('hex') !== '504b0304' : buffer.subarray(0, 8).toString('hex') !== 'd0cf11e0a1b11ae1')) throw new HttpError(400, 'Tệp Excel không hợp lệ')
-      fields.planFile = { id: randomUUID(), name: file.name.trim(), size: buffer.length, mimeType: xlsx ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/vnd.ms-excel' }
+      const matched = typeof file?.name === 'string' ? PLAN_FILE_TYPES.find(item => item.ext.test(file.name)) : null
+      if (!file || typeof file !== 'object' || Array.isArray(file) || Object.keys(file).some(key => !['name', 'base64'].includes(key)) || typeof file.name !== 'string' || file.name.length > 120 || !matched || /[\/\\\r\n]/.test(file.name) || typeof file.base64 !== 'string' || file.base64.length > 14000000 || file.base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(file.base64)) {
+        throw new HttpError(400, 'Chọn tệp PDF, Word, Excel hoặc ảnh (.png/.jpg/.webp), tối đa 10 MB')
+      }
+      const buffer = Buffer.from(file.base64, 'base64')
+      if (!buffer.length || buffer.length > 10 * 1024 * 1024 || !matched.check(buffer)) {
+        throw new HttpError(400, 'Tệp đính kèm không hợp lệ hoặc không đúng định dạng')
+      }
+      fields.planFile = { id: randomUUID(), name: file.name.trim(), size: buffer.length, mimeType: matched.mime }
       fields.planFileData = buffer
     }
   }

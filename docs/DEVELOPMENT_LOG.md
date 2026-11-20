@@ -1,5 +1,44 @@
 # Development log
 
+## 2026-11-20 - Event-driven chat and bounded data-loading work
+
+### Summary
+
+- Add authenticated Socket.IO snapshots and user invalidations with current
+  membership/session checks, disconnect cleanup and 30-second reconciliation.
+  Keep legacy SSE compatible while removing its one-second DB polling default.
+- Repair only missing activity-to-chat events; optimize known-group access and
+  batch conversation summaries and host reputations instead of per-row queries.
+- Add authorized unread-count and forward message-cursor APIs; apply inbox search,
+  type and unread filters before pagination. Include own request status in
+  discovery responses without exposing other users' join requests.
+- Repair stale campaign audience assignments, configure a bounded MongoDB pool,
+  compress HTTP responses and cache content-hashed static assets safely.
+
+### Files changed
+
+- `src/common/realtime-events.js`, `src/modules/chat/socket.js`, chat repository
+  and routes, activity chat-event synchronization/search, community summaries,
+  audience selection, app/server, database/config and `.env.example`.
+- Package manifests/lockfile, `tests/realtime-performance.test.js` and
+  `docs/REALTIME_AND_PERFORMANCE.md`.
+
+### Verification
+
+- `node --test --test-concurrency=2`: 203 passed.
+- Chat/performance regressions cover authorization/revocation, compressed REST,
+  literal inbox filters, unread totals, cursor recovery, audience replacement and
+  equivalence of batched reputation summaries.
+- Isolated snapshot with 100 existing updates: 118 -> 8 DB commands;
+  101 -> 0 write commands. FE browser tests verify actual socket delivery and
+  recovery of 125 missed messages against an isolated MongoDB/server.
+
+### Remaining work
+
+- Measure staging latency/pool saturation; verify native runtime. A shared
+  broker/adapter or change streams is needed for immediate cross-instance events;
+  current independent API processes converge through 30-second reconciliation.
+
 ## 2026-11-19 - Member refund QR, reputation and attendance appeals
 
 ### Summary

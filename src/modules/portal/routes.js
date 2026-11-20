@@ -63,6 +63,10 @@ export function createPortalRouter(auth) {
     fields(req.body, ['status', 'reviewNote', 'version'])
     res.json(await repo.decidePost(req.params.id, choice(req.body.status, ['approved', 'rejected']), text(req.body.reviewNote, 1000, true), req.auth.user.id, version(req.body.version)))
   })
+  router.patch('/posts/:id/revision', allow('admin'), writes, json, async (req, res) => {
+    fields(req.body, ['status', 'reviewNote', 'version'])
+    res.json(await repo.reviewPostRevision(req.params.id, choice(req.body.status, ['approved', 'rejected']), text(req.body.reviewNote, 1000, true), req.auth.user.id, version(req.body.version)))
+  })
   router.get('/users', allow('admin'), async (req, res) => {
     const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 120) : ''
     res.json(await repo.users(offset(req), q))
