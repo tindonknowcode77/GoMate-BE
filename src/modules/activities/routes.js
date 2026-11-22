@@ -298,6 +298,43 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     await saveLifecycle(activity, req, { attendance }, entry)
     res.json({ attendance: attendance.find(item => item.userId === target.userId), alreadyCheckedIn: false })
   })
+  router.post('/:id/attendance/gps-checkin', writes, json, async (req, res) => {
+    const lat = Number(req.body?.latitude), lng = Number(req.body?.longitude)
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      throw new HttpError(400, 'Tọa độ GPS không hợp lệ.')
+    }
+    const activity = await groupActivity(req)
+    if (!['published', 'in-progress'].includes(activity.status)) throw new HttpError(409, 'Hoạt động không còn mở điểm danh.')
+    const coords = activity.coordinates?.coordinates
+    if (!Array.isArray(coords) || coords.length < 2 || !Number.isFinite(coords[0]) || !Number.isFinite(coords[1])) {
+      throw new HttpError(409, 'Hoạt động này chưa có tọa độ bản đồ để điểm danh bằng GPS. Vui lòng quét mã QR của Host.')
+    }
+    const actLng = coords[0], actLat = coords[1]
+    const toRad = deg => (deg * Math.PI) / 180
+    const R = 6371000
+    const dLat = toRad(lat - actLat), dLng = toRad(lng - actLng)
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(actLat)) * Math.cos(toRad(lat)) * Math.sin(dLng / 2) ** 2
+    const distanceMeters = Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)))
+    const maxRadiusMeters = 300
+    if (distanceMeters > maxRadiusMeters) {
+      throw new HttpError(409, `Bạn đang cách địa điểm hoạt động ${distanceMeters}m (tối đa cho phép ${maxRadiusMeters}m). Hãy di chuyển lại gần điểm tập trung hoặc dùng mã QR.`)
+    }
+    const roster = buildAttendanceRoster(activity)
+    const target = roster.find(item => item.userId === req.auth.user.id)
+    if (!target) throw new HttpError(403, 'Bạn không nằm trong danh sách thành viên hoạt động này.')
+    if (target.correctionReportId) throw new HttpError(409, 'Kết quả điểm danh của bạn đã được Admin chốt.')
+    if (['present', 'late'].includes(target.status)) {
+      res.json({ attendance: target, alreadyCheckedIn: true, distanceMeters })
+      return
+    }
+    const now = new Date()
+    const isLate = activity.startsAt && now.getTime() > new Date(activity.startsAt).getTime() + 15 * 60000
+    const nextStatus = isLate ? 'late' : 'present'
+    const entry = event(req, 'attendance-gps-checkin', { userId: target.userId, status: nextStatus, distanceMeters })
+    const attendance = roster.map(item => item.userId === target.userId ? { ...item, status: nextStatus, checkedInMethod: 'gps', distanceMeters, updatedAt: now, updatedBy: req.auth.user.id } : item)
+    await saveLifecycle(activity, req, { attendance }, entry)
+    res.json({ attendance: attendance.find(item => item.userId === target.userId), alreadyCheckedIn: false, distanceMeters })
+  })
   router.get('/:id/memories', async (req, res) => {
     const activity = await groupActivity(req)
     const page = Number(req.query.page ?? 1), limit = Number(req.query.limit ?? 50)

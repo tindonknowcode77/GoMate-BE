@@ -130,6 +130,17 @@ test('Stage 3 mobile APIs: multi-format plans, bulk/QR attendance, memories albu
   assert.equal(checkin.body.attendance.status, 'present')
   assert.equal(checkin.body.attendance.checkedInMethod, 'qr')
 
+  // GPS check-in: reset m2 to unmarked, add coordinates to activity, reject far GPS (>300m), accept near GPS (<=300m)
+  await call(host.token, `/activities/${act.id}/attendance/${m2.id}`, 'PATCH', { status: 'unmarked' })
+  await db.collection('activities').updateOne({ id: act.id }, { $set: { coordinates: { type: 'Point', coordinates: [106.7009, 10.7769] } } })
+  const farGps = await call(m2.token, `/activities/${act.id}/attendance/gps-checkin`, 'POST', { latitude: 10.79, longitude: 106.72 })
+  assert.equal(farGps.status, 409)
+  const nearGps = await call(m2.token, `/activities/${act.id}/attendance/gps-checkin`, 'POST', { latitude: 10.777, longitude: 106.701 })
+  assert.equal(nearGps.status, 200, JSON.stringify(nearGps.body))
+  assert.equal(nearGps.body.attendance.status, 'present')
+  assert.equal(nearGps.body.attendance.checkedInMethod, 'gps')
+  assert.ok(nearGps.body.distanceMeters <= 300)
+
   // Upload memory photo -> shows in memories list AND summary
   const mem = await call(m1.token, `/activities/${act.id}/memories`, 'POST', {
     imageBase64: tinyPng,
