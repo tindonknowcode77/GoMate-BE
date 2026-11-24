@@ -25,6 +25,11 @@ export function createMapsRouter(config, authRepository, options = {}) {
     if (typeof req.body.id !== 'string' || !/^[a-zA-Z0-9_-]{1,256}$/.test(req.body.id) || !session(req.body.sessionToken)) throw new HttpError(400, 'Invalid place selection')
     res.json({ place: await service.details(req.body.id, req.body.sessionToken, req.auth.user.id) })
   })
+  router.post('/places/reverse', async (req, res) => {
+    body(req.body, ['point'])
+    if (!validPoint(req.body.point)) throw new HttpError(400, 'Invalid coordinates')
+    res.json({ place: await service.reverse(req.body.point) })
+  })
   router.post('/routes', rateLimit({ windowMs: 60000, limit: 12, keyGenerator: req => req.auth.user.id, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Đã đạt giới hạn tìm đường. Vui lòng thử lại sau.' } }), async (req, res) => {
     body(req.body, ['origin', 'destination', 'mode'])
     if (!validPoint(req.body.origin) || !validPoint(req.body.destination) || !['DRIVE', 'WALK'].includes(req.body.mode)) throw new HttpError(400, 'Invalid route request')

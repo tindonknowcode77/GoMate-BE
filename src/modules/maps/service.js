@@ -92,6 +92,51 @@ export function createMapsService(config, fetcher = fetch) {
       selections.delete(id)
       return selection.place
     },
+    async reverse(point) {
+      if (config.vietmapApiKey) {
+        try {
+          const data = await vietmap('/api/reverse/v3', { lat: point.latitude, lng: point.longitude }, true)
+          const item = data?.[0]
+          if (item && typeof item.display === 'string' && item.display) {
+            const boundaries = Array.isArray(item.boundaries) ? item.boundaries : []
+            const fields = [[0, 'administrative_area_level_1'], [1, 'administrative_area_level_2'], [2, 'administrative_area_level_3']]
+            const components = fields.flatMap(([type, mapped]) => {
+              const b = boundaries.find(row => row?.type === type)
+              return typeof b?.full_name === 'string' && b.full_name ? [{ name: b.full_name, types: [mapped] }] : []
+            })
+            return { id: randomUUID(), provider: 'vietmap', title: item.name || item.display, address: item.display, point, components, attributions: [] }
+          }
+        } catch {
+          // Fallback to Mapbox if configured
+        }
+      }
+      const data = await request('/search/geocode/v6/reverse', { longitude: point.longitude, latitude: point.latitude, language: 'vi', limit: 1 })
+      const feature = data?.features?.[0]
+      const props = feature?.properties
+      if (!props) {
+        return {
+          id: randomUUID(),
+          provider: 'mapbox',
+          title: `${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}`,
+          address: `${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}`,
+          point,
+          components: [],
+          attributions: [],
+        }
+      }
+      const context = props.context || {}
+      const mapping = { region: 'administrative_area_level_1', district: 'administrative_area_level_2', place: 'locality', locality: 'sublocality_level_1', neighborhood: 'sublocality', country: 'country' }
+      const components = Object.entries(mapping).flatMap(([key, type]) => typeof context[key]?.name === 'string' ? [{ name: context[key].name, types: [type] }] : [])
+      return {
+        id: randomUUID(),
+        provider: 'mapbox',
+        title: props.name || props.full_address || `${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}`,
+        address: props.full_address || props.name || `${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)}`,
+        point,
+        components,
+        attributions: [],
+      }
+    },
     async route(origin, destination, mode) {
       const profile = mode === 'WALK' ? 'walking' : 'driving'
       const data = await request(`/directions/v5/mapbox/${profile}/${origin.longitude},${origin.latitude};${destination.longitude},${destination.latitude}`, { overview: 'full', geometries: 'polyline', alternatives: false, steps: false })

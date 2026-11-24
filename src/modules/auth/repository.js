@@ -145,6 +145,72 @@ export function createAuthRepository(db) {
       const relations = await db.collection('friendships').find({ participantIds: userId, $or: [{ requesterId: { $in: people.map(item => item.id) } }, { recipientId: { $in: people.map(item => item.id) } }] }).toArray()
       return people.map(person => { const relation = relations.find(item => item.participantIds.includes(person.id)); return { id: person.id, name: person.name, username: person.username ?? '', location: person.location ?? '', avatarUrl: person.avatar_url ?? null, friendshipId: relation?.id, friendshipStatus: relation?.status, incoming: relation?.recipientId === userId } })
     },
+    async updateNearbyPresence(userId, { enabled, latitude, longitude }) {
+      const now = new Date()
+      if (!enabled) {
+        await users.updateOne({ id: userId }, { $set: { 'nearby.enabled': false, 'nearby.updatedAt': now } })
+        return { enabled: false, updatedAt: now }
+      }
+      await users.updateOne(
+        { id: userId },
+        {
+          $set: {
+            nearby: {
+              enabled: true,
+              latitude,
+              longitude,
+              updatedAt: now,
+            },
+          },
+        }
+      )
+      return { enabled: true, latitude, longitude, updatedAt: now }
+    },
+    async getNearbyPresence(userId) {
+      const user = await users.findOne({ id: userId }, { projection: { nearby: 1 } })
+      return user?.nearby?.enabled ? { enabled: true, latitude: user.nearby.latitude, longitude: user.nearby.longitude, updatedAt: user.nearby.updatedAt } : { enabled: false }
+    },
+    async searchNearbyPeople(userId, { latitude, longitude, radiusKm = 10 }) {
+      const excluded = await community.blockedIds(userId)
+      const people = await users.find(
+        {
+          id: { $nin: [userId, ...excluded] },
+          'settings.discoverable': { $ne: false },
+          'nearby.enabled': true,
+          'nearby.latitude': { $type: 'number' },
+          'nearby.longitude': { $type: 'number' },
+        },
+        { projection: { _id: 0, id: 1, name: 1, username: 1, location: 1, avatar_url: 1, nearby: 1 } }
+      ).limit(200).toArray()
+      const toRad = deg => (deg * Math.PI) / 180
+      const R = 6371
+      const withDistance = people.map(person => {
+        const dLat = toRad(person.nearby.latitude - latitude)
+        const dLng = toRad(person.nearby.longitude - longitude)
+        const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(latitude)) * Math.cos(toRad(person.nearby.latitude)) * Math.sin(dLng / 2) ** 2
+        const distanceKm = Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 10) / 10
+        return { person, distanceKm }
+      }).filter(item => item.distanceKm <= radiusKm).sort((a, b) => a.distanceKm - b.distanceKm).slice(0, 30)
+      const ids = withDistance.map(item => item.person.id)
+      const relations = ids.length
+        ? await db.collection('friendships').find({ participantIds: userId, $or: [{ requesterId: { $in: ids } }, { recipientId: { $in: ids } }] }).toArray()
+        : []
+      return withDistance.map(({ person, distanceKm }) => {
+        const relation = relations.find(item => item.participantIds.includes(person.id))
+        return {
+          id: person.id,
+          name: person.name,
+          username: person.username ?? '',
+          location: person.location ?? '',
+          avatarUrl: person.avatar_url ?? null,
+          distanceKm,
+          nearbyUpdatedAt: person.nearby?.updatedAt ?? null,
+          friendshipId: relation?.id,
+          friendshipStatus: relation?.status,
+          incoming: relation?.recipientId === userId,
+        }
+      })
+    },
     async friendship(userId, targetId) {
       const row = await db.collection('friendships').findOne({ key: JSON.stringify([userId, targetId].sort()) })
       return row ? { id: row.id, status: row.status, incoming: row.recipientId === userId } : { status: 'none' }

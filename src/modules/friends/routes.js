@@ -11,6 +11,33 @@ export function createFriendRouter(repository) {
     if (Object.keys(req.query).some(key => key !== 'q') || typeof req.query.q !== 'string' || req.query.q.trim().length < 2 || req.query.q.length > 60) throw new HttpError(400, 'Nhập ít nhất 2 ký tự tên hoặc Nickname')
     res.json({ items: await repository.searchPeople(req.auth.user.id, req.query.q.trim()) })
   })
+  router.get('/nearby/status', async (req, res) => {
+    res.json({ presence: await repository.getNearbyPresence(req.auth.user.id) })
+  })
+  router.put('/nearby/presence', writes, async (req, res) => {
+    const enabled = Boolean(req.body?.enabled)
+    if (!enabled) {
+      res.json({ presence: await repository.updateNearbyPresence(req.auth.user.id, { enabled: false }) })
+      return
+    }
+    const latitude = Number(req.body?.latitude), longitude = Number(req.body?.longitude)
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+      throw new HttpError(400, 'Tọa độ GPS không hợp lệ.')
+    }
+    res.json({ presence: await repository.updateNearbyPresence(req.auth.user.id, { enabled: true, latitude, longitude }) })
+  })
+  router.get('/nearby', searches, async (req, res) => {
+    const latitude = Number(req.query.lat), longitude = Number(req.query.lng)
+    const radiusKm = req.query.radiusKm !== undefined ? Number(req.query.radiusKm) : 10
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+      throw new HttpError(400, 'Tọa độ GPS không hợp lệ.')
+    }
+    if (!Number.isFinite(radiusKm) || radiusKm < 0.5 || radiusKm > 200) {
+      throw new HttpError(400, 'Bán kính quét không hợp lệ.')
+    }
+    await repository.updateNearbyPresence(req.auth.user.id, { enabled: true, latitude, longitude })
+    res.json({ items: await repository.searchNearbyPeople(req.auth.user.id, { latitude, longitude, radiusKm }) })
+  })
   for (const [path, pending] of [['/', false], ['/requests', true]]) router.get(path, async (req, res) => {
     if (Object.keys(req.query).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Invalid query')
     const page = Number(req.query.page ?? 1), limit = Number(req.query.limit ?? 20)

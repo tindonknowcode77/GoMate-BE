@@ -165,4 +165,21 @@ test('Stage 3 mobile APIs: multi-format plans, bulk/QR attendance, memories albu
   // Delete memory
   assert.equal((await call(m1.token, `/activities/${act.id}/memories/${mem.body.memory.id}`, 'DELETE')).status, 204)
   assert.equal((await call(m2.token, `/activities/${act.id}/memories`)).body.total, 0)
+
+  // Nearby GPS radar: m1 shares presence near District 1, m2 scans nearby and finds m1, then m1 hides presence
+  const shareRes = await call(m1.token, '/friends/nearby/presence', 'PUT', { enabled: true, latitude: 10.7769, longitude: 106.7009 })
+  assert.equal(shareRes.status, 200)
+  assert.equal(shareRes.body.presence.enabled, true)
+
+  const scanRes = await call(m2.token, '/friends/nearby?lat=10.778&lng=106.702&radiusKm=5')
+  assert.equal(scanRes.status, 200)
+  const foundM1 = scanRes.body.items.find(u => u.id === m1.id)
+  assert.ok(foundM1, 'm2 should discover m1 nearby')
+  assert.ok(foundM1.distanceKm <= 5)
+
+  const hideRes = await call(m1.token, '/friends/nearby/presence', 'PUT', { enabled: false })
+  assert.equal(hideRes.status, 200)
+  assert.equal(hideRes.body.presence.enabled, false)
+  const scanAfterHide = await call(m2.token, '/friends/nearby?lat=10.778&lng=106.702&radiusKm=5')
+  assert.equal(scanAfterHide.body.items.find(u => u.id === m1.id), undefined)
 })
