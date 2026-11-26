@@ -1,5 +1,19 @@
 # Match preferences and discovery
 
+Discovery also accepts `province`, `district`, and `ward` (plain strings, up to
+100 characters each). These filter the activity's event region before totals and
+pagination. Structured event fields take precedence over legacy `location` text;
+missing fields can use escaped case-insensitive legacy names/abbreviations.
+Neither the searcher's profile city nor the host's profile location is used to
+measure distance. `lat`/`lng` are the searcher's GPS and `activities.coordinates`
+is the event pin. Geographic filtering is a spherical straight-line distance.
+
+The FE radius slider selects 1–49 km or **50 km+**. At 50+, FE omits `distanceKm`
+but retains province/district/ward. Recommended/soonest region-only queries omit
+`lat`/`lng` so unpinned events remain eligible; nearest still uses GPS and pins.
+Choosing All provinces explicitly removes the province restriction. Existing
+API clients may continue using numeric `distanceKm` up to 500 km.
+
 All `/api/me/*` endpoints require the current bearer session, derive the user
 from it and return `Cache-Control: no-store`.
 

@@ -4,21 +4,128 @@ import { HttpError } from '../../common/http-error.js'
 const ownAttendance = (row, id) => row.attendance?.find(item => item.userId === id) || { userId: id, status: 'unmarked' }
 const snapshot = item => ({ status: item.status, updatedAt: item.updatedAt ? new Date(item.updatedAt).toISOString() : null, updatedBy: item.updatedBy || null })
 const member = (row, id) => row.hostId === id || row.joinRequests?.some(item => item.userId === id && item.status === 'approved') || row.attendance?.some(item => item.userId === id)
+export const REPUTATION_PRIOR = 10
+export const LATE_CANCEL_HOURS = 6
+export const LATE_CANCEL_WEIGHT = 0.5
+
+export function computeReputationMetrics({
+  presentCount = 0,
+  lateCount = 0,
+  absentCount = 0,
+  lateCancelCount = 0,
+  onTimeCancelCount = 0,
+  hostCancelledCount = 0,
+} = {}) {
+  const attendedCount = presentCount + lateCount
+  const attendanceCount = attendedCount + absentCount
+  const invalidAbsenceCount = Math.round((absentCount + lateCancelCount * LATE_CANCEL_WEIGHT) * 10) / 10
+  const denominator = REPUTATION_PRIOR + attendedCount + invalidAbsenceCount
+  const attendanceRate = Math.round(((REPUTATION_PRIOR + attendedCount) / denominator) * 1000) / 10
+  const absenceRate = Math.round((100 - attendanceRate) * 10) / 10
+  const isNewUser = attendanceCount === 0 && lateCancelCount === 0
+  return {
+    attendanceCount,
+    attendedCount,
+    presentCount,
+    lateCount,
+    absentCount,
+    lateCancelCount,
+    onTimeCancelCount,
+    hostCancelledCount,
+    invalidAbsenceCount,
+    attendanceRate,
+    absenceRate,
+    isNewUser,
+  }
+}
+
 export async function attendanceSummary(db, userId) {
   return (await attendanceSummaries(db, [userId])).get(userId)
 }
 export async function attendanceSummaries(db, userIds) {
   if (!userIds.length) return new Map()
-  const rows = await db.collection('activities').aggregate([
-    { $match: { status: 'completed', 'attendance.userId': { $in: userIds } } }, { $unwind: '$attendance' },
-    { $match: { 'attendance.userId': { $in: userIds }, 'attendance.status': { $in: ['present', 'late', 'absent'] } } },
-    { $group: { _id: { activity: '$id', user: '$attendance.userId' }, status: { $first: '$attendance.status' } } },
-    { $group: { _id: { user: '$_id.user', status: '$status' }, count: { $sum: 1 } } },
-  ]).toArray()
+  const lateCancelWindowMs = LATE_CANCEL_HOURS * 3600000
+  const [rows, cancelRows] = await Promise.all([
+    db.collection('activities').aggregate([
+      { $match: { status: 'completed', 'attendance.userId': { $in: userIds } } }, { $unwind: '$attendance' },
+      { $match: { 'attendance.userId': { $in: userIds }, 'attendance.status': { $in: ['present', 'late', 'absent'] } } },
+      { $group: { _id: { activity: '$id', user: '$attendance.userId' }, status: { $first: '$attendance.status' } } },
+      { $group: { _id: { user: '$_id.user', status: '$status' }, count: { $sum: 1 } } },
+    ]).toArray(),
+    db.collection('activities').aggregate([
+      { $match: { status: { $ne: 'deleted' }, 'joinRequests.userId': { $in: userIds } } },
+      { $unwind: '$joinRequests' },
+      { $match: { 'joinRequests.userId': { $in: userIds }, 'joinRequests.status': { $in: ['left', 'approved'] } } },
+      {
+        $project: {
+          activityId: '$id',
+          userId: '$joinRequests.userId',
+          category: {
+            $cond: [
+              { $eq: ['$status', 'cancelled'] },
+              'host_cancelled',
+              {
+                $cond: [
+                  { $ne: ['$joinRequests.status', 'left'] },
+                  'ignore',
+                  {
+                    $cond: [
+                      { $eq: ['$joinRequests.leaveType', 'late'] },
+                      'late_cancel',
+                      {
+                        $cond: [
+                          { $eq: ['$joinRequests.leaveType', 'on_time'] },
+                          'on_time_cancel',
+                          {
+                            $cond: [
+                              {
+                                $and: [
+                                  { $eq: [{ $type: '$startsAt' }, 'date'] },
+                                  { $eq: [{ $type: { $ifNull: ['$joinRequests.leftAt', '$joinRequests.updatedAt'] } }, 'date'] },
+                                  {
+                                    $lte: [
+                                      { $subtract: ['$startsAt', { $ifNull: ['$joinRequests.leftAt', '$joinRequests.updatedAt'] }] },
+                                      lateCancelWindowMs,
+                                    ],
+                                  },
+                                  {
+                                    $gte: [
+                                      { $subtract: ['$startsAt', { $ifNull: ['$joinRequests.leftAt', '$joinRequests.updatedAt'] }] },
+                                      0,
+                                    ],
+                                  },
+                                ],
+                              },
+                              'late_cancel',
+                              'on_time_cancel',
+                            ],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      },
+      { $match: { category: { $ne: 'ignore' } } },
+      { $group: { _id: { activity: '$activityId', user: '$userId' }, category: { $first: '$category' } } },
+      { $group: { _id: { user: '$_id.user', category: '$category' }, count: { $sum: 1 } } },
+    ]).toArray(),
+  ])
   return new Map(userIds.map(userId => {
-  const count = status => rows.find(row => row._id.user === userId && row._id.status === status)?.count || 0
-  const presentCount = count('present'), lateCount = count('late'), absentCount = count('absent'), attendanceCount = presentCount + lateCount + absentCount
-  return [userId, { attendanceCount, presentCount, lateCount, absentCount, absenceRate: attendanceCount ? Math.round(absentCount / attendanceCount * 1000) / 10 : null }]
+    const count = status => rows.find(row => row._id.user === userId && row._id.status === status)?.count || 0
+    const cancelCount = category => cancelRows.find(row => row._id.user === userId && row._id.category === category)?.count || 0
+    return [userId, computeReputationMetrics({
+      presentCount: count('present'),
+      lateCount: count('late'),
+      absentCount: count('absent'),
+      lateCancelCount: cancelCount('late_cancel'),
+      onTimeCancelCount: cancelCount('on_time_cancel'),
+      hostCancelledCount: cancelCount('host_cancelled'),
+    })]
   }))
 }
 

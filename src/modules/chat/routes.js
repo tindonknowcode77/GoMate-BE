@@ -78,9 +78,14 @@ export function createChatRouter(repository, authRepository, { streamIntervalMs 
     res.json(await repository.shared(req.params.id, req.auth.user.id, { kind: req.query.kind, before: req.query.before, limit: integer(req.query.limit, 30, 50) }))
   })
   router.patch('/:id/read', writes, async (req, res) => {
+    query(req, ['summary'])
+    if (req.query.summary !== undefined && !['true', 'false'].includes(req.query.summary)) throw new HttpError(400, 'Invalid summary')
     fields(req.body, ['messageId'])
     if (!cursor(req.body.messageId)) throw new HttpError(400, 'Invalid messageId')
-    res.json({ conversation: await repository.markRead(req.params.id, req.auth.user.id, req.body.messageId) })
+    const includeSummary = req.query.summary !== 'false'
+    const conversation = await repository.markRead(req.params.id, req.auth.user.id, req.body.messageId, includeSummary)
+    if (!includeSummary) return res.status(204).end()
+    res.json({ conversation })
   })
   router.get('/:id/events', async (req, res) => {
     query(req, [])

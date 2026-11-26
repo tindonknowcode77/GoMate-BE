@@ -9,6 +9,8 @@ export function authenticate(repository) {
     const tokenHash = hashToken(match[1])
     const session = await repository.findSession(tokenHash)
     if (!session) throw new HttpError(401, 'Invalid or expired token', 'SESSION_INVALID_OR_EXPIRED')
+    // Request-local profile reuse; req.auth.user remains the public identity.
+    req.authProfile = session.user
     req.auth = { user: publicUser(session.user), tokenHash, expiresAt: session.expiresAt, credentialVersion: session.user.credential_version ?? 0 }
     const publicWrite = ['/api/activities', '/api/conversations', '/api/friends', '/api/portal'].includes(req.baseUrl)
       || req.baseUrl === '/api/community' && /^\/(ratings|reports)(\/|$)/.test(req.path)

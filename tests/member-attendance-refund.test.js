@@ -27,7 +27,7 @@ test('member attendance reputation, protected complaints and single-confirmation
     const base = `http://127.0.0.1:${server.address().port}/api`
     const call = async (who, path, method = 'GET', body) => {
       const response = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json', ...(who === null ? {} : { Authorization: `Bearer ${tokens[who]}` }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
-      return { status: response.status, body: await response.json() }
+      return { status: response.status, body: response.status === 204 ? null : await response.json() }
     }
     const success = result => { assert.ok(result.status < 300, JSON.stringify(result.body)); return result.body }
     const make = async (status = 'completed', mark = 'absent') => {
@@ -37,13 +37,40 @@ test('member attendance reputation, protected complaints and single-confirmation
     }
     const submit = id => ({ activityId: id, kind: 'attendance', requestedStatus: 'present', detail: 'Tôi có mặt đúng giờ, có ảnh nhóm và người tham gia xác nhận.' })
     let absentId, complaintId
-    await t.test('own/public profiles expose the same real rating and absence rate; unknown/unmarked/canceled do not count', async () => {
+    await t.test('own/public profiles expose the same Bayesian attendance rate; new users default to 100%; cancellations and host cancels are distinguished and reputation recovers', async () => {
       absentId = await make(); await make('completed', 'present'); await make('completed', 'late'); await make('completed', 'unmarked'); await make('cancelled', 'absent'); await make('in-progress', 'absent')
       await db.collection('activity_ratings').insertOne({ id: randomUUID(), activityId: absentId, authorId: users[2].id, targetUserId: users[3].id, score: 4, createdAt: new Date() })
       const own = success(await call(3, '/profile/me')).profile.reputation, other = success(await call(4, '/profile/' + users[3].id)).reputation
       assert.deepEqual(own, other); assert.equal(own.average, 4); assert.equal(own.count, 1)
-      assert.equal(own.attendanceCount, 3); assert.equal(own.absentCount, 1); assert.equal(own.absenceRate, 33.3)
-      assert.equal(success(await call(4, '/profile/me')).profile.reputation.absenceRate, null)
+      // (10 + 2 attended) / (10 + 2 + 1 absent) = 12/13 = 92.3%
+      assert.equal(own.attendanceCount, 3); assert.equal(own.attendedCount, 2); assert.equal(own.absentCount, 1)
+      assert.equal(own.attendanceRate, 92.3); assert.equal(own.absenceRate, 7.7); assert.equal(own.isNewUser, false)
+      assert.equal(own.hostCancelledCount, 1)
+      // New user with 0 recorded activities defaults to 100% and is flagged as isNewUser
+      const freshRep = success(await call(4, '/profile/me')).profile.reputation
+      assert.equal(freshRep.attendanceRate, 100); assert.equal(freshRep.absenceRate, 0); assert.equal(freshRep.isNewUser, true)
+      // Distinguish on-time cancel (>6h: no penalty), late cancel (<=6h: 0.5 weight -> 95.2%), host cancel (0 penalty), and recovery
+      const onTimeActId = randomUUID(), lateActId = randomUUID(), hostCancelActId = randomUUID()
+      const futureEarly = new Date(Date.now() + 24 * 3600000), futureLate = new Date(Date.now() + 2 * 3600000)
+      await db.collection('activities').insertMany([
+        { id: onTimeActId, title: 'On-time leave', hostId: users[2].id, hostName: users[2].name, organizerType: 'personal', status: 'published', version: 1, startsAt: futureEarly, endsAt: new Date(+futureEarly + 3600000), memberCount: 2, maxParticipants: 10, joinRequests: [{ userId: users[4].id, name: users[4].name, status: 'approved' }], attendance: [], updates: [] },
+        { id: lateActId, title: 'Late leave', hostId: users[2].id, hostName: users[2].name, organizerType: 'personal', status: 'published', version: 1, startsAt: futureLate, endsAt: new Date(+futureLate + 3600000), memberCount: 2, maxParticipants: 10, joinRequests: [{ userId: users[4].id, name: users[4].name, status: 'approved' }], attendance: [], updates: [] },
+        { id: hostCancelActId, title: 'Host cancelled', hostId: users[2].id, hostName: users[2].name, organizerType: 'personal', status: 'cancelled', version: 1, startsAt: futureLate, endsAt: new Date(+futureLate + 3600000), memberCount: 2, maxParticipants: 10, joinRequests: [{ userId: users[4].id, name: users[4].name, status: 'left', leaveType: 'late' }], attendance: [], updates: [] },
+      ])
+      assert.equal((await call(4, `/activities/${onTimeActId}/members/me`, 'DELETE', {})).status, 204)
+      let rep4 = success(await call(4, '/profile/me')).profile.reputation
+      assert.equal(rep4.onTimeCancelCount, 1); assert.equal(rep4.hostCancelledCount, 1); assert.equal(rep4.attendanceRate, 100); assert.equal(rep4.isNewUser, true)
+      assert.equal((await call(4, `/activities/${lateActId}/members/me`, 'DELETE', { reason: 'Có việc gia đình đột xuất không thể đi' })).status, 204)
+      rep4 = success(await call(4, '/profile/me')).profile.reputation
+      assert.equal(rep4.lateCancelCount, 1); assert.equal(rep4.attendanceRate, 95.2); assert.equal(rep4.isNewUser, false)
+      // Attending a new completed activity recovers reputation upward from 95.2% -> 11/11.5 = 95.7%
+      const recoveryId = randomUUID()
+      await db.collection('activities').insertOne({ id: recoveryId, title: 'Recovery run', hostId: users[2].id, hostName: users[2].name, organizerType: 'personal', status: 'completed', version: 1, startsAt: new Date(Date.now() - 7200000), endsAt: new Date(Date.now() - 3600000), startedAt: new Date(Date.now() - 7200000), memberCount: 2, maxParticipants: 10, joinRequests: [{ userId: users[4].id, name: users[4].name, status: 'approved' }], attendance: [{ userId: users[4].id, name: users[4].name, status: 'present' }], updates: [] })
+      const recovered = success(await call(4, '/profile/me')).profile.reputation
+      assert.ok(recovered.attendanceRate > rep4.attendanceRate, `expected recovery ${recovered.attendanceRate} > ${rep4.attendanceRate}`)
+      assert.equal(recovered.attendanceRate, 95.7)
+      // Clean up test fixture docs for users[4] so later subtests remain isolated
+      await db.collection('activities').deleteMany({ id: { $in: [onTimeActId, lateActId, hostCancelActId, recoveryId] } })
       assert.equal((await call(null, '/profile/' + users[3].id)).status, 401)
     })
     await t.test('start-unmarked and absent notifications reach the affected user, deduplicate and honor participant scope', async () => {

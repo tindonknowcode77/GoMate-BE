@@ -60,9 +60,18 @@ export function createAuthRepository(db) {
     },
     async findSession(tokenHash) {
       // TTL cleanup is asynchronous; enforce expiration on every request.
-      const session = await sessions.findOne({ token_hash: { $eq: tokenHash }, expires_at: { $gt: new Date() } })
+      // Validate the session and current credentials in one database round trip.
+      // No auth cache: logout, deletion, expiration and password changes remain immediate.
+      const [session] = await sessions.aggregate([
+        { $match: { token_hash: { $eq: tokenHash }, expires_at: { $gt: new Date() } } },
+        { $limit: 1 },
+        { $lookup: { from: users.collectionName, localField: 'user_id', foreignField: 'id', pipeline: [
+          { $match: { deletedAt: { $exists: false } } },
+          { $project: { password_hash: 0, verification: 0, password_reset: 0, avatar: 0 } },
+        ], as: 'user' } },
+      ]).toArray()
       if (!session) return null
-      const user = await users.findOne({ id: session.user_id, deletedAt: { $exists: false } }, { projection: { password_hash: 0, verification: 0, password_reset: 0, avatar: 0 } })
+      const user = session.user[0]
       return user && (user.credential_version ?? 0) === (session.credential_version ?? 0) ? { user, expiresAt: session.expires_at } : null
     },
     async reservePasswordReset(email, hash) {

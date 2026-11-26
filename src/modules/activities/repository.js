@@ -1,6 +1,7 @@
 import { createBusinessAudience } from '../../common/business-audience.js'
 import { syncActivityMessages, closedRequests } from './chat-events.js'
 import { randomUUID } from 'node:crypto'
+import { activityRegionConditions } from '../../common/activity-region.js'
 import { HttpError } from '../../common/http-error.js'
 import { publicActivity } from './validation.js'
 import { createCommunityRepository } from '../community/repository.js'
@@ -81,18 +82,48 @@ export function createActivityRepository(db) {
       ]
       const roster = baseMembers.map(item => {
         const record = existing.get(item.userId)
-        return { userId: item.userId, name: item.name, role: item.role, status: record?.status ?? 'unmarked' }
+        const defaultStatus = item.userId === activity.hostId ? 'present' : 'unmarked'
+        return { userId: item.userId, name: item.name, role: item.role, status: record?.status && record.status !== 'unmarked' ? record.status : defaultStatus }
       })
       const userIds = [...new Set(roster.map(item => item.userId))]
-      const [people, expRatings, userSubmission, memories] = await Promise.all([
+      const [people, expRatings, userSubmission, manualMemories, groupConversation] = await Promise.all([
         userIds.length ? db.collection('users').find({ id: { $in: userIds } }, { projection: { _id: 0, id: 1, name: 1, avatar_url: 1, avatar_version: 1 } }).toArray() : [],
         db.collection('activity_experience_ratings').aggregate([
           { $match: { activityId: activity.id, score: { $gte: 1, $lte: 5 } } },
           { $group: { _id: null, average: { $avg: '$score' }, count: { $sum: 1 } } },
         ]).toArray(),
         db.collection('rating_submissions').findOne({ activityId: activity.id, userId }, { projection: { _id: 0, createdAt: 1 } }),
-        db.collection('activity_memories').find({ activityId: activity.id, deletedAt: { $exists: false } }, { projection: { _id: 0 } }).sort({ createdAt: -1 }).limit(100).toArray(),
+        db.collection('activity_memories').find({ activityId: activity.id, deletedAt: { $exists: false } }, { projection: { _id: 0, imagePublicId: 0 } }).sort({ createdAt: -1 }).limit(100).toArray(),
+        db.collection('conversations').findOne({ key: `activity:${activity.id}` }, { projection: { _id: 0, id: 1 } }),
       ])
+      let chatMemories = []
+      if (groupConversation?.id) {
+        const chatRows = await db.collection('chat_messages').find(
+          { conversationId: groupConversation.id, 'attachments.kind': 'image' },
+          { projection: { _id: 1, senderId: 1, senderName: 1, text: 1, attachments: 1, createdAt: 1 } }
+        ).sort({ _id: -1 }).limit(100).toArray()
+        const uploaderIds = [...new Set(chatRows.map(r => r.senderId).filter(Boolean))]
+        const uploaderProfiles = await this.profilesByIds(uploaderIds)
+        for (const msg of chatRows) {
+          const images = (msg.attachments ?? []).filter(att => att.kind === 'image')
+          for (const att of images) {
+            const uploader = uploaderProfiles.get(msg.senderId)
+            chatMemories.push({
+              id: `chat-${att.id}`,
+              activityId: activity.id,
+              uploaderId: msg.senderId,
+              uploaderName: uploader?.name || msg.senderName || 'Thành viên',
+              uploaderAvatarUrl: uploader?.avatarUrl ?? null,
+              imageUrl: `/api/conversations/${encodeURIComponent(groupConversation.id)}/attachments/${encodeURIComponent(att.id)}`,
+              caption: msg.text || '',
+              createdAt: msg.createdAt,
+            })
+          }
+        }
+      }
+      const memories = [...manualMemories, ...chatMemories]
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .slice(0, 120)
       const profileMap = new Map(people.map(person => [person.id, person]))
       const enrichedMembers = roster.map(item => {
         const person = profileMap.get(item.userId)
@@ -238,14 +269,18 @@ export function createActivityRepository(db) {
       }, { returnDocument: 'after' })
       return row?.joinRequests.find(item => userId ? item.userId === userId : item.id === requestId) ?? null
     },
-    async removeMember(id, userId, actorId, hostAction) {
+    async removeMember(id, userId, actorId, hostAction, meta = {}) {
       const now = new Date()
       if (!hostAction && actorId !== userId) return null
+      const leaveType = hostAction ? 'host_removed' : (meta.leaveType === 'late' ? 'late' : 'on_time')
       return activities.findOneAndUpdate({ id, status: 'published', startsAt: { $gt: now },
         hostId: { $ne: userId },
         memberCount: { $gte: 1 },
         joinRequests: { $elemMatch: { userId, status: 'approved' } },
       }, { $set: { 'joinRequests.$.status': hostAction ? 'removed' : 'left',
+        'joinRequests.$.leftAt': now,
+        'joinRequests.$.leaveType': leaveType,
+        ...(meta.reason ? { 'joinRequests.$.leaveReason': meta.reason } : {}),
         'joinRequests.$.updatedAt': now, updatedAt: now, scheduleConfirmedAt: null, scheduleConfirmedBy: null },
         $pull: { businessReceipts: { userId }, leaveRequests: { userId, status: 'pending' } },
         $inc: { memberCount: -1, version: 1 },
@@ -359,7 +394,7 @@ export function createActivityRepository(db) {
       if (options.days.length) checks.push({ $in: [{ $isoDayOfWeek: date }, options.days] })
       checks.push({ $gte: [{ $hour: date }, options.fromHour] }, { $lt: [{ $hour: date }, options.toHour] })
       match.$expr = { $and: checks }
-      match.$and = [...(match.$and || []), await audience.scope(userId)]
+      match.$and = [...(match.$and || []), ...activityRegionConditions(options), await audience.scope(userId)]
       const geo = options.lat !== undefined
       const pipeline = geo ? [{ $geoNear: { near: { type: 'Point', coordinates: [options.lng, options.lat] },
         key: 'coordinates', distanceField: 'distanceMeters', spherical: true, query: match,
@@ -392,8 +427,10 @@ export function createActivityRepository(db) {
         } })
       const [result] = await db.collection('activities').aggregate(pipeline, { maxTimeMS: 5000 }).toArray()
       const total = result?.total[0]?.count ?? 0
-      const reputations = await community.reputations((result?.items ?? []).map(row => row.hostId))
-      const hostProfiles = await db.collection('users').find({ id: { $in: [...new Set((result?.items ?? []).map(row => row.hostId))] } }, { projection: { id: 1, avatar_url: 1, avatar_version: 1 } }).toArray()
+      const [reputations, hostProfiles] = await Promise.all([
+        community.reputations((result?.items ?? []).map(row => row.hostId)),
+        db.collection('users').find({ id: { $in: [...new Set((result?.items ?? []).map(row => row.hostId))] } }, { projection: { id: 1, avatar_url: 1, avatar_version: 1 } }).toArray(),
+      ])
       const avatars = new Map(hostProfiles.map(user => [user.id, user.avatar_url ?? (user.avatar_version ? `/api/profile/${user.id}/avatar?v=${user.avatar_version}` : null)]))
       const items = (result?.items ?? []).map(row => ({ ...row, hostAvatarUrl: avatars.get(row.hostId) ?? null, hostRating: reputations.get(row.hostId)?.average, hostRatingCount: reputations.get(row.hostId)?.count, hostCompletedActivities: reputations.get(row.hostId)?.completedActivities }))
       return { items, page: options.page, limit: options.limit, total, hasMore: options.page * options.limit < total }

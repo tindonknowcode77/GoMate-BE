@@ -28,7 +28,7 @@ test('chat persistence, isolation, idempotency, read state and SSE revocation', 
   const base = `http://127.0.0.1:${server.address().port}/api/conversations`
   const req = async (user, path = '', method = 'GET', body) => {
     const response = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json', ...(user >= 0 ? { Authorization: `Bearer ${tokens[user]}` } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) })
-    return { status: response.status, body: await response.json() }
+    return { status: response.status, body: response.status === 204 ? null : await response.json() }
   }
   assert.equal((await req(-1)).status, 401)
   for (const body of [{ type: 'other' }, { type: 'direct', userId: users[0].id }, { type: 'direct', userId: users[1].id, senderId: users[2].id }]) assert.equal((await req(0, '', 'POST', body)).status, 400)
@@ -60,6 +60,9 @@ test('chat persistence, isolation, idempotency, read state and SSE revocation', 
   await req(1, `/${id}/read`, 'PATCH', { messageId: second.id })
   await req(1, `/${id}/read`, 'PATCH', { messageId: first.id })
   const read = (await req(1)).body.items[0]
+  assert.equal((await req(1, `/${id}/read?summary=false`, 'PATCH', { messageId: second.id })).status, 204)
+  assert.equal((await req(1, `/${id}/read?summary=invalid`, 'PATCH', { messageId: second.id })).status, 400)
+  assert.equal((await req(2, `/${id}/read?summary=false`, 'PATCH', { messageId: second.id })).status, 403)
   assert.equal(read.unreadCount, 0); assert.equal(read.lastReadMessageId, second.id)
   assert.equal((await req(2, `/${id}/read`, 'PATCH', { messageId: second.id })).status, 403)
 

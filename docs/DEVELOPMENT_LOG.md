@@ -1,5 +1,71 @@
 # Development log
 
+## 2026-11-26 - Reduce mobile request latency and chat receipt overhead
+
+### Summary
+
+- Join session/current user in one indexed aggregation instead of two sequential
+  reads. Preserve expiration, deletion, credential-version checks and sensitive
+  field exclusion on every request; no authentication cache is introduced.
+- Reuse the authenticated profile in activity search; fetch host reputation and
+  avatar independently in parallel. Skip empty staff business lookups.
+- Accept `PATCH /conversations/:id/read?summary=false` for a 204 acknowledgement
+  after the same authorization, cursor validation, monotonic read and notification
+  updates. Default callers retain the conversation response, reusing access data.
+
+### Files changed
+
+- `src/modules/auth/repository.js`, `src/middlewares/authenticate.js`,
+  `src/common/business-staff-access.js`.
+- `src/modules/activities/{repository,routes}.js`.
+- `src/modules/chat/{repository,routes}.js`.
+- `tests/{activities,chat,realtime-performance}.test.js`, this log.
+
+### Verification
+
+- 50 tests passed: chat/content, realtime, auth/password recovery, activities/radius,
+  profiles, portal authority and Stage 3 mobile APIs.
+- Mongo command monitoring: one authentication command; five direct-chat minimal
+  read-receipt commands and zero summary aggregations. Tests retain idempotent
+  sends, socket access revocation, TTL/logout/password revocation and legacy reads.
+- `git diff --check`: passed.
+
+### Remaining work
+
+- No production latency/SLA claim: tests use isolated Mongo instances. Companion
+  FE renders optimistic messages and removes blocking read receipts.
+
+## 2026-11-26 - Region-scoped event radius discovery
+
+### Summary
+
+- Accept bounded province/district/ward query fields and combine activity-region
+  matching with the existing GPS-to-event `$geoNear` query before pagination and
+  totals. Use structured activity fields first, with escaped legacy location-text
+  aliases only when the corresponding field is absent. Never read host location
+  for distance or region selection.
+- Support FE 50 km+ by omitting distanceKm while retaining region parameters.
+  Region-only queries include unpinned events; bounded radius/nearest use pins.
+
+### Files changed
+
+- `src/common/activity-region.js`.
+- `src/modules/activities/{routes,repository}.js`.
+- `tests/activity-radius.test.js`, `docs/match.md`, this log.
+
+### Verification
+
+- `node --test tests/activity-radius.test.js tests/activities.test.js tests/match-preferences.test.js`:
+  16 passed. Verified 0.99/1.01 km boundary, inverted host locations, same-region
+  activities beyond 50 km, cross-region exclusion, no-pin handling, structured
+  region precedence, literal input handling and region-aware totals/paging.
+- `git diff --check`: passed.
+
+### Remaining work
+
+- Deploy with the companion FE slider/query update. Legacy events without a pin
+  cannot be included in a bounded radius until their event location is pinned.
+
 ## 2026-11-20 - Event-driven chat and bounded data-loading work
 
 ### Summary

@@ -194,8 +194,8 @@ export function createChatRepository(db) {
       for (const recipient of new Set(recipients)) events.emit('user', recipient)
       return view
     },
-    async markRead(id, userId, messageId) {
-      await access(id, userId)
+    async markRead(id, userId, messageId, includeSummary = true) {
+      const target = await access(id, userId)
       const marker = new ObjectId(messageId)
       const message = await messages.findOne({ _id: marker, conversationId: id }, { projection: { _id: 1, createdAt: 1 } })
       if (!message) throw new HttpError(404, 'Message not found in this conversation')
@@ -205,7 +205,7 @@ export function createChatRepository(db) {
       await db.collection('notifications').updateMany({ userId, conversationId: id, type: 'message', readAt: null, key: { $lte: `message:${messageId}` } }, { $set: { readAt: new Date() } })
       events.emit('conversation', id)
       events.emit('user', userId)
-      return summary(await access(id, userId), userId)
+      return includeSummary ? summary(target, userId) : null
     },
   }
 }

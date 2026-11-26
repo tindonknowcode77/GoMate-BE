@@ -67,6 +67,17 @@ test('activity discovery queries MongoDB with combined filters and stable paging
     assert.equal((await get({ fromHour: '6', toHour: '12' })).body.total, 0)
     assert.equal((await get({ days: String(localWeekday === 7 ? 1 : localWeekday + 1) })).body.total, 0)
   })
+  await t.test('recommendations reuse current private interests without an extra profile request', async () => {
+    await db.collection('users').updateOne({ id: user.id }, { $set: { interests: ['Sport'] } })
+    const original = authRepository.getProfile
+    authRepository.getProfile = () => { throw new Error('Redundant profile read') }
+    try {
+      const result = await get({ sort: 'recommended' })
+      assert.equal(result.status, 200)
+      assert.equal(result.body.items[0].id, 'b')
+      assert.equal(result.body.items[0].interests, undefined)
+    } finally { authRepository.getProfile = original }
+  })
   await t.test('invalid/injected queries fail and empty pages are well-formed', async () => {
     for (const params of [{ lat: '91', lng: '0' }, { lat: '1' }, { distanceKm: '10' }, { limit: '1000' },
       { page: '0' }, { minCost: '100', maxCost: '10' }, { days: '0' }, { fromHour: '20', toHour: '10' },

@@ -14,7 +14,7 @@ import { createAttendanceQrToken, verifyAttendanceQrToken } from '../../common/q
 
 const categories = activityCategories
 export function searchOptions(query) {
-  const allowed = ['minAge', 'maxAge', 'organizerType', 'sort', 'q', 'categories', 'minCost', 'maxCost', 'days', 'fromHour', 'toHour', 'fromTime', 'toTime', 'dateFrom', 'dateTo', 'minParticipants', 'maxParticipants', 'gender', 'language', 'religion', 'alcohol', 'dressCode', 'lat', 'lng', 'distanceKm', 'page', 'limit']
+  const allowed = ['province', 'district', 'ward', 'minAge', 'maxAge', 'organizerType', 'sort', 'q', 'categories', 'minCost', 'maxCost', 'days', 'fromHour', 'toHour', 'fromTime', 'toTime', 'dateFrom', 'dateTo', 'minParticipants', 'maxParticipants', 'gender', 'language', 'religion', 'alcohol', 'dressCode', 'lat', 'lng', 'distanceKm', 'page', 'limit']
   for (const [key, value] of Object.entries(query)) {
     if (!allowed.includes(key) || typeof value !== 'string' || !value.trim()) throw new HttpError(400, `Invalid query parameter: ${key}`)
   }
@@ -33,6 +33,10 @@ export function searchOptions(query) {
     page: number('page', 1, 500, 1, true), limit: number('limit', 1, 50, 20, true),
     days: query.days?.split(',').map(Number) ?? [],
     fromHour: number('fromHour', 0, 23, 0, true), toHour: number('toHour', 1, 24, 24, true),
+  }
+  for (const field of ['province', 'district', 'ward']) if (query[field] !== undefined) {
+    if (query[field].trim().length > 100) throw new HttpError(400, `Invalid ${field}`)
+    if (query[field].trim() !== 'Tất cả') options[field] = query[field].trim()
   }
   if (options.q?.length > 100 || options.categories.some(value => !categories.includes(value)) || options.categories.length > categories.length) throw new HttpError(400, 'Invalid search or categories')
   if (options.days.length > 7 || options.days.some(value => !Number.isInteger(value) || value < 1 || value > 7)) throw new HttpError(400, 'days must use ISO weekdays 1–7')
@@ -67,7 +71,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
   const router = Router()
   router.use(authenticate(authRepository))
   router.get('/', async (req, res) => {
-    res.json(await repository.search(searchOptions(req.query), req.auth.user.id, await authRepository.getProfile(req.auth.user.id)))
+    res.json(await repository.search(searchOptions(req.query), req.auth.user.id, req.authProfile))
   })
   router.get('/invitations', async (req, res) => {
     if (Object.keys(req.query).some(key => !['page', 'limit'].includes(key))) throw new HttpError(400, 'Only page and limit are supported')
@@ -91,8 +95,9 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const row = await find(req.params.id, undefined, false, req._activity)
     const isBusinessManager = await repository.isAssignedStaff(req.auth.user.id, row.id)
     if (row.status !== 'published' && row.hostId !== req.auth.user.id && !isBusinessManager && !row.joinRequests?.some(item => item.userId === req.auth.user.id && item.status === 'approved')) throw new HttpError(404, 'Activity not found')
-    const reputation = await authRepository.community?.reputation(row.hostId)
-    const host = await authRepository.getProfile(row.hostId)
+    const [reputation, host] = await Promise.all([
+      authRepository.community?.reputation(row.hostId), authRepository.getProfile(row.hostId),
+    ])
     const hostAvatarUrl = host?.avatar_url ?? (host?.avatar_version ? `/api/profile/${host.id}/avatar?v=${host.avatar_version}` : null)
     res.json({ activity: { ...publicActivity(row), isBusinessManager, ...(row.hostId === req.auth.user.id ? { companions: row.companions ?? [] } : {}), hostAvatarUrl, ...(reputation ? { hostRating: reputation.average, hostRatingCount: reputation.count, hostCompletedActivities: reputation.completedActivities } : {}) } })
   })
@@ -159,13 +164,20 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const row = await saveLifecycle(activity, req, { scheduleConfirmedAt: entry.createdAt, scheduleConfirmedBy: req.auth.user.id }, entry)
     res.json({ activity: publicActivity(row) })
   })
-  function buildAttendanceRoster(activity) {
+  function buildAttendanceRoster(activity, { markHostPresent = false } = {}) {
     const existing = new Map((activity.attendance ?? []).map(item => [item.userId, item]))
+    const hostAutoPresent = markHostPresent || ['in-progress', 'completed'].includes(activity.status)
     const members = [
       { userId: activity.hostId, name: activity.hostName },
       ...(activity.joinRequests ?? []).filter(item => item.status === 'approved').map(item => ({ userId: item.userId, name: item.name })),
     ]
-    return members.map(item => existing.get(item.userId) ? { ...existing.get(item.userId), name: item.name } : { ...item, status: 'unmarked' })
+    return members.map(item => {
+      const prev = existing.get(item.userId)
+      if (item.userId === activity.hostId && hostAutoPresent) {
+        return { ...(prev || item), name: item.name, status: 'present', updatedAt: prev?.updatedAt || activity.startedAt || new Date(), updatedBy: prev?.updatedBy || activity.hostId }
+      }
+      return prev ? { ...prev, name: item.name } : { ...item, status: 'unmarked' }
+    })
   }
   for (const action of ['start', 'complete']) {
     router.post(`/:id/${action}`, writes, json, async (req, res) => {
@@ -181,7 +193,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
         if (activity.endsAt && activity.endsAt <= new Date()) throw new HttpError(409, 'Hoạt động đã hết thời gian.')
       }
       const entry = event(req, starting ? 'started' : 'completed')
-      const roster = buildAttendanceRoster(activity)
+      const roster = buildAttendanceRoster(activity, { markHostPresent: true })
       const fields = starting ? {
         status: 'in-progress',
         startedAt: entry.createdAt,
@@ -252,6 +264,7 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
     const newlyAbsent = []
     const attendance = roster.map(member => {
       if (member.correctionReportId) return member
+      if (member.userId === activity.hostId) return { ...member, status: 'present', updatedAt: member.updatedAt || now, updatedBy: member.updatedBy || activity.hostId }
       const nextStatus = overrideMap.has(member.userId) ? overrideMap.get(member.userId) : (markAll ?? member.status)
       if (correction && (member.status !== 'unmarked' || nextStatus === 'unmarked')) return member
       if (nextStatus === member.status) return member
@@ -404,7 +417,8 @@ export function createActivityRouter(repository, authRepository, coverStorage) {
       }
     }
     const hadConfirmedSchedule = Boolean(activity.scheduleConfirmedAt)
-    let updated = await repository.removeMember(activity.id, userId, req.auth.user.id, hostAction)
+    const leaveType = hostAction ? 'host_removed' : hoursLeft <= 6 ? 'late' : 'on_time'
+    let updated = await repository.removeMember(activity.id, userId, req.auth.user.id, hostAction, { leaveType, reason })
     if (!updated) throw new HttpError(409, 'Membership changed or activity is no longer upcoming and published')
     await authRepository.finance?.onMemberRemoved?.(activity.id, userId, hostAction, now, { reason })
     const noteSuffix = reason ? ` Lý do: ${reason}.` : ''

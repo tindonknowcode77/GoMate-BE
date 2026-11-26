@@ -52,7 +52,10 @@ test('activity lifecycle, attendance and atomic audit log', async t => {
   assert.equal((await req(2, '/attendance')).status, 403)
   assert.equal((await req(0, '/attendance?limit=0')).status, 400)
   assert.equal((await req(1, '/attendance?limit=1')).body.hasMore, true)
-  assert.equal((await req(1, '/attendance')).body.total, 2)
+  const initialRoster = (await req(1, '/attendance')).body
+  assert.equal(initialRoster.total, 2)
+  assert.equal(initialRoster.items.find(item => item.userId === users[0].id)?.status, 'present')
+  assert.equal(initialRoster.items.find(item => item.userId === users[1].id)?.status, 'unmarked')
   assert.equal((await req(0, `/attendance/${users[2].id}`, 'PATCH', { status: 'present' })).status, 404)
   assert.equal((await req(1, `/attendance/${users[1].id}`, 'PATCH', { status: 'present' })).status, 403)
   assert.equal((await req(0, `/attendance/${users[1].id}`, 'PATCH', { status: 'bad' })).status, 400)
@@ -74,8 +77,8 @@ test('activity lifecycle, attendance and atomic audit log', async t => {
   assert.equal((await req(0, `/attendance/${users[1].id}`, 'PATCH', { status: 'absent' })).status, 409)
   assert.equal((await req(0, '/updates', 'POST', { text: 'too late' })).status, 409)
   const log = (await req(1, '/updates')).body
-  assert.deepEqual(log.items.map(e => e.type), ['completed', 'attendance-changed', 'note', 'attendance-changed', 'started', 'schedule-confirmed'])
-  assert.equal(log.items[3].previousStatus, 'unmarked')
+  assert.deepEqual(log.items.map(e => e.type), ['completed', 'note', 'attendance-changed', 'started', 'schedule-confirmed'])
+  assert.equal(log.items[2].previousStatus, 'unmarked')
   assert.equal((await repository.participating(users[1].id, { page: 1, limit: 20 })).items[0].status, 'completed')
   assert.equal((await createChatRepository(db).create(users[1].id, { type: 'group', activityId: activity.id })).type, 'group')
   await repository.remove(await repository.get(activity.id))
